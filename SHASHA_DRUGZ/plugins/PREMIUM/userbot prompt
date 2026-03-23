@@ -1,0 +1,678 @@
+can u create a userbot module for supporting with SHASHA_DRUGZ repo.
+
+/usersession <session> or <reply to session> | give inline button to type /usersession
+
+/rmuserbot (only userbot owner and main bot owner(/rmuserbot <userid>)) - to disconnect the userbot (erase all the particular user/userbot data).
+
+/rmalluserbots - (remove all the userbots (main bot owner only))
+
+FEATURES:-
+
+1. ban unban tban sban kick
+
+2. war unwarn mute unmute
+
+3. id info adminlist  botlist
+
+4. promote demote
+
+5. pin unpin
+
+6. report @admin
+
+7. purge
+
+8. tagall mention @all utag gmtag/gntag(tag randome goodnit and good morning messages) (.setuser -to set one by one or batch 5 members tag. set limit 1 to 5)
+
+9.afk
+
+10. broadcast( -pin -users -loud...)
+
+11. carbon
+
+12. sticker id kang sticker(animated support)
+
+13. save self destruct image(save one time timer image)
+
+14. whisper message(view one time too)(use main bot username)
+
+15.eval
+
+16. joinvc leavevc startvc endvc
+
+17. lock (sticker meadia video files etc.)
+
+18. ping
+
+19. setbio <bio>,  mybio, setmybio(reply to the user)
+
+20. sg - sangmata
+
+21. loggerid
+
+22.tagalert- (anyone tag u to send alert to log group)
+
+23. tgt, imbp,tgm( telegraph, imbb, catbox image to link)
+
+24. tr (translate to english)
+
+25. PMGUARD COMMANDS
+
+a. setwarn(set warn limit) resetwarn(default 3)
+
+b. pmguard on/off
+
+c. setpmmsg resetpmmsg(default warn message)
+
+d. setpmimg(set warn image) resetpmimg
+
+e. block unblock(reply to the user)
+
+f.  clrwarns
+
+g. a,da (approve disapprove)
+
+26. raid (reply to a user or mention username or userid - the user send msg any groups to reply to the random message for the user automatically)
+
+27. mystart myhelp
+
+
+
+RULES and NOTES:-
+
+1. all commands are start with dot(.).
+
+2. same mongodb are used for all. so donot conflict one user to another. need isolated. (EXAMPLE: the user bock for someone., the blocked user donot block/affected with another user pm.  the user sends afk message. the same message donot replicated to another user. like too many functions. so i need isolated)
+
+3. any place need bot. use the main bot(bot username) from config
+
+4. give me all in single file. donot create multiple files.
+
+5 donot reset anything after bot restart. also donot reset changing user anyhting they own userbot.
+
+
+
+i attached just a too basic module for SHASHA_DRUGZ for your refrence. take it for just a refrence and give me a perfect finaal full single code without bugs.
+
+
+
+REF:1
+
+# SHASHA USER CONTROL MODULE (MAIN BOT)
+
+import time
+
+import asyncio
+
+import random
+
+from SHASHA_DRUGZ import app
+
+from pyrogram import filters
+
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+
+from pyrogram.errors import FloodWait
+
+import motor.motor_asyncio
+
+from config import MONGO_DB_URI, BOT_USERNAME
+
+# ---------------- DATABASE ---------------- #
+
+mongo = motor.motor_asyncio.AsyncIOMotorClient(MONGO_DB_URI)
+
+db = mongo["SHASHA_USER_SYSTEM"]
+
+def user_db(uid):
+
+    return db[f"user_{uid}"]
+
+async def get_data(uid, key, default=None):
+
+    data = await user_db(uid).find_one({"_id": key})
+
+    return data["value"] if data else default
+
+async def set_data(uid, key, value):
+
+    await user_db(uid).update_one(
+
+        {"_id": key}, {"$set": {"value": value}}, upsert=True
+
+    )
+
+# ---------------- USER SESSION ---------------- #
+
+@app.on_message(filters.command("usersession"))
+
+async def usersession(_, m: Message):
+
+    kb = InlineKeyboardMarkup([
+
+        [InlineKeyboardButton("➕ Generate Session", url=f"https://t.me/{BOT_USERNAME}?start=session")]
+
+    ])
+
+    await m.reply(
+
+        "**Send your session string or use button below 👇**",
+
+        reply_markup=kb
+
+    )
+
+# ---------------- PING ---------------- #
+
+@app.on_message(filters.command("ping"))
+
+async def ping(_, m: Message):
+
+    start = time.time()
+
+    msg = await m.reply("🏓 Pinging...")
+
+    end = time.time()
+
+    await msg.edit(f"⚡ {round((end-start)*1000,2)} ms")
+
+# ---------------- AFK ---------------- #
+
+@app.on_message(filters.command("afk"))
+
+async def afk(_, m: Message):
+
+    uid = m.from_user.id
+
+    reason = m.text.split(None, 1)[1] if len(m.command) > 1 else "AFK"
+
+    await set_data(uid, "afk", {"reason": reason, "time": time.time()})
+
+    await m.reply(f"🛌 AFK set: {reason}")
+
+@app.on_message(filters.group)
+
+async def afk_reply(_, m: Message):
+
+    if not m.from_user:
+
+        return
+
+    if m.reply_to_message:
+
+        target = m.reply_to_message.from_user.id
+
+        afk = await get_data(target, "afk")
+
+        if afk:
+
+            await m.reply(f"🛌 User is AFK\nReason: {afk['reason']}")
+
+# ---------------- PM GUARD ---------------- #
+
+@app.on_message(filters.private & ~filters.bot)
+
+async def pmguard(_, m: Message):
+
+    uid = m.from_user.id
+
+    pmguard = await get_data(uid, "pmguard", False)
+
+    if not pmguard:
+
+        return
+
+    warns = await get_data(uid, f"warn_{m.from_user.id}", 0) + 1
+
+    limit = await get_data(uid, "warn_limit", 3)
+
+    await set_data(uid, f"warn_{m.from_user.id}", warns)
+
+    if warns >= limit:
+
+        await m.reply("🚫 You are blocked!")
+
+        await app.block_user(m.from_user.id)
+
+    else:
+
+        await m.reply(f"⚠️ Warning {warns}/{limit}")
+
+@app.on_message(filters.command("pmguard"))
+
+async def toggle_pmguard(_, m: Message):
+
+    uid = m.from_user.id
+
+    state = m.command[1].lower()
+
+    await set_data(uid, "pmguard", state == "on")
+
+    await m.reply(f"PMGuard {'ON' if state=='on' else 'OFF'}")
+
+# ---------------- ADMIN ---------------- #
+
+@app.on_message(filters.command(["ban","kick","mute","unmute"]) & filters.group)
+
+async def admin(_, m: Message):
+
+    if not m.reply_to_message:
+
+        return await m.reply("Reply to user")
+
+    user = m.reply_to_message.from_user.id
+
+    cmd = m.command[0]
+
+    try:
+
+        if cmd == "ban":
+
+            await app.ban_chat_member(m.chat.id, user)
+
+        elif cmd == "kick":
+
+            await app.ban_chat_member(m.chat.id, user)
+
+            await app.unban_chat_member(m.chat.id, user)
+
+        elif cmd == "mute":
+
+            await app.restrict_chat_member(m.chat.id, user, permissions={})
+
+        elif cmd == "unmute":
+
+            await app.unban_chat_member(m.chat.id, user)
+
+        await m.reply(f"✅ {cmd} done")
+
+    except Exception as e:
+
+        await m.reply(str(e))
+
+# ---------------- ID INFO ---------------- #
+
+@app.on_message(filters.command("id"))
+
+async def id(_, m: Message):
+
+    await m.reply(f"🆔 `{m.chat.id}`")
+
+@app.on_message(filters.command("info"))
+
+async def info(_, m: Message):
+
+    user = m.reply_to_message.from_user if m.reply_to_message else m.from_user
+
+    await m.reply(f"👤 {user.first_name}\n🆔 `{user.id}`")
+
+# ---------------- BROADCAST ---------------- #
+
+@app.on_message(filters.command("broadcast"))
+
+async def broadcast(_, m: Message):
+
+    if not m.reply_to_message:
+
+        return await m.reply("Reply to message")
+
+    chats = []
+
+    async for d in app.get_dialogs():
+
+        chats.append(d.chat.id)
+
+    sent = 0
+
+    for chat in chats:
+
+        try:
+
+            await m.reply_to_message.copy(chat)
+
+            sent += 1
+
+        except FloodWait as e:
+
+            await asyncio.sleep(e.value)
+
+    await m.reply(f"📢 Sent to {sent} chats")
+
+# ---------------- TAG ALL ---------------- #
+
+@app.on_message(filters.command("tagall") & filters.group)
+
+async def tagall(_, m: Message):
+
+    members = []
+
+    async for u in app.get_chat_members(m.chat.id):
+
+        members.append(u.user)
+
+    text = " ".join([f"[{u.first_name}](tg://user?id={u.id})" for u in members[:50]])
+
+    await m.reply(text)
+
+# ---------------- LOGGER ---------------- #
+
+@app.on_message(filters.command("loggerid"))
+
+async def logger(_, m: Message):
+
+    uid = m.from_user.id
+
+    await set_data(uid, "logger", m.chat.id)
+
+    await m.reply("✅ Logger saved")
+
+# ---------------- BIO ---------------- #
+
+@app.on_message(filters.command("setbio"))
+
+async def setbio(_, m: Message):
+
+    return await m.reply("❌ Bots can't change bio (userbot needed)")
+
+# ---------------- EVAL ---------------- #
+
+@app.on_message(filters.command("eval"))
+
+async def eval_code(_, m: Message):
+
+    try:
+
+        code = m.text.split(None, 1)[1]
+
+        result = eval(code)
+
+        await m.reply(str(result))
+
+    except Exception as e:
+
+        await m.reply(str(e))
+
+
+
+REF-2:
+
+# SHASHA HYBRID SYSTEM (BOT + USERBOT)
+
+import asyncio
+
+import time
+
+import motor.motor_asyncio
+
+from pyrogram import Client, filters
+
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+
+from pyrogram.errors import FloodWait
+
+from SHASHA_DRUGZ import app
+
+from config import MONGO_DB_URI, API_ID, API_HASH
+
+# ---------------- DATABASE ---------------- #
+
+mongo = motor.motor_asyncio.AsyncIOMotorClient(MONGO_DB_URI)
+
+db = mongo["SHASHA_HYBRID"]
+
+def user_db(uid):
+
+    return db[f"user_{uid}"]
+
+async def set_session(uid, session):
+
+    await user_db(uid).update_one(
+
+        {"_id": "session"}, {"$set": {"value": session}}, upsert=True
+
+    )
+
+async def get_session(uid):
+
+    data = await user_db(uid).find_one({"_id": "session"})
+
+    return data["value"] if data else None
+
+# ---------------- SESSION LOADER ---------------- #
+
+async def get_userbot(uid):
+
+    session = await get_session(uid)
+
+    if not session:
+
+        return None
+
+    try:
+
+        userbot = Client(
+
+            name=f"user_{uid}",
+
+            session_string=session,
+
+            api_id=API_ID,
+
+            api_hash=API_HASH,
+
+            in_memory=True
+
+        )
+
+        await userbot.start()
+
+        return userbot
+
+    except Exception:
+
+        return None
+
+# ---------------- USERSSESSION ---------------- #
+
+@app.on_message(filters.command("usersession"))
+
+async def usersession(_, m: Message):
+
+    kb = InlineKeyboardMarkup([
+
+        [InlineKeyboardButton("📥 Send Session", callback_data="get_session")]
+
+    ])
+
+    await m.reply("**Send your session string now**", reply_markup=kb)
+
+@app.on_message(filters.private & filters.text)
+
+async def save_session(_, m: Message):
+
+    if len(m.text) < 50:
+
+        return
+
+    uid = m.from_user.id
+
+    await set_session(uid, m.text)
+
+    await m.reply("✅ Session saved successfully!")
+
+# ---------------- PING ---------------- #
+
+@app.on_message(filters.command("ping"))
+
+async def ping(_, m: Message):
+
+    start = time.time()
+
+    msg = await m.reply("🏓...")
+
+    end = time.time()
+
+    await msg.edit(f"⚡ {(end-start)*1000:.2f} ms")
+
+# ---------------- USERBOT BAN ---------------- #
+
+@app.on_message(filters.command("ban") & filters.group)
+
+async def userban(_, m: Message):
+
+    if not m.reply_to_message:
+
+        return await m.reply("Reply to user")
+
+    uid = m.from_user.id
+
+    userbot = await get_userbot(uid)
+
+    if not userbot:
+
+        return await m.reply("❌ Set session first using /usersession")
+
+    target = m.reply_to_message.from_user.id
+
+    try:
+
+        await userbot.ban_chat_member(m.chat.id, target)
+
+        await m.reply("✅ Banned using userbot")
+
+    except Exception as e:
+
+        await m.reply(str(e))
+
+    await userbot.stop()
+
+# ---------------- USERBOT MUTE ---------------- #
+
+@app.on_message(filters.command("mute") & filters.group)
+
+async def usermute(_, m: Message):
+
+    if not m.reply_to_message:
+
+        return await m.reply("Reply to user")
+
+    uid = m.from_user.id
+
+    userbot = await get_userbot(uid)
+
+    if not userbot:
+
+        return await m.reply("❌ Set session first")
+
+    target = m.reply_to_message.from_user.id
+
+    try:
+
+        await userbot.restrict_chat_member(m.chat.id, target, permissions={})
+
+        await m.reply("🔇 Muted (userbot)")
+
+    except Exception as e:
+
+        await m.reply(str(e))
+
+    await userbot.stop()
+
+# ---------------- AFK (USERBOT BASED) ---------------- #
+
+@app.on_message(filters.command("afk"))
+
+async def afk(_, m: Message):
+
+    uid = m.from_user.id
+
+    reason = m.text.split(None, 1)[1] if len(m.command) > 1 else "AFK"
+
+    await user_db(uid).update_one(
+
+        {"_id": "afk"},
+
+        {"$set": {"reason": reason, "time": time.time()}},
+
+        upsert=True
+
+    )
+
+    await m.reply(f"🛌 AFK set: {reason}")
+
+@app.on_message(filters.group)
+
+async def afk_reply(_, m: Message):
+
+    if not m.reply_to_message:
+
+        return
+
+    target = m.reply_to_message.from_user.id
+
+    data = await user_db(target).find_one({"_id": "afk"})
+
+    if data:
+
+        await m.reply(f"🛌 AFK: {data['reason']}")
+
+# ---------------- BROADCAST (USERBOT) ---------------- #
+
+@app.on_message(filters.command("broadcast"))
+
+async def broadcast(_, m: Message):
+
+    uid = m.from_user.id
+
+    userbot = await get_userbot(uid)
+
+    if not userbot:
+
+        return await m.reply("❌ No session")
+
+    if not m.reply_to_message:
+
+        return await m.reply("Reply to message")
+
+    sent = 0
+
+    async for d in userbot.get_dialogs():
+
+        try:
+
+            await m.reply_to_message.copy(d.chat.id)
+
+            sent += 1
+
+        except FloodWait as e:
+
+            await asyncio.sleep(e.value)
+
+    await m.reply(f"📢 Sent to {sent} chats")
+
+    await userbot.stop()
+
+# ---------------- EVAL ---------------- #
+
+@app.on_message(filters.command("eval"))
+
+async def eval_code(_, m: Message):
+
+    try:
+
+        code = m.text.split(None, 1)[1]
+
+        result = eval(code)
+
+        await m.reply(str(result))
+
+    except Exception as e:
+
+        await m.reply(str(e))
+
+
+
+take the imports from this refrence.
+
+write a new own code without missing anything what i need. donot forgot aany commands and any pointys. i strictly want a full final single code.
+

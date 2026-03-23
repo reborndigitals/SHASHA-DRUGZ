@@ -1,0 +1,249 @@
+import asyncio
+from pyrogram import Client, filters, enums
+from pyrogram.types import Message
+from motor.motor_asyncio import AsyncIOMotorClient
+
+# ---------------- CONFIGURATION ---------------- #
+
+# ⚠️ REPLACE THIS WITH YOUR REAL MONGO URI
+MONGO_DB_URI = "mongodb+srv://iamnobita1:nobitamusic1@cluster0.k08op.mongodb.net/?retryWrites=true&w=majority"
+
+# Admins who can control the bot
+ADMINS = [8399160924, 6773435708]
+
+# Default Settings
+DEFAULT_LIMIT = 3
+DEFAULT_PM_MSG = (
+    "<blockquote>☆ . * ● ¸ . ✦ .★° :. ★ * • ○ ° ★</blockquote>\n"
+    "<blockquote>ʜᴇʏ, ɪ'ᴍ 𝐏𝐦𝐒𝐞𝐜𝐮𝐫𝐞-✗-𝐁𝐨𝐭</blockquote>\n"
+    "<blockquote>➽───────────────❥</blockquote>\n"
+    "<blockquote>😈 Wait until my boss comes.\n"
+    "🚫 Spam = Auto Block (Limit: {limit})</blockquote>\n"
+    "<blockquote>☆ . * ● ¸ . ✦ .★° :. ★ * • ○ ° ★</blockquote>"
+)
+DEFAULT_BLOCK_MSG = (
+    "<blockquote>ʙᴇᴇᴘ ʙᴏᴏᴘ ⚠️ Spammer detected!\n"
+    "Blocked successfully 🚫</blockquote>"
+)
+
+# ---------------- DATABASE HELPERS ---------------- #
+
+mongo = AsyncIOMotorClient(MONGO_DB_URI)
+db = mongo["PMSecurityDB"]
+approved_col = db["approved"]
+settings_col = db["settings"]
+
+# Cache to reduce DB calls
+approved_cache = set()
+warns_cache = {}
+
+async def get_settings():
+    data = await settings_col.find_one({"_id": "main_config"})
+    if not data:
+        return {
+            "limit": DEFAULT_LIMIT,
+            "pm_msg": DEFAULT_PM_MSG,
+            "block_msg": DEFAULT_BLOCK_MSG,
+            "pm_img": None,
+            "img_enabled": False
+        }
+    return data
+
+async def update_setting(key, value):
+    await settings_col.update_one(
+        {"_id": "main_config"},
+        {"$set": {key: value}},
+        upsert=True
+    )
+
+async def is_approved(user_id):
+    if user_id in approved_cache or user_id in ADMINS:
+        return True
+    user = await approved_col.find_one({"user_id": user_id})
+    if user:
+        approved_cache.add(user_id)
+        return True
+    return False
+
+async def approve_user(user_id):
+    approved_cache.add(user_id)
+    await approved_col.update_one(
+        {"user_id": user_id},
+        {"$set": {"user_id": user_id}},
+        upsert=True
+    )
+
+async def disapprove_user(user_id):
+    if user_id in approved_cache:
+        approved_cache.remove(user_id)
+    await approved_col.delete_one({"user_id": user_id})
+
+# ---------------- COMMANDS ---------------- #
+
+# Filter to check if user is Admin or the Owner (Me)
+is_authorized = filters.user(ADMINS) | filters.me
+
+@Client.on_message(filters.command("pmhelp") & is_authorized)
+async def pm_help(client: Client, message: Message):
+    help_text = (
+        "<b>🛡️ PM Guard Commands</b>\n\n"
+        "`.a` - Approve User (Reply)\n"
+        "`.da` - Disapprove User (Reply)\n"
+        "`.setlimit <n>` - Set Max Warns\n"
+        "`.setpmmsg <text>` - Set Warning Text\n"
+        "`.setblockmsg <text>` - Set Block Text\n"
+        "`.setpmimg` (Reply) - Set Image\n"
+        "`.pmimg` - Toggle Image On/Off\n"
+        "`.block` (Reply) - Force Block"
+    )
+    await message.edit(help_text)
+
+@Client.on_message(filters.command("a") & is_authorized)
+async def approve_cmd(client: Client, message: Message):
+    if not message.reply_to_message:
+        return await message.edit("⚠️ Reply to a user to approve them.")
+    
+    user_id = message.reply_to_message.from_user.id
+    user_name = message.reply_to_message.from_user.first_name
+    
+    await approve_user(user_id)
+    # Remove warns if any
+    if user_id in warns_cache:
+        del warns_cache[user_id]
+        
+    await message.edit(f"✅ <b>{user_name}</b> has been approved to PM.")
+
+@Client.on_message(filters.command("da") & is_authorized)
+async def disapprove_cmd(client: Client, message: Message):
+    if not message.reply_to_message:
+        return await message.edit("⚠️ Reply to a user to disapprove them.")
+    
+    user_id = message.reply_to_message.from_user.id
+    user_name = message.reply_to_message.from_user.first_name
+    
+    await disapprove_user(user_id)
+    await message.edit(f"❌ <b>{user_name}</b> has been disapproved.")
+
+@Client.on_message(filters.command("block") & is_authorized)
+async def force_block(client: Client, message: Message):
+    if not message.reply_to_message:
+        return await message.edit("⚠️ Reply to a user to block them.")
+    
+    user_id = message.reply_to_message.from_user.id
+    await client.block_user(user_id)
+    await message.edit(f"🚫 User blocked manually.")
+
+@Client.on_message(filters.command("setlimit") & is_authorized)
+async def set_limit(client: Client, message: Message):
+    if len(message.command) < 2:
+        return await message.edit("⚠️ Usage: `.setlimit <number>`")
+    try:
+        limit = int(message.command[1])
+        await update_setting("limit", limit)
+        await message.edit(f"✅ Max warnings set to: <b>{limit}</b>")
+    except ValueError:
+        await message.edit("⚠️ Please provide a valid number.")
+
+@Client.on_message(filters.command("setpmmsg") & is_authorized)
+async def set_pm_msg(client: Client, message: Message):
+    if len(message.command) < 2:
+        return await message.edit("⚠️ Usage: `.setpmmsg <text>`")
+    
+    text = message.text.split(maxsplit=1)[1]
+    await update_setting("pm_msg", text)
+    await message.edit("✅ PM Warning message updated.")
+
+@Client.on_message(filters.command("setblockmsg") & is_authorized)
+async def set_block_msg(client: Client, message: Message):
+    if len(message.command) < 2:
+        return await message.edit("⚠️ Usage: `.setblockmsg <text>`")
+    
+    text = message.text.split(maxsplit=1)[1]
+    await update_setting("block_msg", text)
+    await message.edit("✅ Block message updated.")
+
+@Client.on_message(filters.command("setpmimg") & is_authorized)
+async def set_pm_img(client: Client, message: Message):
+    if not message.reply_to_message or not message.reply_to_message.media:
+        return await message.edit("⚠️ Reply to an image/video to set it.")
+    
+    # Get file ID (prioritize photo, then animation/video)
+    media = message.reply_to_message
+    file_id = None
+    if media.photo:
+        file_id = media.photo.file_id
+    elif media.animation:
+        file_id = media.animation.file_id
+    elif media.video:
+        file_id = media.video.file_id
+        
+    if file_id:
+        await update_setting("pm_img", file_id)
+        await update_setting("img_enabled", True)
+        await message.edit("✅ PM Image set and enabled.")
+    else:
+        await message.edit("⚠️ Could not retrieve file ID from reply.")
+
+@Client.on_message(filters.command("pmimg") & is_authorized)
+async def toggle_pm_img(client: Client, message: Message):
+    settings = await get_settings()
+    current = settings.get("img_enabled", False)
+    new_state = not current
+    await update_setting("img_enabled", new_state)
+    state_text = "Enabled" if new_state else "Disabled"
+    await message.edit(f"✅ PM Image {state_text}.")
+
+# ---------------- INCOMING PM HANDLER ---------------- #
+
+@Client.on_message(filters.private & ~filters.me & ~filters.bot & ~filters.service)
+async def pm_guard_watcher(client: Client, message: Message):
+    user_id = message.from_user.id
+    
+    # Ignore if user is approved or admin
+    if await is_approved(user_id):
+        return
+
+    # Load Settings
+    settings = await get_settings()
+    limit = settings.get("limit", DEFAULT_LIMIT)
+    pm_msg = settings.get("pm_msg", DEFAULT_PM_MSG)
+    block_msg = settings.get("block_msg", DEFAULT_BLOCK_MSG)
+    pm_img = settings.get("pm_img")
+    img_enabled = settings.get("img_enabled", False)
+
+    # Check warnings
+    current_warns = warns_cache.get(user_id, 0)
+    current_warns += 1
+    warns_cache[user_id] = current_warns
+
+    # Block Logic
+    if current_warns > limit:
+        await message.reply_text(block_msg, quote=True)
+        await client.block_user(user_id)
+        if user_id in warns_cache:
+            del warns_cache[user_id]
+        return
+
+    # Warning Logic
+    formatted_msg = pm_msg.format(limit=limit, warns=current_warns)
+    
+    # Send Warning (with or without image)
+    if img_enabled and pm_img:
+        try:
+            if pm_img.endswith(".mp4"): # Simple check, or just use send_cached_media
+                 await client.send_video(
+                    chat_id=message.chat.id,
+                    video=pm_img,
+                    caption=formatted_msg
+                )
+            else:
+                await client.send_photo(
+                    chat_id=message.chat.id,
+                    photo=pm_img,
+                    caption=formatted_msg
+                )
+        except Exception:
+            # Fallback to text if image fails
+            await message.reply_text(formatted_msg, quote=True)
+    else:
+        await message.reply_text(formatted_msg, quote=True)

