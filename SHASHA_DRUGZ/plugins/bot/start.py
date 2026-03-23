@@ -4,7 +4,8 @@ import random
 import httpx
 
 from pyrogram import filters
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, ChatType
+from pyrogram.enums import ChatMemberStatus, ChatType
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from youtubesearchpython.__future__ import VideosSearch
 
 import config
@@ -101,6 +102,10 @@ async def _api_post(endpoint: str, payload: dict) -> dict:
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  DELAYED DELETE
+#  Sticker-ஐ immediately delete பண்ணாம 3s delay கொடுக்கிறோம்.
+#  Reason: raw httpx effect message-ஓட animated layer finish ஆகும் முன்னே
+#  delete பண்ணினா Telegram client UI state mismatch ஆகுது —
+#  அதுக்கு அப்புறம் வர்ற buttons clickable ஆகாது.
 # ══════════════════════════════════════════════════════════════════════════════
 async def delayed_delete(chat_id: int, message_id: int) -> None:
     await asyncio.sleep(3)
@@ -153,6 +158,103 @@ async def send_sticker_with_effect(chat_id: int) -> int | None:
         return data["result"]["message_id"]
 
     return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ASSISTANT JOIN HELPERS (Improved retry system)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# 🔥 CONFIG
+MAX_RETRIES = 5
+RETRY_DELAY = 10  # seconds
+
+async def has_invite_permission(chat_id: int):
+    try:
+        bot = await app.get_me()
+        member = await app.get_chat_member(chat_id, bot.id)
+
+        if member.status != ChatMemberStatus.ADMINISTRATOR:
+            return False
+
+        if not member.privileges.can_invite_users:
+            return False
+
+        return True
+    except:
+        return False
+
+
+async def get_available_assistant(chat_id):
+    try:
+        userbot = await get_assistant(chat_id)
+        return userbot
+    except:
+        return None
+
+
+async def join_assistant(chat_id: int):
+    userbot = await get_available_assistant(chat_id)
+
+    if not userbot:
+        return False, "No assistant available"
+
+    # Already joined check
+    try:
+        await app.get_chat_member(chat_id, userbot.id)
+        return True, "Already in group"
+    except:
+        pass
+
+    # Username join
+    try:
+        chat = await app.get_chat(chat_id)
+        if chat.username:
+            await userbot.join_chat(chat.username)
+            return True, "Joined via username"
+    except Exception as e:
+        print("Username join fail:", e)
+
+    # Invite link join
+    try:
+        if not await has_invite_permission(chat_id):
+            return False, "Bot needs invite permission"
+
+        link = await app.export_chat_invite_link(chat_id)
+        await asyncio.sleep(1)
+        await userbot.join_chat(link)
+
+        return True, "Joined via invite"
+    except Exception as e:
+        print("Invite join fail:", e)
+
+    return False, "Join failed"
+
+
+async def auto_retry_join(chat_id: int):
+    for i in range(MAX_RETRIES):
+        try:
+            success, msg = await join_assistant(chat_id)
+
+            if success:
+                print(f"[ASSISTANT JOINED] {chat_id} → {msg}")
+                return True
+
+            print(f"[RETRY {i+1}] {msg}")
+
+            await asyncio.sleep(RETRY_DELAY)
+
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+
+        except Exception as e:
+            print("Retry error:", e)
+
+    print(f"[FAILED] Assistant join failed in {chat_id}")
+    return False
+
+
+async def instant_assistant_join(chat_id: int):
+    asyncio.create_task(auto_retry_join(chat_id))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -343,56 +445,14 @@ async def welcome(client, message: Message):
 
                 await add_served_chat(message.chat.id)
 
-                # 🔥 ASSISTANT AUTO JOIN LOGIC
-                try:
-                    userbot = await get_assistant(message.chat.id)
-
-                    # 1️⃣ First check already inside
-                    try:
-                        member_check = await app.get_chat_member(
-                            message.chat.id, userbot.id
-                        )
-                        if member_check:
-                            await message.reply_text(
-                                f"✅ Assistant already in group."
-                            )
-                            return
-                    except:
-                        pass
-
-                    # 2️⃣ Try username join (best method)
-                    if message.chat.username:
-                        try:
-                            await userbot.join_chat(message.chat.username)
-                            await message.reply_text(
-                                f"✅ Assistant joined via username."
-                            )
-                            return
-                        except Exception as e:
-                            print("Username join failed:", e)
-
-                    # 3️⃣ Try invite link
-                    try:
-                        invitelink = await app.export_chat_invite_link(
-                            message.chat.id
-                        )
-                        await asyncio.sleep(1)
-                        await userbot.join_chat(invitelink)
-
-                        await message.reply_text(
-                            f"✅ Assistant joined via invite link."
-                        )
-                        return
-                    except Exception as e:
-                        print("Invite link failed:", e)
-
-                    # ❌ FINAL FAIL
-                    await message.reply_text(
-                        f"❌ Make me admin with invite permission to add assistant."
-                    )
-
-                except Exception as e:
-                    print("Assistant join error:", e)
+                # 🔥 ASSISTANT AUTO JOIN LOGIC (using improved retry system)
+                success, msg = await join_assistant(message.chat.id)
+                if not success:
+                    # If immediate join fails, start background retry
+                    asyncio.create_task(auto_retry_join(message.chat.id))
+                    await message.reply_text(f"⚠️ {msg}. Retrying in background...")
+                else:
+                    await message.reply_text(f"✅ {msg}")
 
                 # 🎉 Welcome UI
                 await message.reply_photo(
