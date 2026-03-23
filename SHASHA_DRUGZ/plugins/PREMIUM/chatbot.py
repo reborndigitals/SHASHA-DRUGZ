@@ -98,22 +98,25 @@ SUDO_IDS = list(set(SUDO_IDS))
 # ================================================================== #
 
 CLAUDE_API_KEYS = [
-    "sk-ant-api03-YOUR_KEY_1",
-    "sk-ant-api03-YOUR_KEY_2",
-    "sk-ant-api03-YOUR_KEY_3",
+    #"sk-ant-api03-YOUR_KEY_1",
+    #"sk-ant-api03-YOUR_KEY_2",
+    #"sk-ant-api03-YOUR_KEY_3",
     # Add more Claude keys here...
 ]
 
 GEMINI_API_KEYS = [
-    "AIzaSy-YOUR_GEMINI_KEY_1",
-    "AIzaSy-YOUR_GEMINI_KEY_2",
+    #"AIzaSy-YOUR_GEMINI_KEY_1",
+    #"AIzaSy-YOUR_GEMINI_KEY_2",
     # Add more Gemini keys here...
 ]
 
 OPENAI_API_KEYS = [
-    "sk-YOUR_OPENAI_KEY_1",
-    "sk-YOUR_OPENAI_KEY_2",
-    # Add more OpenAI keys here...
+    "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", #ghosttbatt
+    "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", #2695
+    "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", #sthfsuh154
+    "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", #reborn
+    "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", #jajvss
+    "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", #rajeshrakis143
 ]
 
 # ================================================================== #
