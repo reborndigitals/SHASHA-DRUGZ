@@ -4,7 +4,7 @@ import random
 import httpx
 
 from pyrogram import filters
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, ChatType
 from youtubesearchpython.__future__ import VideosSearch
 
 import config
@@ -304,3 +304,113 @@ async def start_gp(client, message: Message, _):
         reply_markup=InlineKeyboardMarkup(out),
     )
     await add_served_chat(message.chat.id)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  WELCOME HANDLER (new chat members)
+# ══════════════════════════════════════════════════════════════════════════════
+@app.on_message(filters.new_chat_members, group=-1)
+async def welcome(client, message: Message):
+    for member in message.new_chat_members:
+        try:
+            language = await get_lang(message.chat.id)
+            _ = get_string(language)
+
+            # 🔴 Ban check
+            if await is_banned_user(member.id):
+                try:
+                    await message.chat.ban_member(member.id)
+                except:
+                    pass
+
+            # ✅ BOT ADDED
+            if member.id == app.id:
+
+                # ❌ Not supergroup
+                if message.chat.type != ChatType.SUPERGROUP:
+                    await message.reply_text(_["start_4"])
+                    await app.leave_chat(message.chat.id)
+                    return
+
+                # ❌ Blacklisted
+                if message.chat.id in await blacklisted_chats():
+                    await message.reply_text(
+                        _["start_5"].format(
+                            app.mention,
+                            f"https://t.me/{app.username}?start=sudolist",
+                            config.SUPPORT_CHAT,
+                        ),
+                        disable_web_page_preview=True,
+                    )
+                    await app.leave_chat(message.chat.id)
+                    return
+
+                await add_served_chat(message.chat.id)
+
+                # 🔥 ASSISTANT AUTO JOIN LOGIC
+                try:
+                    userbot = await get_assistant(message.chat.id)
+
+                    # 1️⃣ First check already inside
+                    try:
+                        member_check = await app.get_chat_member(
+                            message.chat.id, userbot.id
+                        )
+                        if member_check:
+                            await message.reply_text(
+                                f"✅ Assistant already in group."
+                            )
+                            return
+                    except:
+                        pass
+
+                    # 2️⃣ Try username join (best method)
+                    if message.chat.username:
+                        try:
+                            await userbot.join_chat(message.chat.username)
+                            await message.reply_text(
+                                f"✅ Assistant joined via username."
+                            )
+                            return
+                        except Exception as e:
+                            print("Username join failed:", e)
+
+                    # 3️⃣ Try invite link
+                    try:
+                        invitelink = await app.export_chat_invite_link(
+                            message.chat.id
+                        )
+                        await asyncio.sleep(1)
+                        await userbot.join_chat(invitelink)
+
+                        await message.reply_text(
+                            f"✅ Assistant joined via invite link."
+                        )
+                        return
+                    except Exception as e:
+                        print("Invite link failed:", e)
+
+                    # ❌ FINAL FAIL
+                    await message.reply_text(
+                        f"❌ Make me admin with invite permission to add assistant."
+                    )
+
+                except Exception as e:
+                    print("Assistant join error:", e)
+
+                # 🎉 Welcome UI
+                await message.reply_photo(
+                    random.choice(SHASHA_PICS),
+                    caption=_["start_3"].format(
+                        message.from_user.first_name,
+                        app.mention,
+                        message.chat.title,
+                        app.mention,
+                    ),
+                    reply_markup=InlineKeyboardMarkup(start_panel(_)),
+                )
+
+                await message.stop_propagation()
+
+        except Exception as ex:
+            print("WELCOME ERROR:", ex)
