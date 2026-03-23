@@ -101,10 +101,6 @@ async def _api_post(endpoint: str, payload: dict) -> dict:
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  DELAYED DELETE
-#  Sticker-ஐ immediately delete பண்ணாம 3s delay கொடுக்கிறோம்.
-#  Reason: raw httpx effect message-ஓட animated layer finish ஆகும் முன்னே
-#  delete பண்ணினா Telegram client UI state mismatch ஆகுது —
-#  அதுக்கு அப்புறம் வர்ற buttons clickable ஆகாது.
 # ══════════════════════════════════════════════════════════════════════════════
 async def delayed_delete(chat_id: int, message_id: int) -> None:
     await asyncio.sleep(3)
