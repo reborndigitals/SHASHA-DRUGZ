@@ -1,0 +1,49 @@
+from pyrogram import Client, filters
+from pyrogram.types import *
+from SHASHA_DRUGZ import app
+from gpytranslate import Translator
+
+print("[translator] tr")
+#.......
+
+trans = Translator()
+
+#......
+
+@Client.on_message(filters.command("tr"))
+async def translate(client: Client, message) -> None:
+    reply_msg = message.reply_to_message
+    if not reply_msg:
+        await message.reply_text("ʀᴇᴘʟʏ ᴛᴏ ᴀ ᴍᴇssᴀɢᴇ ᴛᴏ ᴛʀᴀɴsʟᴀᴛᴇ ɪᴛ !")
+        return
+    if reply_msg.caption:
+        to_translate = reply_msg.caption
+    elif reply_msg.text:
+        to_translate = reply_msg.text
+    try:
+        args = message.text.split()[1].lower()
+        if "//" in args:
+            source = args.split("//")[0]
+            dest = args.split("//")[1]
+        else:
+            source = await trans.detect(to_translate)
+            dest = args
+    except IndexError:
+        source = await trans.detect(to_translate)
+        dest = "en"
+    translation = await trans(to_translate, sourcelang=source, targetlang=dest)
+    reply = (
+        f"ᴛʀᴀɴsʟᴀᴛᴇᴅ ғʀᴏᴍ {source} to {dest}:\n"
+        f"{translation.text}"
+    )
+    await message.reply_text(reply)
+
+__menu__ = "CMD_MANAGE"
+__mod_name__ = "H_B_60"
+__help__ = """
+🔻 /tr ➠ ʀᴇᴘʟʏ ᴛᴏ ᴀ ᴍᴇssᴀɢᴇ ᴛᴏ ᴛʀᴀɴsʟᴀᴛᴇ ɪᴛ ᴛᴏ ᴀ ᴅɪꜰꜰᴇʀᴇɴᴛ ʟᴀɴɢᴜᴀɢᴇ
+"""
+
+MOD_TYPE = "TOOLS"
+MOD_NAME = "Translator"
+MOD_PRICE = "10"
