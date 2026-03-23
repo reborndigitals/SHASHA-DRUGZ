@@ -2,21 +2,18 @@
 # ║          LIFE GAMES MODULE — SHASHA_DRUGZ BOT                        ║
 # ║          Single-file plugin · MongoDB persistent storage             ║
 # ║                                                                      ║
-# ║  BUG-FIX SUMMARY (all 7 bugs fixed):                                ║
-# ║                                                                      ║
-# ║  #1 CRITICAL — register_lifegames() wrapper removed.                ║
-# ║  #2 CRITICAL — m.command replaced with m.text.split() everywhere.   ║
-# ║  #3 CRITICAL — ChatMemberStatus string comparison fixed.            ║
-# ║  #4 MODERATE — Sync pymongo wrapped in run_in_executor.             ║
-# ║  #5 MODERATE — m.chat.get_member() → app.get_chat_member().        ║
-# ║  #6 MINOR — SUDOERS normalised to int set for safe `in` check.     ║
-# ║  #7 MINOR — Giveaway timer moved to asyncio.create_task().         ║
+# ║  NON-SLASH COMMAND FIX:                                              ║
+# ║  All aliases (bbet/Bbet/BBET, ppay/Ppay/PPAY, etc.) now work        ║
+# ║  via filters.text & manual text matching — fully reliable.           ║
 # ╚══════════════════════════════════════════════════════════════════════╝
+
 import os
+import re
 import random
 import asyncio
 import time
 from datetime import datetime
+
 from pyrogram import filters
 from pyrogram.types import (
     Message,
@@ -26,6 +23,7 @@ from pyrogram.types import (
 )
 from pyrogram.enums import ChatMemberStatus
 from SHASHA_DRUGZ import app
+
 try:
     from config import MONGO_DB_URI as MONGO_URL
     from SHASHA_DRUGZ.misc import SUDOERS as _SUDOERS_RAW
@@ -33,35 +31,43 @@ try:
 except Exception:
     MONGO_URL = os.environ.get("MONGO_URL", "")
     SUDOERS   = set()
+
 try:
     from config import OWNER_ID
     OWNER_ID = int(OWNER_ID)
 except Exception:
     OWNER_ID = 0
+
 # ─────────────────────────────────────────────────────────────────
 #  MONGODB SETUP
 # ─────────────────────────────────────────────────────────────────
 from pymongo import MongoClient
+
 _mongo        = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
 _db           = _mongo["lifegames_db"]
 users_col     = _db["users"]
 cooldowns_col = _db["cooldowns"]
 groups_col    = _db["groups"]
 loans_col     = _db["loans"]
+
 users_col.create_index("user_id",  unique=True)
 cooldowns_col.create_index([("user_id", 1), ("cmd", 1)], unique=True)
 groups_col.create_index("chat_id", unique=True)
+
 # ─────────────────────────────────────────────────────────────────
-#  FIX #4 — async wrapper so sync pymongo never blocks the loop
+#  FIX — async wrapper so sync pymongo never blocks the loop
 # ─────────────────────────────────────────────────────────────────
 _loop = asyncio.get_event_loop()
+
 async def _run(fn, *args):
     return await _loop.run_in_executor(None, fn, *args)
+
 # ─────────────────────────────────────────────────────────────────
 #  GAME CONSTANTS
 # ─────────────────────────────────────────────────────────────────
 SLOT_ICONS     = ["🍒", "🍋", "🍉", "⭐", "💎", "7️⃣"]
 LEVEL_XP_TABLE = [0, 100, 300, 600, 1000, 1500, 2100, 2800, 3600, 4500, 5500, 7000]
+
 JOBS = {
     "hacker": {"emoji": "💻", "bonus_type": "steal_chance", "bonus_val": 15, "salary": 3000000},
     "banker": {"emoji": "🏦", "bonus_type": "daily_bonus",  "bonus_val": 10, "salary": 2500000},
@@ -69,6 +75,7 @@ JOBS = {
     "thief":  {"emoji": "🕵️", "bonus_type": "steal_chance", "bonus_val": 20, "salary": 1800000},
     "trader": {"emoji": "📈", "bonus_type": "shop_discount","bonus_val": 10, "salary": 3500000},
 }
+
 PETS = {
     "dog":    {"emoji": "🐶", "price": 100000000,  "power": 5},
     "cat":    {"emoji": "🐱", "price": 120000000,  "power": 7},
@@ -76,19 +83,23 @@ PETS = {
     "fox":    {"emoji": "🦊", "price": 300000000,  "power": 18},
     "dragon": {"emoji": "🐉", "price": 1000000000, "power": 40},
 }
+
 GUNS = {
     "pistol":  {"emoji": "🔫", "price": 150000000, "damage": 10},
     "shotgun": {"emoji": "🔫", "price": 300000000, "damage": 20},
     "rifle":   {"emoji": "🎯", "price": 500000000, "damage": 30},
     "sniper":  {"emoji": "🎯", "price": 800000000, "damage": 45},
 }
+
 ARMOR = {
     "helmet":        {"emoji": "⛑",  "price": 80000000,  "defense": 8},
     "vest":          {"emoji": "🦺", "price": 150000000, "defense": 15},
     "shield":        {"emoji": "🛡",  "price": 250000000, "defense": 25},
     "tactical_suit": {"emoji": "🥷", "price": 500000000, "defense": 40},
 }
+
 SOCIAL_EMOJIS = {"hug": "🤗", "kiss": "😘", "slap": "👋", "love": "❤️"}
+
 # ============================================================
 # 🖼️ LIFE GAME IMAGE ASSETS
 # ============================================================
@@ -96,6 +107,7 @@ LIFE_ASSETS = {
     "win":  "SHASHA_DRUGZ/assets/shasha/win.jpeg",
     "loss": "SHASHA_DRUGZ/assets/shasha/loss.jpg",
 }
+
 # ─────────────────────────────────────────────────────────────────
 #  SYNC DATABASE HELPERS
 # ─────────────────────────────────────────────────────────────────
@@ -107,6 +119,7 @@ _DEFAULT_USER = {
     "bank": 0,
     "streak": 0,
 }
+
 def _get_user(uid: int) -> dict:
     doc = users_col.find_one({"user_id": uid})
     if not doc:
@@ -117,15 +130,20 @@ def _get_user(uid: int) -> dict:
         users_col.update_one({"user_id": uid}, {"$set": missing})
         doc.update(missing)
     return doc
+
 def _update_user(uid: int, fields: dict):
     users_col.update_one({"user_id": uid}, {"$set": fields}, upsert=True)
+
 def _add_coins(uid: int, amount: int):
     users_col.update_one({"user_id": uid}, {"$inc": {"coins": amount}}, upsert=True)
+
 def _remove_coins(uid: int, amount: int):
     users_col.update_one({"user_id": uid}, {"$inc": {"coins": -amount}}, upsert=True)
+
 def _get_coins(uid: int) -> int:
     doc = users_col.find_one({"user_id": uid}, {"coins": 1})
     return doc["coins"] if doc else _DEFAULT_USER["coins"]
+
 def _add_xp(uid: int, amount: int) -> int:
     user   = _get_user(uid)
     new_xp = user["xp"] + amount
@@ -134,6 +152,7 @@ def _add_xp(uid: int, amount: int) -> int:
         level += 1
     _update_user(uid, {"xp": new_xp, "level": level})
     return level
+
 def _check_cooldown(uid: int, cmd: str, seconds: int) -> int:
     now = int(time.time())
     rec = cooldowns_col.find_one({"user_id": uid, "cmd": cmd})
@@ -145,8 +164,10 @@ def _check_cooldown(uid: int, cmd: str, seconds: int) -> int:
     else:
         cooldowns_col.insert_one({"user_id": uid, "cmd": cmd, "timestamp": now})
     return 0
+
 def _get_top(mode: str) -> list:
     return list(users_col.find({}, {"user_id": 1, mode: 1}).sort(mode, -1).limit(10))
+
 # ─────────────────────────────────────────────────────────────────
 #  UTILITY HELPERS
 # ─────────────────────────────────────────────────────────────────
@@ -156,9 +177,11 @@ def fmt_time(secs: int) -> str:
     if h:  return f"{h}h {m}m"
     if m:  return f"{m}m {s}s"
     return f"{s}s"
+
 def mention(user) -> str:
     name = (user.first_name or "User")[:20]
     return f"[{name}](tg://user?id={user.id})"
+
 def calc_power(user: dict) -> int:
     base     = user.get("level", 1) * 5
     pet_pw   = PETS.get(user.get("pet", ""), {}).get("power", 0)
@@ -166,9 +189,12 @@ def calc_power(user: dict) -> int:
     armor_df = ARMOR.get(user.get("armor", ""), {}).get("defense", 0)
     luck     = random.randint(1, 30)
     return base + pet_pw + gun_dmg + armor_df + luck
+
 def _parse_args(text: str) -> list:
+    """Split text and return everything after the first word (the command/alias)."""
     parts = (text or "").strip().split()
     return parts[1:] if parts else []
+
 async def is_admin(client, m: Message) -> bool:
     if not m.from_user:
         return False
@@ -180,6 +206,7 @@ async def is_admin(client, m: Message) -> bool:
         return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
     except Exception:
         return False
+
 async def _send_life_image(message, result_type: str, caption: str):
     path = LIFE_ASSETS.get(result_type)
     if path and os.path.isfile(path):
@@ -189,6 +216,25 @@ async def _send_life_image(message, result_type: str, caption: str):
         except Exception:
             pass
     await message.reply_text(caption)
+
+# ─────────────────────────────────────────────────────────────────
+#  CUSTOM FILTER FACTORY — matches any alias, case-sensitive list
+#  Works for BOTH slash commands AND plain-text aliases reliably.
+# ─────────────────────────────────────────────────────────────────
+def _alias_filter(*aliases):
+    """
+    Returns a filter that matches when m.text (lowered or exact) starts
+    with any of the provided aliases (case-sensitive as given).
+    Handles both slash-command format and plain-text aliases.
+    """
+    pattern = re.compile(
+        r"^(" + "|".join(re.escape(a) for a in aliases) + r")(\s|$)"
+    )
+    async def func(_, __, m: Message):
+        txt = m.text or m.caption or ""
+        return bool(pattern.match(txt))
+    return filters.create(func)
+
 # ─────────────────────────────────────────────────────────────────
 #  INLINE KEYBOARD BUILDERS
 # ─────────────────────────────────────────────────────────────────
@@ -200,6 +246,7 @@ def _shop_main_kb():
         ],
         [InlineKeyboardButton("🎒 ᴍʏ ɪɴᴠᴇɴᴛᴏʀʏ", callback_data="shop_inventory")],
     ])
+
 def _armory_kb():
     rows = []
     for key, item in GUNS.items():
@@ -214,6 +261,7 @@ def _armory_kb():
         )])
     rows.append([InlineKeyboardButton("⬅ ʙᴀᴄᴋ", callback_data="shop_main")])
     return InlineKeyboardMarkup(rows)
+
 def _petshop_kb():
     rows = [
         [InlineKeyboardButton(
@@ -224,6 +272,7 @@ def _petshop_kb():
     ]
     rows.append([InlineKeyboardButton("⬅ ʙᴀᴄᴋ", callback_data="shop_main")])
     return InlineKeyboardMarkup(rows)
+
 # ─────────────────────────────────────────────────────────────────
 #  IN-MEMORY PENDING STATE
 # ─────────────────────────────────────────────────────────────────
@@ -232,14 +281,14 @@ _active_giveaways: dict = {}
 _pending_loans:    dict = {}
 
 # ═══════════════════════════════════════════════════════════════
-#  ALL HANDLERS — registered at MODULE LEVEL (FIX #1)
+#  ALL HANDLERS — registered at MODULE LEVEL
 # ═══════════════════════════════════════════════════════════════
 
 # ────────────────────────────────────────────
 #  PROFILE — /lifeprofile | pprofile
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifeprofile"]) | filters.regex(r"^pprofile(\s|$)"))
+    (filters.command(["lifeprofile"]) | _alias_filter("pprofile", "Pprofile", "PPROFILE"))
     & filters.group
 )
 async def profile_cmd(client, m: Message):
@@ -274,7 +323,7 @@ async def profile_cmd(client, m: Message):
 #  BALANCE — /lifebalance | bbalance
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifebalance"]) | filters.regex(r"^bbalance(\s|$)"))
+    (filters.command(["lifebalance"]) | _alias_filter("bbalance", "Bbalance", "BBALANCE"))
     & filters.group
 )
 async def balance_cmd(client, m: Message):
@@ -285,7 +334,7 @@ async def balance_cmd(client, m: Message):
 #  DAILY — /lifedaily | ddaily
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifedaily"]) | filters.regex(r"^ddaily(\s|$)"))
+    (filters.command(["lifedaily"]) | _alias_filter("ddaily", "Ddaily", "DDAILY"))
     & filters.group
 )
 async def daily_cmd(client, m: Message):
@@ -312,7 +361,7 @@ async def daily_cmd(client, m: Message):
 #  LEADERBOARD — /lifetop | ttop
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifetop"]) | filters.regex(r"^ttop(\s|$)"))
+    (filters.command(["lifetop"]) | _alias_filter("ttop", "Ttop", "TTOP"))
     & filters.group
 )
 async def top_cmd(client, m: Message):
@@ -348,22 +397,22 @@ async def _social(m: Message, action: str):
     )
 
 @app.on_message(
-    (filters.command(["lifehug"]) | filters.regex(r"^hhug(\s|$)")) & filters.group
+    (filters.command(["lifehug"]) | _alias_filter("hhug", "Hhug", "HHUG")) & filters.group
 )
 async def hug_cmd(client, m): await _social(m, "hug")
 
 @app.on_message(
-    (filters.command(["lifekiss"]) | filters.regex(r"^kkiss(\s|$)")) & filters.group
+    (filters.command(["lifekiss"]) | _alias_filter("kkiss", "Kkiss", "KKISS")) & filters.group
 )
 async def kiss_cmd(client, m): await _social(m, "kiss")
 
 @app.on_message(
-    (filters.command(["lifeslap"]) | filters.regex(r"^sslap(\s|$)")) & filters.group
+    (filters.command(["lifeslap"]) | _alias_filter("sslap", "Sslap", "SSLAP")) & filters.group
 )
 async def slap_cmd(client, m): await _social(m, "slap")
 
 @app.on_message(
-    (filters.command(["lifelove"]) | filters.regex(r"^llove(\s|$)")) & filters.group
+    (filters.command(["lifelove"]) | _alias_filter("llove", "Llove", "LLOVE")) & filters.group
 )
 async def love_cmd(client, m): await _social(m, "love")
 
@@ -371,7 +420,7 @@ async def love_cmd(client, m): await _social(m, "love")
 #  MARRY — /lifemarry | mmarry
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifemarry"]) | filters.regex(r"^mmarry(\s|$)"))
+    (filters.command(["lifemarry"]) | _alias_filter("mmarry", "Mmarry", "MMARRY"))
     & filters.group
 )
 async def marry_cmd(client, m: Message):
@@ -401,7 +450,7 @@ async def marry_cmd(client, m: Message):
 #  DIVORCE — /lifedivorce | ddivorce
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifedivorce"]) | filters.regex(r"^ddivorce(\s|$)"))
+    (filters.command(["lifedivorce"]) | _alias_filter("ddivorce", "Ddivorce", "DDIVORCE"))
     & filters.group
 )
 async def divorce_cmd(client, m: Message):
@@ -417,7 +466,7 @@ async def divorce_cmd(client, m: Message):
 #  PARENT — /lifeparent | pparent
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifeparent"]) | filters.regex(r"^pparent(\s|$)"))
+    (filters.command(["lifeparent"]) | _alias_filter("pparent", "Pparent", "PPARENT"))
     & filters.group
 )
 async def parent_cmd(client, m: Message):
@@ -435,7 +484,7 @@ async def parent_cmd(client, m: Message):
 #  SIBLING — /lifesibling | ssibling
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifesibling"]) | filters.regex(r"^ssibling(\s|$)"))
+    (filters.command(["lifesibling"]) | _alias_filter("ssibling", "Ssibling", "SSIBLING"))
     & filters.group
 )
 async def sibling_cmd(client, m: Message):
@@ -452,13 +501,12 @@ async def sibling_cmd(client, m: Message):
 
 # ────────────────────────────────────────────
 #  STEAL — /steal | ssteal | Ssteal | SSTEAL
-#  ROB   — /rob   | rrob   (merged — same logic)
-#  Both commands trigger the same steal/rob function.
+#  ROB   — /rob   | rrob | Rrob | RROB
 # ────────────────────────────────────────────
 @app.on_message(
     (
         filters.command(["steal", "rob"])
-        | filters.regex(r"^(ssteal|Ssteal|SSTEAL|rrob|Rrob|RROB)(\s|$)")
+        | _alias_filter("ssteal", "Ssteal", "SSTEAL", "rrob", "Rrob", "RROB")
     )
     & filters.group
 )
@@ -510,10 +558,10 @@ async def steal_cmd(client, m: Message):
         )
 
 # ────────────────────────────────────────────
-#  DUEL — /duel | dduel
+#  DUEL — /duel | dduel | Dduel | DDUEL
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["duel"]) | filters.regex(r"^dduel(\s|$)"))
+    (filters.command(["duel"]) | _alias_filter("dduel", "Dduel", "DDUEL"))
     & filters.group
 )
 async def duel_cmd(client, m: Message):
@@ -587,10 +635,10 @@ async def duel_response(client, q: CallbackQuery):
     )
 
 # ────────────────────────────────────────────
-#  BOWLING — /lifebowling | bbowling
+#  BOWLING — /lifebowling | bbowling | Bbowling | BBOWLING
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifebowling"]) | filters.regex(r"^bbowling(\s|$)"))
+    (filters.command(["lifebowling"]) | _alias_filter("bbowling", "Bbowling", "BBOWLING"))
     & filters.group
 )
 async def bowling_cmd(client, m: Message):
@@ -624,10 +672,10 @@ async def bowling_cmd(client, m: Message):
     await m.reply(result)
 
 # ────────────────────────────────────────────
-#  SLOTS — /sslots | sslots
+#  SLOTS — /sslots | sslots | Sslots | SSLOTS
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["sslots", "slots"]) | filters.regex(r"^sslots(\s|$)"))
+    (filters.command(["sslots", "slots"]) | _alias_filter("sslots", "Sslots", "SSLOTS"))
     & filters.group
 )
 async def slots_cmd(client, m: Message):
@@ -671,10 +719,10 @@ async def slots_cmd(client, m: Message):
     await msg.edit(body)
 
 # ────────────────────────────────────────────
-#  JOB — /lifejob | jjob
+#  JOB — /lifejob | jjob | Jjob | JJOB
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifejob"]) | filters.regex(r"^jjob(\s|$)"))
+    (filters.command(["lifejob"]) | _alias_filter("jjob", "Jjob", "JJOB"))
     & filters.group
 )
 async def job_cmd(client, m: Message):
@@ -712,10 +760,10 @@ async def job_cmd(client, m: Message):
     )
 
 # ────────────────────────────────────────────
-#  WORK — /lifework | wwork
+#  WORK — /lifework | wwork | Wwork | WWORK
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifework"]) | filters.regex(r"^wwork(\s|$)"))
+    (filters.command(["lifework"]) | _alias_filter("wwork", "Wwork", "WWORK"))
     & filters.group
 )
 async def work_cmd(client, m: Message):
@@ -738,10 +786,10 @@ async def work_cmd(client, m: Message):
     )
 
 # ────────────────────────────────────────────
-#  FIGHT — /lifefight | ffight
+#  FIGHT — /lifefight | ffight | Ffight | FFIGHT
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifefight"]) | filters.regex(r"^ffight(\s|$)"))
+    (filters.command(["lifefight"]) | _alias_filter("ffight", "Ffight", "FFIGHT"))
     & filters.group
 )
 async def fight_cmd(client, m: Message):
@@ -782,8 +830,7 @@ async def fight_cmd(client, m: Message):
     )
 
 # ────────────────────────────────────────────
-#  GIVEAWAY — /lifegiveaway | ggiveaway
-#  FIX #7: timer runs as a background task
+#  GIVEAWAY — /lifegiveaway | ggiveaway | Ggiveaway | GGIVEAWAY
 # ────────────────────────────────────────────
 async def _end_giveaway(key: str, host_uid: int, amount: int, reply_msg):
     await asyncio.sleep(60)
@@ -808,7 +855,7 @@ async def _end_giveaway(key: str, host_uid: int, amount: int, reply_msg):
         pass
 
 @app.on_message(
-    (filters.command(["lifegiveaway"]) | filters.regex(r"^ggiveaway(\s|$)"))
+    (filters.command(["lifegiveaway"]) | _alias_filter("ggiveaway", "Ggiveaway", "GGIVEAWAY"))
     & filters.group
 )
 async def giveaway_cmd(client, m: Message):
@@ -836,7 +883,7 @@ async def giveaway_cmd(client, m: Message):
         ]]),
         disable_web_page_preview=True,
     )
-    asyncio.create_task(_end_giveaway(key, uid, amount, sent))  # FIX #7
+    asyncio.create_task(_end_giveaway(key, uid, amount, sent))
 
 @app.on_callback_query(filters.regex(r"^giveaway_join_(.+)$"))
 async def giveaway_join_cb(client, q: CallbackQuery):
@@ -851,10 +898,10 @@ async def giveaway_join_cb(client, q: CallbackQuery):
     await q.answer(f"✅ ᴇɴᴛᴇʀᴇᴅ! ᴛᴏᴛᴀʟ: {len(ga['participants'])}", show_alert=True)
 
 # ────────────────────────────────────────────
-#  SHOP — /lifeshop | sshop
+#  SHOP — /lifeshop | sshop | Sshop | SSHOP
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifeshop"]) | filters.regex(r"^sshop(\s|$)"))
+    (filters.command(["lifeshop"]) | _alias_filter("sshop", "Sshop", "SSHOP"))
     & filters.group
 )
 async def shop_cmd(client, m: Message):
@@ -961,7 +1008,7 @@ async def shop_inventory_cb(client, q: CallbackQuery):
 #  INVENTORY — /lifeinventory | iinventory
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifeinventory"]) | filters.regex(r"^iinventory(\s|$)"))
+    (filters.command(["lifeinventory"]) | _alias_filter("iinventory", "Iinventory", "IINVENTORY"))
     & filters.group
 )
 async def inventory_cmd(client, m: Message):
@@ -988,7 +1035,7 @@ async def inventory_cmd(client, m: Message):
 #  SETTINGS — /lifesettings | ssettings
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifesettings"]) | filters.regex(r"^ssettings(\s|$)"))
+    (filters.command(["lifesettings"]) | _alias_filter("ssettings", "Ssettings", "SSETTINGS"))
     & filters.group
 )
 async def settings_cmd(client, m: Message):
@@ -1027,7 +1074,7 @@ async def settings_toggle_cb(client, q: CallbackQuery):
 #  ENABLE / DISABLE — admin only
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifeenable"]) | filters.regex(r"^eenable(\s|$)"))
+    (filters.command(["lifeenable"]) | _alias_filter("eenable", "Eenable", "EENABLE"))
     & filters.group
 )
 async def enable_cmd(client, m: Message):
@@ -1037,7 +1084,7 @@ async def enable_cmd(client, m: Message):
     await m.reply("<blockquote>✅ ʟɪғᴇ ɢᴀᴍᴇs **ᴇɴᴀʙʟᴇᴅ** ɪɴ ᴛʜɪs ɢʀᴏᴜᴘ!</blockquote>")
 
 @app.on_message(
-    (filters.command(["lifedisable"]) | filters.regex(r"^ddisable(\s|$)"))
+    (filters.command(["lifedisable"]) | _alias_filter("ddisable", "Ddisable", "DDISABLE"))
     & filters.group
 )
 async def disable_cmd(client, m: Message):
@@ -1050,7 +1097,7 @@ async def disable_cmd(client, m: Message):
 #  RESET — /lifereset | rreset (owner/sudo only)
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifereset"]) | filters.regex(r"^rreset(\s|$)"))
+    (filters.command(["lifereset"]) | _alias_filter("rreset", "Rreset", "RRESET"))
     & filters.group
 )
 async def reset_cmd(client, m: Message):
@@ -1072,7 +1119,7 @@ async def reset_cmd(client, m: Message):
 #  ADD COINS — /lifeaddcoins | aaddcoins (owner/sudo only)
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifeaddcoins"]) | filters.regex(r"^aaddcoins(\s|$)"))
+    (filters.command(["lifeaddcoins"]) | _alias_filter("aaddcoins", "Aaddcoins", "AADDCOINS"))
     & filters.group
 )
 async def addcoins_cmd(client, m: Message):
@@ -1094,10 +1141,10 @@ async def addcoins_cmd(client, m: Message):
     )
 
 # ────────────────────────────────────────────
-#  DEPOSIT — /deposit | deposit
+#  DEPOSIT — /deposit | deposit | Deposit | DEPOSIT
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["deposit"]) | filters.regex(r"^deposit(\s|$)"))
+    (filters.command(["deposit"]) | _alias_filter("deposit", "Deposit", "DEPOSIT"))
     & filters.group
 )
 async def deposit_cmd(client, m: Message):
@@ -1118,10 +1165,10 @@ async def deposit_cmd(client, m: Message):
     await m.reply(f"<blockquote>🏦 ᴅᴇᴘᴏsɪᴛᴇᴅ **{amount:,}** ᴄᴏɪɴs ᴛᴏ ʙᴀɴᴋ</blockquote>")
 
 # ────────────────────────────────────────────
-#  WITHDRAW — /withdraw | withdraw
+#  WITHDRAW — /withdraw | withdraw | Withdraw | WITHDRAW
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["withdraw"]) | filters.regex(r"^withdraw(\s|$)"))
+    (filters.command(["withdraw"]) | _alias_filter("withdraw", "Withdraw", "WITHDRAW"))
     & filters.group
 )
 async def withdraw_cmd(client, m: Message):
@@ -1147,7 +1194,7 @@ async def withdraw_cmd(client, m: Message):
 @app.on_message(
     (
         filters.command(["bet"])
-        | filters.regex(r"^(bbet|Bbet|BBET)(\s|$)")
+        | _alias_filter("bbet", "Bbet", "BBET")
     )
     & filters.group
 )
@@ -1192,13 +1239,13 @@ async def bet_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  PAY — /pay | ppay | Ppay | PPAY
 #  Reply to a user to pay them.
-#  - With amount:    /pay 500   → pay 500 coins to replied user
-#  - Without amount: /pay       → pay your FULL wallet balance to replied user
+#  - With amount:    /pay 500   → pay 500 coins
+#  - Without amount: /pay       → pay your FULL wallet balance
 # ────────────────────────────────────────────
 @app.on_message(
     (
         filters.command(["pay"])
-        | filters.regex(r"^(ppay|Ppay|PPAY)(\s|$)")
+        | _alias_filter("ppay", "Ppay", "PPAY")
     )
     & filters.group
 )
@@ -1241,12 +1288,10 @@ async def pay_cmd(client, m: Message):
     )
 
 # ────────────────────────────────────────────
-#  LOAN — /loan | lloan
-#  Reply to a user and specify an amount to request a loan.
-#  If no amount given, just send a general loan request.
+#  LOAN — /loan | lloan | Lloan | LLOAN
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["loan"]) | filters.regex(r"^lloan(\s|$)"))
+    (filters.command(["loan"]) | _alias_filter("lloan", "Lloan", "LLOAN"))
     & filters.group
 )
 async def loan_cmd(client, m: Message):
@@ -1261,7 +1306,6 @@ async def loan_cmd(client, m: Message):
         return await m.reply("<blockquote>❌ ᴄᴀɴ'ᴛ ʀᴇǫᴜᴇsᴛ ᴀ ʟᴏᴀɴ ғʀᴏᴍ ʏᴏᴜʀsᴇʟғ!</blockquote>")
     args = _parse_args(m.text)
     if not args:
-        # General loan request with no amount — ask them how much
         await m.reply(
             f"<blockquote>🤲 {mention(m.from_user)} ɪs ᴀsᴋɪɴɢ {mention(m.reply_to_message.from_user)} ғᴏʀ ᴀ ʟᴏᴀɴ!\n"
             f"ʜᴏᴡ ᴍᴜᴄʜ ᴅᴏ ʏᴏᴜ ɴᴇᴇᴅ? ʀᴇᴘʟʏ ᴡɪᴛʜ: `/loan <amount>`</blockquote>",
@@ -1304,15 +1348,11 @@ async def loan_response(client, q: CallbackQuery):
         return await q.answer("⌛ ʟᴏᴀɴ ʀᴇǫᴜᴇsᴛ ᴇxᴘɪʀᴇᴅ (2ᴍɪɴ ᴛɪᴍᴇᴏᴜᴛ)!", show_alert=True)
     _pending_loans.pop(key, None)
     if action == "decline":
-        return await q.message.edit(
-            f"<blockquote>❌ ʟᴏᴀɴ ᴅᴇᴄʟɪɴᴇᴅ.</blockquote>"
-        )
+        return await q.message.edit("<blockquote>❌ ʟᴏᴀɴ ᴅᴇᴄʟɪɴᴇᴅ.</blockquote>")
     uid, tid, amount = loan["borrower"], loan["lender"], loan["amount"]
     lender_coins = await _run(_get_coins, tid)
     if lender_coins < amount:
-        return await q.message.edit(
-            f"<blockquote>❌ ɴᴏᴛ ᴇɴᴏᴜɢʜ ᴄᴏɪɴs ᴛᴏ ɢɪᴠᴇ ᴛʜɪs ʟᴏᴀɴ!</blockquote>"
-        )
+        return await q.message.edit("<blockquote>❌ ɴᴏᴛ ᴇɴᴏᴜɢʜ ᴄᴏɪɴs ᴛᴏ ɢɪᴠᴇ ᴛʜɪs ʟᴏᴀɴ!</blockquote>")
     await _run(_remove_coins, tid, amount)
     await _run(_add_coins, uid, amount)
     await q.message.edit(
@@ -1323,10 +1363,10 @@ async def loan_response(client, q: CallbackQuery):
     )
 
 # ────────────────────────────────────────────
-#  HELP — /lifehelp | hhelp
+#  HELP — /lifehelp | hhelp | Hhelp | HHELP
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifehelp"]) | filters.regex(r"^hhelp(\s|$)"))
+    (filters.command(["lifehelp"]) | _alias_filter("hhelp", "Hhelp", "HHELP"))
     & filters.group
 )
 async def help_cmd(client, m: Message):
@@ -1398,7 +1438,7 @@ __help__     = """
 🔻 /rob           ➠ ʀᴏʙ (ꜱᴀᴍᴇ ᴀꜱ ꜱᴛᴇᴀʟ)
 🔻 /bet           ➠ ʙᴇᴛ (ʙʙᴇᴛ / Bʙᴇᴛ / ʙʙᴇᴛ)
 🔻 /pay           ➠ ᴘᴀʏ (ᴘᴘᴀʏ / Pᴘᴀʏ / ᴘᴘᴀʏ)
-🔻 /loan          ➠ ᴋᴀᴅᴀɴ ᴋᴇᴋᴋᴜ (ʟʟᴏᴀɴ)
+🔻 /loan          ➠ ʟᴏᴀɴ (ʟʟᴏᴀɴ)
 🔻 /duel          ➠ ᴅᴜᴇʟ
 🔻 /sslots        ➠ ꜱʟᴏᴛꜱ
 🔻 /lifebowling   ➠ ʙᴏᴡʟɪɴɢ
