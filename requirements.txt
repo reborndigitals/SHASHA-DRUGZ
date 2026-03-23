@@ -1,0 +1,80 @@
+aiofiles
+aiohttp==3.9.3
+asyncio==3.4.3
+bard
+beautifulsoup4
+blackpink
+deepai
+pytube
+motor
+dnspython==2.3.0
+ffmpeg-python
+gitpython
+hachoir
+Faker
+pydub
+pycountry
+pornhub-api==0.2.0
+heroku3
+lyricsgenius
+apscheduler                
+opencv-python-headless==4.9.0.80
+pillow==9.5.0
+psutil
+wget
+pyfiglet
+qrcode
+pytz
+future==0.18.3 
+search_engine_parser
+pyrogram==2.0.106
+py-tgcalls==0.9.7 #2.2.11
+pykeyboard
+pyshorteners
+python-dotenv
+pyyaml==6.0.1
+requests
+emojis
+speedtest-cli
+spotipy
+tgcrypto
+telethon==1.33.1
+telegraph==2.2.0
+unidecode
+youtube-search-python #==1.6.6
+yt-dlp #==2025.11.12
+youtube_search #==2.1.2
+youtube_dl #==2021.12.17
+instaloader #Instagram.py
+instagrapi #Instagram.py
+playwright
+gtts
+lexica-api==1.4.7
+httpx==0.25.2
+gpytranslate
+openai==0.28.0
+mpv
+moviepy
+stripe==10.7.0
+mysql-connector-python==9.0.0
+telebot==0.0.5
+bing_image_downloader
+cloudscraper
+flask==2.2.2   #keep_alive
+pymongo
+#pymongo[srv]==3.12.3
+kurigram
+pyrofork # start react animation
+SafoneAPI #git+https://github.com/AsmSafone/SafoneAPI
+async_pymongo #fed
+deep_translator #chatbot
+matplotlib==3.8.4 #botusage piechart
+# BioLink / extras
+regex
+coloredlogs
+aiosqlite
+SQLAlchemy
+lottie # kang animated strickers
+#selenium #==4.18.1
+reportlab #deploy invoice pdf->utils.invoice.py
+python-chess #chessgame

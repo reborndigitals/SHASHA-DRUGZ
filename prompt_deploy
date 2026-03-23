@@ -1,0 +1,1581 @@
+i need this type of feature(clone feature) for my SHASHA_DRUGZ repo.  analyse the files and give me a supported and compatible for my SHASHA_DRUGZ repo.
+
+REFRENCE FILES:(this is  my friend repo)
+Clonify/utils/database/clonedb.py
+from Clonify.core.mongo import mongodb, pymongodb
+from typing import Dict, List, Union
+
+cloneownerdb = mongodb.cloneownerdb
+clonebotdb = pymongodb.clonebotdb
+clonebotnamedb = mongodb.clonebotnamedb
+
+
+# clone bot owner
+async def save_clonebot_owner(bot_id, user_id):
+    await cloneownerdb.insert_one({"bot_id": bot_id, "user_id": user_id})
+
+
+async def get_clonebot_owner(bot_id):
+    result = await cloneownerdb.find_one({"bot_id": bot_id})
+    if result:
+        return result.get("user_id")
+    else:
+        return False
+
+
+async def save_clonebot_username(bot_id, user_name):
+    await clonebotnamedb.insert_one({"bot_id": bot_id, "user_name": user_name})
+
+
+async def get_clonebot_username(bot_id):
+    result = await clonebotnamedb.find_one({"bot_id": bot_id})
+    if result:
+        return result.get("user_name")
+    else:
+        return False
+
+
+# new clone 
+
+# Function to get owner_id dynamically for a given bot_id
+def get_owner_id_from_db(bot_id):
+    # MongoDB query to find the bot data using bot_id
+    bot_data = clonebotdb.find_one({"bot_id": bot_id})
+    if bot_data:
+        return bot_data["user_id"]  # Assuming 'user_id' is the owner of the bot
+    return None  # If no bot is found, return None
+
+#check premium -------------
+def check_bot_premium(bot_id):
+    bot_details = clonebotdb.find_one({"bot_id": bot_id})
+
+    if bot_details:
+        if bot_details["premium"]:
+            return True 
+        else:
+            return False
+    else:
+        return None
+#check premium --------------
+
+"""
+# Function to get Support Chats dynamically for a given bot_id
+def get_cloned_support_chat(bot_id):
+    # MongoDB query to find the bot data using bot_id
+    bot_data = clonebotdb.find_one({"bot_id": bot_id})
+    if bot_data:
+        return bot_data["support"]
+    return None
+
+# Function to get Support Channel dynamically for a given bot_id
+def get_cloned_support_channel(bot_id):
+    # MongoDB query to find the bot data using bot_id
+    bot_data = clonebotdb.find_one({"bot_id": bot_id})
+    if bot_data:
+        return bot_data["channel"]
+    return None
+"""
+
+async def get_cloned_support_chat(bot_id: int) -> str:
+    bot_details = clonebotdb.find_one({"bot_id": bot_id})
+    return bot_details.get("support", "No support chat set.")
+
+async def get_cloned_support_channel(bot_id: int) -> str:
+    bot_details = clonebotdb.find_one({"bot_id": bot_id})
+    return bot_details.get("channel", "No channel set.")
+
+
+async def has_user_cloned_any_bot(user_id: int) -> bool:
+    # Check if the user has cloned any bot (search by user_id)
+    cloned_bot = clonebotdb.find_one({"user_id": user_id})
+    
+    if cloned_bot:
+        return True
+    
+    return False
+
+Clonify/plugins/tools/clone.py
+import re
+import logging
+import asyncio
+import importlib
+from sys import argv
+from pyrogram import idle
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.errors.exceptions.bad_request_400 import (
+    AccessTokenExpired,
+    AccessTokenInvalid,
+)
+from Clonify.utils.database import get_assistant
+from config import API_ID, API_HASH
+from Clonify import app
+from config import OWNER_ID
+from Clonify.misc import SUDOERS
+from Clonify.utils.database import get_assistant, clonebotdb
+from Clonify.utils.database.clonedb import has_user_cloned_any_bot
+from config import LOGGER_ID, CLONE_LOGGER
+import requests
+from Clonify.utils.decorators.language import language
+import pyrogram.errors
+
+from Clonify.utils.database.clonedb import get_owner_id_from_db
+from config import SUPPORT_CHAT, OWNER_ID
+
+from datetime import datetime
+CLONES = set()
+
+C_BOT_DESC = "Wᴀɴᴛ ᴀ ʙᴏᴛ ʟɪᴋᴇ ᴛʜɪs? Cʟᴏɴᴇ ɪᴛ ɴᴏᴡ! ✅\n\nVɪsɪᴛ: @AqiaBot ᴛᴏ ɢᴇᴛ sᴛᴀʀᴛᴇᴅ!\n\n - Uᴘᴅᴀᴛᴇ: @ProBotts\n - Sᴜᴘᴘᴏʀᴛ: @ProBotGc"
+
+C_BOT_COMMANDS = [
+                {"command": "/start", "description": "sᴛᴀʀᴛs ᴛʜᴇ ᴍᴜsɪᴄ ʙᴏᴛ"},
+                {"command": "/help", "description": "ɢᴇᴛ ʜᴇʟᴩ ᴍᴇɴᴜ ᴡɪᴛʜ ᴇxᴩʟᴀɴᴀᴛɪᴏɴ ᴏғ ᴄᴏᴍᴍᴀɴᴅs."},
+                {"command": "/play", "description": "sᴛᴀʀᴛs sᴛʀᴇᴀᴍɪɴɢ ᴛʜᴇ ʀᴇǫᴜᴇsᴛᴇᴅ ᴛʀᴀᴄᴋ ᴏɴ ᴠɪᴅᴇᴏᴄʜᴀᴛ."},
+                {"command": "/pause", "description": "ᴩᴀᴜsᴇ ᴛʜᴇ ᴄᴜʀʀᴇɴᴛ ᴩʟᴀʏɪɴɢ sᴛʀᴇᴀᴍ."},
+                {"command": "/resume", "description": "ʀᴇsᴜᴍᴇ ᴛʜᴇ ᴩᴀᴜsᴇᴅ sᴛʀᴇᴀᴍ."},
+                {"command": "/skip", "description": "ᴛʜᴇ ᴄᴜʀʀᴇɴᴛ ᴩʟᴀʏɪɴɢ sᴛʀᴇᴀᴍ ᴀɴᴅ sᴛᴀʀᴛ sᴛʀᴇᴀᴍɪɴɢ ᴛʜᴇ ɴᴇxᴛ ᴛʀᴀᴄᴋ ɪɴ ǫᴜᴇᴜᴇ."},
+                {"command": "/end", "description": "ᴄʟᴇᴀʀs ᴛʜᴇ ǫᴜᴇᴜᴇ ᴀɴᴅ ᴇɴᴅ ᴛʜᴇ ᴄᴜʀʀᴇɴᴛ ᴩʟᴀʏɪɴɢ sᴛʀᴇᴀᴍ."},
+                {"command": "/ping", "description": "ᴛʜᴇ ᴩɪɴɢ ᴀɴᴅ sʏsᴛᴇᴍ sᴛᴀᴛs ᴏғ ᴛʜᴇ ʙᴏᴛ."},
+                {"command": "/id", "description": "ɢᴇᴛ ᴛʜᴇ ᴄᴜʀʀᴇɴᴛ ɢʀᴏᴜᴘ ɪᴅ. ɪғ ᴜsᴇᴅ ʙʏ ʀᴇᴘʟʏɪɴɢ ᴛᴏ ᴀ ᴍᴇssᴀɢᴇ, ɢᴇᴛs ᴛʜᴀᴛ ᴜsᴇʀ's ɪᴅ."}
+
+            ]
+
+
+@app.on_message(filters.command("clone"))
+@language
+async def clone_txt(client, message, _):
+    userbot = await get_assistant(message.chat.id)
+
+    userid = message.from_user.id
+    has_already_cbot = await has_user_cloned_any_bot(userid)
+
+    if has_already_cbot:
+        if message.from_user.id != OWNER_ID:
+            return await message.reply_text(_["C_B_H_0"])
+    else:
+        pass
+    
+
+    if len(message.command) > 1:
+        bot_token = message.text.split("/clone", 1)[1].strip()
+        mi = await message.reply_text(_["C_B_H_2"])
+        try:
+            ai = Client(
+                bot_token,
+                API_ID,
+                API_HASH,
+                bot_token=bot_token,
+                plugins=dict(root="Clonify.cplugin"), 
+            )
+            await ai.start()
+            bot = await ai.get_me()
+            bot_users = await ai.get_users(bot.username)
+            bot_id = bot_users.id
+            c_b_owner_fname = message.from_user.first_name
+            c_bot_owner = message.from_user.id
+
+        except (AccessTokenExpired, AccessTokenInvalid):
+            await mi.edit_text(_["C_B_H_3"])
+            return
+        except Exception as e:
+            if "database is locked" in str(e).lower():
+                await message.reply_text(_["C_B_H_4"])
+            else:
+                await mi.edit_text(f"An error occurred: {str(e)}")
+            return
+
+        await mi.edit_text(_["C_B_H_5"])
+        try:
+
+            await app.send_message(
+                CLONE_LOGGER, f"**#NewClonedBot**\n\n**Bᴏᴛ:- {bot.mention}**\n**Usᴇʀɴᴀᴍᴇ:** @{bot.username}\n**Bᴏᴛ ID :** `{bot_id}`\n\n**Oᴡɴᴇʀ : ** [{c_b_owner_fname}](tg://user?id={c_bot_owner})"
+            )
+            await userbot.send_message(bot.username, "/start")
+
+            details = {
+                "bot_id": bot.id,
+                "is_bot": True,
+                "user_id": message.from_user.id,
+                "name": bot.first_name,
+                "token": bot_token,
+                "username": bot.username,
+                "channel": "ProBotts",
+                "support": "ProBotGc",
+                "premium" : False,
+                "Date" : False,
+            }
+            clonebotdb.insert_one(details)
+            CLONES.add(bot.id)
+
+            def set_bot_commands():
+                url = f"https://api.telegram.org/bot{bot_token}/setMyCommands"
+                
+                params = {"commands": C_BOT_COMMANDS}
+                response = requests.post(url, json=params)
+                print(response.json())
+
+            set_bot_commands()
+
+            def set_bot_desc():
+                url = f"https://api.telegram.org/bot{bot_token}/setMyDescription"
+                params = {"description": C_BOT_DESC}
+                response = requests.post(url, data=params)
+                if response.status_code == 200:
+                    logging.info(f"Successfully updated Description for bot: {bot_token}")
+                else:
+                    logging.error(f"Failed to update Description: {response.text}")
+
+            set_bot_desc()
+
+            await mi.edit_text(_["C_B_H_6"].format(bot.username))
+        except BaseException as e:
+            logging.exception("Error while cloning bot.")
+            await mi.edit_text(
+                f"⚠️ <b>ᴇʀʀᴏʀ:</b>\n\n<code>{e}</code>\n\n**ᴋɪɴᴅʟʏ ғᴏᴡᴀʀᴅ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴛᴏ @ProBotGc ᴛᴏ ɢᴇᴛ ᴀssɪsᴛᴀɴᴄᴇ**"
+            )
+    else:
+        await message.reply_text(_["C_B_H_1"])
+
+
+@app.on_message(
+    filters.command(
+        [
+            "delbot",
+            "rmbot",
+            "delcloned",
+            "delclone",
+            "deleteclone",
+            "removeclone",
+            "cancelclone",
+        ]
+    )
+)
+@language
+async def delete_cloned_bot(client, message, _):
+    try:
+        if len(message.command) < 2:
+            await message.reply_text(_["C_B_H_8"])
+            return
+
+        query_value = " ".join(message.command[1:])
+        if query_value.startswith("@"):
+            query_value = query_value[1:]
+        await message.reply_text(_["C_B_H_9"])
+
+        cloned_bot = clonebotdb.find_one({"$or": [{"token": query_value}, {"username": query_value}]})
+        
+        if cloned_bot:
+
+            bot_info = f"**Bot ID**: `{cloned_bot['bot_id']}`\n" \
+           f"**Bᴏᴛ Nᴀᴍᴇ**: {cloned_bot['name']}\n" \
+           f"**Usᴇʀɴᴀᴍᴇ**: @{cloned_bot['username']}\n" \
+           f"**Tᴏᴋᴇɴ**: `{cloned_bot['token']}`\n" \
+           f"**Oᴡɴᴇʀ**: `{cloned_bot['user_id']}`\n"
+
+            C_OWNER = get_owner_id_from_db(cloned_bot['bot_id'])
+            OWNERS = [OWNER_ID, C_OWNER]
+
+            if message.from_user.id not in OWNERS:
+                return await message.reply_text(_["NOT_C_OWNER"].format(SUPPORT_CHAT))
+
+            clonebotdb.delete_one({"_id": cloned_bot["_id"]})
+            CLONES.remove(cloned_bot["bot_id"])
+
+            await message.reply_text(_["C_B_H_10"])
+            await app.send_message(
+                CLONE_LOGGER, bot_info
+            )
+        else:
+            await message.reply_text(_["C_B_H_11"])
+    except Exception as e:
+        await message.reply_text(_["C_B_H_12"])
+        await app.send_message(
+                CLONE_LOGGER, bot_info
+            )
+        logging.exception(e)
+
+
+async def restart_bots():
+    global CLONES
+    try:
+        logging.info("Restarting all cloned bots........")
+        bots = list(clonebotdb.find())
+        botNumber = 1
+        for bot in bots:
+            bot_token = bot["token"]
+
+            url = f"https://api.telegram.org/bot{bot_token}/getMe"
+            response = requests.get(url)
+            if response.status_code != 200:
+                logging.error(f"Invalid or expired token for bot: {bot_token}")
+                clonebotdb.delete_one({"token": bot_token})
+                continue
+
+            ai = Client(
+                f"{bot_token}",
+                API_ID,
+                API_HASH,
+                bot_token=bot_token,
+                plugins=dict(root="Clonify.cplugin"),
+            )
+            await ai.start()
+            print(botNumber)
+            botNumber += 1
+
+            bot = await ai.get_me()
+            if bot.id not in CLONES:
+                try:
+                    CLONES.add(bot.id)
+                except Exception:
+                    pass
+
+            await asyncio.sleep(5)
+
+        await app.send_message(
+                CLONE_LOGGER, f"All Cloned Bots Started !"
+            )
+    except Exception as e:
+        logging.exception("Error while restarting bots.")
+
+# Zeo
+@app.on_message(filters.command("delallclone") & filters.user(OWNER_ID))
+@language
+async def delete_all_cloned_bots(client, message, _):
+    try:
+        await message.reply_text(_["C_B_H_14"])
+
+        clonebotdb.delete_many({})
+
+        CLONES.clear()
+
+        await message.reply_text(_["C_B_H_15"])
+    except Exception as e:
+        await message.reply_text("An error occurred while deleting all cloned bots.")
+        logging.exception(e)
+
+
+@app.on_message(filters.command(["mybot", "mybots"], prefixes=["/", "."]))
+@language
+async def my_cloned_bots(client, message, _):
+    try:
+        user_id = message.from_user.id
+        cloned_bots = list(clonebotdb.find({"user_id": user_id}))
+        
+        if not cloned_bots:
+            await message.reply_text(_["C_B_H_16"])
+            return
+        
+        total_clones = len(cloned_bots)
+        text = f"**Yᴏᴜʀ Cʟᴏɴᴇᴅ Bᴏᴛs: {total_clones}**\n\n"
+        
+        for bot in cloned_bots:
+            text += f"**Bᴏᴛ Nᴀᴍᴇs:** {bot['name']}\n"
+            text += f"**Bᴏᴛ Usᴇʀɴᴀᴍᴇ:** @{bot['username']}\n\n"
+        
+        await message.reply_text(text)
+    except Exception as e:
+        logging.exception(e)
+        await message.reply_text("An error occurred while fetching your cloned bots.")
+
+
+
+@app.on_message(filters.command("cloned") & SUDOERS)
+@language
+async def list_cloned_bots(client, message, _):
+    try:
+        cloned_bots = list(clonebotdb.find())
+        if not cloned_bots:
+            await message.reply_text(_["C_B_H_13"])
+            return
+
+        total_clones = len(cloned_bots)
+        text = f"**Tᴏᴛᴀʟ Cʟᴏɴᴇᴅ Bᴏᴛs: `{total_clones}`**\n\n"
+
+        chunk_size = 10
+        chunks = [cloned_bots[i:i + chunk_size] for i in range(0, len(cloned_bots), chunk_size)]
+
+        for chunk in chunks:
+            chunk_text = text
+            for bot in chunk:
+                try:
+                    owner = await client.get_users(bot['user_id'])
+                    owner_name = owner.first_name
+                    owner_profile_link = f"tg://user?id={bot['user_id']}"
+                except pyrogram.errors.PeerIdInvalid:
+                    owner_name = "Unknown User"
+                    owner_profile_link = "#"
+                except Exception as e:
+                    logging.error(f"Error fetching user {bot['user_id']}: {e}")
+                    owner_name = "Unknown User"
+                    owner_profile_link = "#"
+
+                chunk_text += f"**Bᴏᴛ ID:** `{bot['bot_id']}`\n"
+                chunk_text += f"**Bᴏᴛ Nᴀᴍᴇ:** {bot['name']}\n"
+                chunk_text += f"**Bᴏᴛ Usᴇʀɴᴀᴍᴇ:** @{bot['username']}\n"
+                chunk_text += f"**Oᴡɴᴇʀ:** [{owner_name}]({owner_profile_link})\n\n"
+
+            await message.reply_text(chunk_text)
+
+    except Exception as e:
+        logging.exception(e)
+        await message.reply_text("An error occurred while listing cloned bots.")
+
+
+
+#total clone
+@app.on_message(filters.command("totalbots") & SUDOERS)
+@language
+async def list_cloned_bots(client, message, _):
+    try:
+        cloned_bots = list(clonebotdb.find())
+        if not cloned_bots:
+            await message.reply_text("No bots have been cloned yet.")
+            return
+
+        total_clones = len(cloned_bots)
+        text = f"**Tᴏᴛᴀʟ Cʟᴏɴᴇᴅ Bᴏᴛs: `{total_clones}`**\n\n"         
+
+        await message.reply_text(text)
+    except Exception as e:
+        logging.exception(e)
+        await message.reply_text("An error occurred while listing cloned bots.")
+
+IMPORTANT NOTE:
+don't use the name "Clone" use "Deploy" instead of "clone" everywere.
+and also change command names,
+/clone to /deploy
+/delallclone to /rmalldeploy
+/rmclone to /rmdeploy <bot token> to remove particular bot). same for remove clone
+/cloned to /deployed
+CLONE_LOGGER to DEPLOY_LOGGER
+cplugins to dplugins
+etc,.
+
+i need to add some extra pro features in with this:
+i give /deploy <bot-token> or <reply  to message> before deployment<before clone) i need this options.
+1. (shows "MOD_TYPE". i already inside the dplugins example: MOD_TYPE = "Management"
+MOD_TYPE = "Music"
+MOD_TYPE = "CHATBOT"
+
+
+1. show the all modules(via inline button. and inside the MODE_TYPE)(example: / deploy- shows MANAGEMENT, MUSIC buttons. i select Music. now show the modules. ex.  MUSIC-> Seek, Tagall modules)( i already the name for all modules(dplugins) inside MOD_NAME. example: MOD_NAME = "Tagall". so show the button for "Tagall") with 🍏 Enable and 🍎 Disable toggle buttons(so showing like 🍎 TagAll( consider as disable) / 🍏 Tagall(consider as enable). and also MOD_PRICE = "100". this is show for top of the caption(selected module name with price. toggle type. so message is edit every time to the deployer choose the module)
+
+so the dplugins inside modules have inside:
+MODE_TYPE = ""
+MODE_NAME = ""
+MODE_PRICE = ""
+
+
+2. the d_owner (deploy bot owne /user) select the modeles then  click the "ADD MODULE" button.
+3. ADD MODULE is goes to next page. it shows TOTAL PLUGINS with price value and callculate the all values then TOTAL PRICE = (amount)/month at the end.) and click "PAY NOW" button. 
+4. PAY NOW buttons goes to Select payment option with t buttons. "PAY QR", PAY UPI". and the payment functions is i give u the refrence code below. 
+
+refrence code:
+
+import os
+import logging
+from pymongo import MongoClient
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
+from pyrogram.enums import ParseMode
+
+# -------- CONFIGURATION --------
+OWNER = os.getenv("OWNER", "GhosttBatt")
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "-1003204443820")) (use approve/rejust payment)
+ADMIN_IDS = [1281282633 6773435708]
+
+
+UPI_ID = os.getenv("UPI_ID", "ghosttbatt@jio")
+DEFAULT_QR_PATH = os.getenv("QR_PATH", "SHASHA_DRUGZ/assets/ghosttbatt.jpg")
+
+
+
+# Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# MongoDB
+client = MongoClient(MONGO_URL)
+db = client["account_bot"]
+users = db["users"]
+countries_col = db["countries"]
+connections = db["connections"]  # New collection for admin-user connections
+admin_sessions = db["admin_sessions"]  # To track which admin is connected to which user
+
+# ---------- Helpers ----------
+def ensure_user_entry(user_id, username=None):
+    """Create user entry if not exists"""
+    if not users.find_one({"_id": user_id}):
+        users.insert_one({
+            "_id": user_id,
+            "username": username,
+            "balance": 0.0,
+            "pending_deposit": None,
+            "last_platform_choice": None,
+            "last_country_choice": None,
+            "temp_amount": "",
+            "currency_preference": "INR",  # Default to INR
+            "connected_to_admin": None  # Track which admin is connected
+        })
+
+def get_user(user_id):
+    """Get user document"""
+    ensure_user_entry(user_id)
+    return users.find_one({"_id": user_id})
+
+def update_user(user_id, data: dict):
+    """Update user document"""
+    users.update_one({"_id": user_id}, {"$set": data})
+
+# ---------- Connection Management ----------
+def connect_user_to_admin(user_id, admin_id):
+    """Connect a user to an admin for private messaging"""
+    try:
+        # Update user's connection
+        users.update_one(
+            {"_id": user_id},
+            {"$set": {"connected_to_admin": admin_id}}
+        )
+        
+        # Update admin's session
+        admin_sessions.update_one(
+            {"admin_id": admin_id},
+            {"$set": {"connected_to_user": user_id, "username": get_user(user_id).get("username", "Unknown")}},
+            upsert=True
+        )
+        
+        # Create connection record
+        connections.update_one(
+            {"user_id": user_id, "admin_id": admin_id},
+            {"$set": {
+                "user_id": user_id,
+                "admin_id": admin_id,
+                "connected_at": datetime.datetime.now(),
+                "status": "connected"
+            }},
+            upsert=True
+        )
+        
+        logger.info(f"✅ Connected admin {admin_id} to user {user_id}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Error connecting admin to user: {e}")
+        return False
+
+def disconnect_user(user_id):
+    """Disconnect a user from admin"""
+    try:
+        user = get_user(user_id)
+        admin_id = user.get("connected_to_admin")
+        
+        if admin_id:
+            # Update user
+            users.update_one(
+                {"_id": user_id},
+                {"$set": {"connected_to_admin": None}}
+            )
+            
+            # Update admin session
+            admin_sessions.update_one(
+                {"admin_id": admin_id},
+                {"$set": {"connected_to_user": None, "username": None}}
+            )
+            
+            # Update connection record
+            connections.update_one(
+                {"user_id": user_id, "admin_id": admin_id},
+                {"$set": {"status": "disconnected", "disconnected_at": datetime.datetime.now()}}
+            )
+            
+            logger.info(f"✅ Disconnected user {user_id} from admin {admin_id}")
+            return True, admin_id
+        return False, None
+    except Exception as e:
+        logger.error(f"❌ Error disconnecting user: {e}")
+        return False, None
+
+def get_connected_admin(user_id):
+    """Get which admin is connected to a user"""
+    user = get_user(user_id)
+    return user.get("connected_to_admin")
+
+def get_admin_connection(admin_id):
+    """Get which user an admin is connected to"""
+    session = admin_sessions.find_one({"admin_id": admin_id})
+    if session:
+        return session.get("connected_to_user"), session.get("username")
+    return None, None
+
+def is_admin_connected(user_id):
+    """Check if a user is connected to an admin"""
+    user = get_user(user_id)
+    return user.get("connected_to_admin") is not None
+
+# ---------- Dynamic Country Helpers ----------
+def get_countries(platform=None):
+    """Get countries for platform"""
+    if platform:
+        return list(countries_col.find({"platform": platform}, {"_id": 0}))
+    return list(countries_col.find({}, {"_id": 0}))
+
+def get_country(platform, name):
+    """Get specific country"""
+    return countries_col.find_one({"platform": platform, "name": name})
+
+def add_country(platform, name, usdt_price, inr_price, available):
+    """Add/update country with dual pricing"""
+    countries_col.update_one(
+        {"platform": platform, "name": name},
+        {"$set": {
+            "platform": platform, 
+            "name": name, 
+            "usdt_price": usdt_price,
+            "inr_price": inr_price,
+            "available": available
+        }},
+        upsert=True
+    )
+
+def remove_country(platform, name):
+    """Remove country"""
+    countries_col.delete_one({"platform": platform, "name": name})
+
+def format_price(usdt_price, inr_price):
+    """Format price with symbols"""
+    return f"₮{usdt_price} / ₹{inr_price}"
+
+def parse_price_input(price_input):
+    """Parse price input in format: usdt_price/inr_price"""
+    try:
+        if '/' in price_input:
+            usdt_price, inr_price = price_input.split('/')
+            return float(usdt_price.strip()), float(inr_price.strip())
+        else:
+            # If only one price given, assume it's INR
+            return 0.0, float(price_input)
+    except ValueError:
+        return None, None
+
+# ---------- Keyboards ----------
+def main_menu_kb():
+    """Main menu keyboard"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔻 ᴜᴘᴅᴧᴛᴇ𝗌 🔻", url=f"https://t.me/{UPDATE_CHANNEL}"),
+            InlineKeyboardButton("🔻 𝗌ᴜᴘᴘᴏʀᴛ 🔻", url=f"https://t.me/{SUPPORT_GROUP}")
+        ],
+        [
+            InlineKeyboardButton("⌯ ʙᴜʏ ᴧᴄᴄᴏᴜɴᴛ ⌯", callback_data="buy_account")
+        ]
+    ])
+
+def platform_selection_kb():
+    """Platform selection keyboard"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔹 ᴛᴇʟᴇɢʀᴀᴍ 🔹", callback_data="platform_telegram"),
+            InlineKeyboardButton("🔹 ɪɴꜱᴛᴀɢʀᴀᴍ 🔹", callback_data="platform_instagram")
+        ],
+        [
+            InlineKeyboardButton("🔹 ᴛᴡɪᴛᴛᴇʀ 🔹", callback_data="platform_twitter"),
+            InlineKeyboardButton("🔻 ʙᴧᴄᴋ 🔻", callback_data="back_to_main")
+        ]
+    ])
+
+def buy_countries_kb(platform):
+    """Country selection keyboard"""
+    countries = get_countries(platform)
+    if not countries:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔻 ɴᴏ ᴧᴄᴄᴏᴜɴᴛꜱ ᴀᴠᴀɪʟᴀʙʟᴇ 🔻", callback_data="back_to_main")]
+        ])
+    
+    kb = []
+    # Create buttons in rows of 2
+    for i in range(0, len(countries), 2):
+        row = []
+        if i < len(countries):
+            row.append(InlineKeyboardButton(
+                countries[i]["name"], 
+                callback_data=f"country_{platform}_{countries[i]['name']}"
+            ))
+        if i + 1 < len(countries):
+            row.append(InlineKeyboardButton(
+                countries[i + 1]["name"], 
+                callback_data=f"country_{platform}_{countries[i + 1]['name']}"
+            ))
+        if row:
+            kb.append(row)
+    
+    kb.append([
+        InlineKeyboardButton("🔻 ʙᴀᴄᴋ ᴛᴏ ᴘʟᴀᴛꜰᴏʀᴍꜱ 🔻", callback_data="buy_account"),
+        InlineKeyboardButton("🔻 ʙᴧᴄᴋ ᴛᴏ ᴍᴀɪɴ 🔻", callback_data="back_to_main")
+    ])
+    return InlineKeyboardMarkup(kb)
+
+def deposit_methods_kb():
+    """Deposit methods keyboard"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💸 ᴜᴘɪ (₹)", callback_data="method_upi"),
+            InlineKeyboardButton("💎 ᴄʀʏᴘᴛᴏ (₮)", callback_data="method_crypto")
+        ],
+        [InlineKeyboardButton("🔻 ʙᴧᴄᴋ 🔻", callback_data="back_to_main")]
+    ])
+
+def upi_display_kb():
+    """UPI payment keyboard"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔻 ᴅᴇᴘᴏ𝗌ɪᴛ 🔻", callback_data="upload_proof")],
+        [InlineKeyboardButton("🔻 ʙᴧᴄᴋ 🔻", callback_data="back_to_main")]
+    ])
+
+def crypto_display_kb():
+    """Crypto payment keyboard"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔻 ᴅᴇᴘᴏ𝗌ɪᴛ 🔻", callback_data="upload_proof")],
+        [InlineKeyboardButton("🔻 ʙᴧᴄᴋ 🔻", callback_data="back_to_main")]
+    ])
+
+def admin_review_kb_for(user_id):
+    """Admin review keyboard"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ ᴧᴘᴘʀᴏᴠᴇ", callback_data=f"admin_approve_{user_id}"),
+            InlineKeyboardButton("❌ ʀᴇᴊᴇᴄᴛ", callback_data=f"admin_reject_{user_id}")
+        ]
+    ])
+
+def admin_approved_kb(user_id, is_connected=False):
+    """Admin approved keyboard with Connect/Disconnect button"""
+    if is_connected:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔌 ᴅɪꜱᴄᴏɴɴᴇᴄᴛ", callback_data=f"admin_disconnect_{user_id}"),
+                InlineKeyboardButton("💬 ꜱᴇɴᴅ ᴍᴇꜱꜱᴀɢᴇ", callback_data=f"admin_message_{user_id}")
+            ]
+        ])
+    else:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔌 ᴄᴏɴɴᴇᴄᴛ", callback_data=f"admin_connect_{user_id}"),
+                InlineKeyboardButton("💬 ꜱᴇɴᴅ ᴍᴇꜱꜱᴀɢᴇ", callback_data=f"admin_message_{user_id}")
+            ]
+        ])
+
+def numeric_keypad_kb():
+    """Numeric keypad for amount input"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("1", callback_data="num_1"), InlineKeyboardButton("2", callback_data="num_2"), InlineKeyboardButton("3", callback_data="num_3")],
+        [InlineKeyboardButton("4", callback_data="num_4"), InlineKeyboardButton("5", callback_data="num_5"), InlineKeyboardButton("6", callback_data="num_6")],
+        [InlineKeyboardButton("7", callback_data="num_7"), InlineKeyboardButton("8", callback_data="num_8"), InlineKeyboardButton("9", callback_data="num_9")],
+        [InlineKeyboardButton("0", callback_data="num_0"), InlineKeyboardButton(".", callback_data="num_dot"), InlineKeyboardButton("❌", callback_data="num_clear")],
+        [InlineKeyboardButton("🔻 ✅ ᴄᴏɴғɪʀᴍ 🔻", callback_data="num_confirm")]
+    ])
+
+# ---------- Bot ----------
+app = Client("account_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# ---------- /start ----------
+@app.on_message(filters.private & filters.command("start"))
+async def start(client: Client, msg: Message):
+    """Start command handler"""
+    user = msg.from_user
+    ensure_user_entry(user.id, user.username)
+    
+    welcome_text = """<blockquote>🚀 ʀᴇᴧᴅʏ ᴛᴏ ɢᴇᴛ ʏᴏᴜʀ ɴᴇᴡ ᴧᴄᴄᴏᴜɴᴛ?</blockquote>
+<blockquote>ꜱᴇʟᴇᴄᴛ ꜰʀᴏᴍ ᴧ ᴠᴀʀɪᴇᴛʏ ᴏꜰ ᴄᴏᴜɴᴛʀɪᴇꜱ ᴧɴᴅ ʙᴜʏ ʏᴏᴜʀ ꜰᴧᴠᴏʀɪᴛᴇ ᴧᴄᴄᴏᴜɴᴛ ᴛᴏᴅᴀʏ!</blockquote>
+
+<blockquote>ᴧ ꜰᴇᴡ ᴛᴀᴘꜱ, ʏᴏᴜ ᴄᴧɴ: ✨</blockquote>
+<blockquote>🔻 ᴇxᴘʟᴏʀᴇ ᴧᴄᴄᴏᴜɴᴛꜱ ʙʏ ᴄᴏᴜɴᴛʀʏ
+🔻 ᴠɪᴇᴡ ᴧᴄᴄᴏᴜɴᴛ ᴘʀɪᴄᴇꜱ ɪɴ ₮(ᴜꜱᴅᴛ) & ₹(ɪɴʀ)
+🔻 ꜱᴇᴄᴜʀᴇʟʏ ᴘᴜʀᴄʜᴧꜱᴇ ʏᴏᴜʀ ꜰᴧᴠᴏʀɪᴛᴇ ᴧᴄᴄᴏᴜɴᴛ
+🔻 ɢᴇᴛ ɪɴꜱᴛᴧɴᴛ ᴅᴇʟɪᴠᴇʀʏ ᴧꜰᴛᴇʀ ᴘᴀʏᴍᴇɴᴛ ᴧᴘᴘʀᴏᴠᴀʟ ✅</blockquote>
+
+<blockquote>🕹️ ᴛᴀᴘ "ʙᴜʏ ᴧᴄᴄᴏᴜɴᴛ" ᴛᴏ ʙᴇɢɪɴ.</blockquote>"""
+    
+    await msg.reply_text(
+        welcome_text,
+        reply_markup=main_menu_kb(),
+        parse_mode=ParseMode.HTML
+    )
+
+# ---------- Callback Queries ----------
+@app.on_callback_query()
+async def on_callback_query(client, cq: CallbackQuery):
+    """Handle all callback queries"""
+    user_id = cq.from_user.id
+    data = cq.data
+    user = get_user(user_id)
+
+    # Numeric keypad handler
+    if data.startswith("num_"):
+        temp_amount = user.get("temp_amount", "")
+        action = data.split("_", 1)[1]
+
+        if action.isdigit():
+            temp_amount += action
+        elif action == "dot":
+            if "." not in temp_amount:
+                temp_amount += "."
+        elif action == "clear":
+            temp_amount = ""
+        elif action == "confirm":
+            if not temp_amount:
+                await cq.answer("ᴘʟᴇᴀꜱᴇ ᴇɴᴛᴇʀ ᴀɴ ᴀᴍᴏᴜɴᴛ ꜰɪʀꜱᴛ!", show_alert=True)
+                return
+            
+            try:
+                amount = float(temp_amount)
+            except ValueError:
+                await cq.answer("ɪɴᴠᴀʟɪᴅ ᴀᴍᴏᴜɴᴛ!", show_alert=True)
+                return
+
+            pending = user.get("pending_deposit") or {}
+            proof = pending.get("proof")
+            method = pending.get("method", "None")
+            platform = user.get("last_platform_choice", "telegram")
+            country = user.get("last_country_choice", "Unknown")
+            username = cq.from_user.username or "Unknown"
+
+            pending["amount"] = amount
+            update_user(user_id, {"pending_deposit": pending, "temp_amount": ""})
+
+            # Send to admin for approval
+            caption = f"""<blockquote>💸 <b>ɴᴇᴡ ᴅᴇᴘᴏ𝗌ɪᴛ ʀᴇǫᴜᴇ𝗌ᴛ</b></blockquote>
+<blockquote>👤 ᴜꜱᴇʀ: @{username}
+🆔 ᴜꜱᴇʀ-ɪᴅ: {user_id}
+💰 ᴀᴍᴏᴜɴᴛ: {amount} {'₹' if method == 'upi' else '₮'}
+💳 ᴍᴇᴛʜᴏᴅ: {method.upper()}
+📱 ᴘʟᴀᴛꜰᴏʀᴍ: {platform.title()}
+🌍 ᴄᴏᴜɴᴛʀʏ: {country}</blockquote>
+<blockquote>ᴀᴘᴘʀᴏᴠᴇ ᴏʀ ʀᴇᴊᴇᴄᴛ:</blockquote>"""
+            
+            kb = admin_review_kb_for(user_id)
+
+            if proof:
+                await client.send_photo(
+                    ADMIN_CHAT_ID,
+                    proof,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=kb,
+                )
+            else:
+                await client.send_message(
+                    ADMIN_CHAT_ID,
+                    caption,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=kb,
+                )
+
+            await cq.message.edit_text(
+                f"<blockquote>✅ ʏᴏᴜʀ ᴘᴀʏᴍᴇɴᴛ ᴏꜰ {amount}{'₹' if method == 'upi' else '₮'} ʜᴀꜱ ʙᴇᴇɴ ꜱᴇɴᴛ ᴛᴏ ᴀᴅᴍɪɴ ꜰᴏʀ ᴀᴘᴘʀᴏᴠᴀʟ.</blockquote>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        update_user(user_id, {"temp_amount": temp_amount})
+        await cq.message.edit_text(
+            f"<blockquote>🛡️ <b>ᴇɴᴛᴇʀ ᴛʜᴇ ᴀᴍᴏᴜɴᴛ ʏᴏᴜ ꜱᴇɴᴛ:</b></blockquote>\n\n<code>{temp_amount or 0}</code>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=numeric_keypad_kb(),
+        )
+        return
+
+    # Main menu callbacks
+    if data == "back_to_main":
+        await cq.message.edit_text(
+            "<blockquote>🚀 ʀᴇᴧᴅʏ ᴛᴏ ɢᴇᴛ ʏᴏᴜʀ ɴᴇᴡ ᴧᴄᴄᴏᴜɴᴛ?</blockquote>",
+            reply_markup=main_menu_kb(),
+            parse_mode=ParseMode.HTML
+        )
+    
+    elif data == "buy_account":
+        await cq.message.edit_text(
+            "<blockquote>📱 <b>ꜱᴇʟᴇᴄᴛ ᴘʟᴀᴛꜰᴏʀᴍ:</b></blockquote>",
+            reply_markup=platform_selection_kb(),
+            parse_mode=ParseMode.HTML
+        )
+    
+    # Platform selection
+    elif data.startswith("platform_"):
+        platform = data.split("_", 1)[1]
+        update_user(user_id, {"last_platform_choice": platform})
+        
+        countries = get_countries(platform)
+        if not countries:
+            await cq.message.edit_text(
+                f"<blockquote>⚠️ ɴᴏ {platform.title()} ᴀᴄᴄᴏᴜɴᴛꜱ ᴀᴠᴀɪʟᴀʙʟᴇ ᴀᴛ ᴛʜᴇ ᴍᴏᴍᴇɴᴛ.</blockquote>",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔻 ʙᴀᴄᴋ ᴛᴏ ᴘʟᴀᴛꜰᴏʀᴍꜱ 🔻", callback_data="buy_account")],
+                    [InlineKeyboardButton("🔻 ʙᴧᴄᴋ ᴛᴏ ᴍᴀɪɴ 🔻", callback_data="back_to_main")]
+                ]),
+                parse_mode=ParseMode.HTML
+            )
+            return
+        
+        await cq.message.edit_text(
+            f"<blockquote>🌍 <b>ꜱᴇʟᴇᴄᴛ ᴀ {platform.title()} ᴀᴄᴄᴏᴜɴᴛ ʙʏ ᴄᴏᴜɴᴛʀʏ:</b></blockquote>",
+            reply_markup=buy_countries_kb(platform),
+            parse_mode=ParseMode.HTML
+        )
+    
+    # Country selection
+    elif data.startswith("country_"):
+        parts = data.split("_", 2)
+        if len(parts) < 3:
+            await cq.answer("ɪɴᴠᴀʟɪᴅ ᴄᴏᴜɴᴛʀʏ ꜱᴇʟᴇᴄᴛɪᴏɴ!", show_alert=True)
+            return
+        
+        platform = parts[1]
+        country_name = parts[2]
+        country = get_country(platform, country_name)
+        
+        if not country:
+            await cq.message.reply_text("⚠️ ᴄᴏᴜɴᴛʀʏ ɴᴏᴛ ꜰᴏᴜɴᴅ ᴏʀ ʀᴇᴍᴏᴠᴇᴅ ʙʏ ᴀᴅᴍɪɴ", parse_mode=ParseMode.HTML)
+            return
+        
+        update_user(user_id, {
+            "last_platform_choice": platform,
+            "last_country_choice": country_name
+        })
+        
+        price_display = format_price(country.get('usdt_price', 0), country.get('inr_price', 0))
+        
+        await cq.message.edit_text(
+            f"""<blockquote>⚡ <b>{platform.title()} ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ</b></blockquote>
+<blockquote>📱 ᴘʟᴀᴛꜰᴏʀᴍ: {platform.title()}
+🌏 ᴄᴏᴜɴᴛʀʏ: {country_name}
+💰 ᴘʀɪᴄᴇ: {price_display}
+📦 ꜱᴛᴏᴄᴋ: {country['available']}</blockquote>
+<blockquote>⭐ **ʀᴇʟɪᴀʙʟᴇ / ꜰᴀꜱᴛ / ɢᴏᴏᴅ ǫᴜᴀʟɪᴛʏ**</blockquote>""",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔻 ʙᴜʏ ɴᴏᴡ 🔻", callback_data="deposit_now")],
+                [InlineKeyboardButton("🔻 ʙᴀᴄᴋ 🔻", callback_data=f"platform_{platform}")]
+            ]),
+            parse_mode=ParseMode.HTML
+        )
+    
+    # Deposit flow
+    elif data == "deposit_now":
+        await cq.message.edit_text(
+            "<blockquote>ꜱᴇʟᴇᴄᴛ ʏᴏᴜʀ ᴘʀᴇꜰᴇʀʀᴇᴅ ᴘᴀʏᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅ:</blockquote>",
+            reply_markup=deposit_methods_kb(),
+            parse_mode=ParseMode.HTML
+        )
+    
+    # Payment method selection
+    elif data.startswith("method_"):
+        method = data.replace("method_", "")
+        pending = {"method": method, "amount": None, "proof": None}
+        update_user(user_id, {"pending_deposit": pending})
+
+        if method == "upi":
+            caption = f"""<blockquote>💳 <b>ᴜᴘɪ ᴘᴀʏᴍᴇɴᴛ (₹)</b></blockquote>
+<blockquote>📤 ᴘᴀʏ ᴏɴ ᴛʜɪꜱ ǫʀ ᴏʀ
+ᴘᴀʏ ᴛᴏ: <code>{UPI_ID}</code></blockquote>
+<blockquote>✅ ᴀꜰᴛᴇʀ ᴘᴀʏᴍᴇɴᴛ, ᴄʟɪᴄᴋ "ᴅᴇᴘᴏꜱɪᴛ" ʙᴜᴛᴛᴏɴ</blockquote>"""
+            
+            if os.path.exists(DEFAULT_QR_PATH):
+                await cq.message.reply_photo(
+                    DEFAULT_QR_PATH,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=upi_display_kb()
+                )
+            else:
+                await cq.message.reply_text(
+                    caption,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=upi_display_kb()
+                )
+        
+        elif method == "crypto":
+            await cq.message.reply_text(
+                f"""<blockquote><b>🔻 ᴄʀʏᴘᴛᴏ ᴘᴀʏᴍᴇɴᴛ (₮)</b></blockquote>
+<blockquote>💸 ᴘᴀʏ ᴄʀʏᴘᴛᴏ (ᴜꜱᴅᴛ): <code>{CRYPTO_ADDRESS}</code></blockquote>
+<blockquote>✅ ᴀꜰᴛᴇʀ ᴘᴀʏᴍᴇɴᴛ, ᴄʟɪᴄᴋ "ᴅᴇᴘᴏꜱɪᴛ" ʙᴜᴛᴛᴏɴ</blockquote>""",
+                parse_mode=ParseMode.HTML,
+                reply_markup=crypto_display_kb()
+            )
+    
+    elif data == "upload_proof":
+        await cq.message.edit_text(
+            "<blockquote><b>📸 ꜱᴇɴᴅ ᴀ ᴘᴀʏᴍᴇɴᴛ ꜱᴄʀᴇᴇɴꜱʜᴏᴛ ꜰᴏʀ ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ</b></blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+    
+    # Admin actions
+    elif data.startswith("admin_"):
+        if user_id not in ADMIN_IDS:
+            await cq.answer("🚫 ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ!", show_alert=True)
+            return
+        
+        parts = data.split("_")
+        action = parts[1]
+        target_id = int(parts[2])
+        target_user = get_user(target_id)
+        username = target_user.get("username", "Unknown")
+        pending = target_user.get("pending_deposit") or {}
+        amount = pending.get("amount", "N/A")
+        method = pending.get("method", "None")
+        platform = target_user.get("last_platform_choice", "telegram")
+        country = target_user.get("last_country_choice", "Unknown")
+
+        if action == "approve":
+            # Reset user data
+            update_user(target_id, {
+                "balance": 0,
+                "pending_deposit": None,
+                "temp_amount": ""
+            })
+            
+            # Notify user
+            await client.send_message(
+                target_id,
+                f"""<blockquote>✅ ʏᴏᴜʀ ᴅᴇᴘᴏꜱɪᴛ ʜᴀꜱ ʙᴇᴇɴ ᴀᴘᴘʀᴏᴠᴇᴅ!</blockquote>
+<blockquote>🔻 ᴘᴜʀᴄʜᴀꜱᴇ ꜱᴜᴄᴄᴇꜱꜱꜰᴜʟ! ᴀᴅᴍɪɴ ᴡɪʟʟ ᴅᴇʟɪᴠᴇʀ ʏᴏᴜʀ ᴀᴄᴄᴏᴜɴᴛ ꜱʜᴏʀᴛʟʏ.</blockquote>
+<blockquote>ɪꜰ ʏᴏᴜ ᴘᴀɪᴅ ᴀɴʏ ᴇxᴛʀᴀ, ᴡᴇ ᴡɪʟʟ ʀᴇꜰᴜɴᴅ ᴛᴏ ʏᴏᴜʀ ᴏʀɪɢɪɴᴀʟ ᴘᴀʏᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅ.</blockquote>""",
+                parse_mode=ParseMode.HTML
+            )
+            
+            # Check if already connected
+            is_connected = is_admin_connected(target_id)
+            
+            # Update admin message with Connect button
+            approved_msg = f"""<blockquote>✅ <b>ᴀᴘᴘʀᴏᴠᴇᴅ ᴅᴇᴘᴏꜱɪᴛ</b></blockquote>
+<blockquote>👤 ᴜꜱᴇʀ: @{username}
+🆔 ᴜꜱᴇʀ-ɪᴅ: {target_id}
+💰 ᴀᴍᴏᴜɴᴛ: {amount}{'₹' if method == 'upi' else '₮'}
+💳 ᴍᴇᴛʜᴏᴅ: {method.upper()}
+📱 ᴘʟᴀᴛꜰᴏʀᴍ: {platform.title()}
+🌍 ᴄᴏᴜɴᴛʀʏ: {country}</blockquote>
+<blockquote>✅ ᴘᴜʀᴄʜᴀꜱᴇ ᴀᴘᴘʀᴏᴠᴇᴅ</blockquote>
+<blockquote>🔗 ꜱᴛᴀᴛᴜꜱ: {'✅ ᴄᴏɴɴᴇᴄᴛᴇᴅ' if is_connected else '❌ ɴᴏᴛ ᴄᴏɴɴᴇᴄᴛᴇᴅ'}</blockquote>"""
+            
+            # Use different keyboard based on connection status
+            kb = admin_approved_kb(target_id, is_connected)
+            
+            # Check if message has photo
+            try:
+                if cq.message.photo:
+                    await cq.message.edit_caption(approved_msg, parse_mode=ParseMode.HTML, reply_markup=kb)
+                else:
+                    await cq.message.edit_text(approved_msg, parse_mode=ParseMode.HTML, reply_markup=kb)
+            except:
+                await cq.message.edit_text(approved_msg, parse_mode=ParseMode.HTML, reply_markup=kb)
+            
+            await cq.answer("✅ ᴘᴜʀᴄʜᴀꜱᴇ ᴀᴘᴘʀᴏᴠᴇᴅ!", show_alert=True)
+        
+        elif action == "reject":
+            # Reset user data
+            update_user(target_id, {
+                "balance": 0,
+                "pending_deposit": None,
+                "temp_amount": ""
+            })
+            
+            # Notify user
+            await client.send_message(
+                target_id,
+                f"""<blockquote>❌ <b>ʏᴏᴜʀ ᴅᴇᴘᴏꜱɪᴛ ʜᴀꜱ ʙᴇᴇɴ ʀᴇᴊᴇᴄᴛᴇᴅ.</b></blockquote>
+<blockquote>ɪꜰ ʏᴏᴜ ᴘᴀɪᴅ ᴀɴʏ ᴇxᴛʀᴀ, ᴡᴇ ᴡɪʟʟ ʀᴇꜰᴜɴᴅ ᴛᴏ ʏᴏᴜʀ ᴏʀɪɢɪɴᴀʟ ᴘᴀʏᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅ.</blockquote>""",
+                parse_mode=ParseMode.HTML
+            )
+            
+            # Update admin message
+            rejected_msg = f"""<blockquote>❌ <b>ʀᴇᴊᴇᴄᴛᴇᴅ ᴅᴇᴘᴏꜱɪᴛ</b></blockquote>
+<blockquote>👤 ᴜꜱᴇʀ: @{username}
+🆔 ᴜꜱᴇʀ-ɪᴅ: {target_id}
+💰 ᴀᴍᴏᴜɴᴛ: {amount}{'₹' if method == 'upi' else '₮'}
+💳 ᴍᴇᴛʜᴏᴅ: {method.upper()}
+📱 ᴘʟᴀᴛꜰᴏʀᴍ: {platform.title()}
+🌍 ᴄᴏᴜɴᴛʀʏ: {country}</blockquote>
+<blockquote>❌ ᴘᴜʀᴄʜᴀꜱᴇ ʀᴇᴊᴇᴄᴛᴇᴅ</blockquote>"""
+            
+            await cq.message.edit_caption(rejected_msg, parse_mode=ParseMode.HTML)
+            await cq.answer("❌ ᴘᴜʀᴄʜᴀꜱᴇ ʀᴇᴊᴇᴄᴛᴇᴅ!", show_alert=True)
+        
+        elif action == "connect":
+            # Connect admin to user
+            success = connect_user_to_admin(target_id, user_id)
+            if success:
+                await cq.answer("✅ ᴄᴏɴɴᴇᴄᴛᴇᴅ ᴛᴏ ᴜꜱᴇʀ!", show_alert=True)
+                
+                # Update the message to show connected status
+                is_connected = True
+                approved_msg = f"""<blockquote>✅ <b>ᴀᴘᴘʀᴏᴠᴇᴅ ᴅᴇᴘᴏꜱɪᴛ</b></blockquote>
+<blockquote>👤 ᴜꜱᴇʀ: @{username}
+🆔 ᴜꜱᴇʀ-ɪᴅ: {target_id}
+💰 ᴀᴍᴏᴜɴᴛ: {amount}{'₹' if method == 'upi' else '₮'}
+💳 ᴍᴇᴛʜᴏᴅ: {method.upper()}
+📱 ᴘʟᴀᴛꜰᴏʀᴍ: {platform.title()}
+🌍 ᴄᴏᴜɴᴛʀʏ: {country}</blockquote>
+<blockquote>✅ ᴘᴜʀᴄʜᴀꜱᴇ ᴀᴘᴘʀᴏᴠᴇᴅ</blockquote>
+<blockquote>🔗 ꜱᴛᴀᴛᴜꜱ: ✅ ᴄᴏɴɴᴇᴄᴛᴇᴅ (ʙʏ ᴀᴅᴍɪɴ)</blockquote>"""
+                
+                kb = admin_approved_kb(target_id, is_connected)
+                if cq.message.photo:
+                    await cq.message.edit_caption(approved_msg, parse_mode=ParseMode.HTML, reply_markup=kb)
+                else:
+                    await cq.message.edit_text(approved_msg, parse_mode=ParseMode.HTML, reply_markup=kb)
+            else:
+                await cq.answer("❌ ꜰᴀɪʟᴇᴅ ᴛᴏ ᴄᴏɴɴᴇᴄᴛ!", show_alert=True)
+        
+        elif action == "disconnect":
+            # Disconnect from user
+            success, disconnected_admin = disconnect_user(target_id)
+            if success:
+                await cq.answer("✅ ᴅɪꜱᴄᴏɴɴᴇᴄᴛᴇᴅ ꜰʀᴏᴍ ᴜꜱᴇʀ!", show_alert=True)
+                
+                # Update the message to show disconnected status
+                is_connected = False
+                approved_msg = f"""<blockquote>✅ <b>ᴀᴘᴘʀᴏᴠᴇᴅ ᴅᴇᴘᴏꜱɪᴛ</b></blockquote>
+<blockquote>👤 ᴜꜱᴇʀ: @{username}
+🆔 ᴜꜱᴇʀ-ɪᴅ: {target_id}
+💰 ᴀᴍᴏᴜɴᴛ: {amount}{'₹' if method == 'upi' else '₮'}
+💳 ᴍᴇᴛʜᴏᴅ: {method.upper()}
+📱 ᴘʟᴀᴛꜰᴏʀᴍ: {platform.title()}
+🌍 ᴄᴏᴜɴᴛʀʏ: {country}</blockquote>
+<blockquote>✅ ᴘᴜʀᴄʜᴀꜱᴇ ᴀᴘᴘʀᴏᴠᴇᴅ</blockquote>
+<blockquote>🔗 ꜱᴛᴀᴛᴜꜱ: ❌ ɴᴏᴛ ᴄᴏɴɴᴇᴄᴛᴇᴅ</blockquote>"""
+                
+                kb = admin_approved_kb(target_id, is_connected)
+                if cq.message.photo:
+                    await cq.message.edit_caption(approved_msg, parse_mode=ParseMode.HTML, reply_markup=kb)
+                else:
+                    await cq.message.edit_text(approved_msg, parse_mode=ParseMode.HTML, reply_markup=kb)
+            else:
+                await cq.answer("❌ ꜰᴀɪʟᴇᴅ ᴛᴏ ᴅɪꜱᴄᴏɴɴᴇᴄᴛ!", show_alert=True)
+        
+        elif action == "message":
+            # Send message to user
+            await cq.message.delete()
+            await cq.message.reply_text(
+                f"<blockquote>💬 <b>ꜱᴇɴᴅ ᴍᴇꜱꜱᴀɢᴇ ᴛᴏ ᴜꜱᴇʀ @{username} ({target_id}):</b></blockquote>\n\n"
+                f"<blockquote>ᴛʏᴘᴇ ʏᴏᴜʀ ᴍᴇꜱꜱᴀɢᴇ ʙᴇʟᴏᴡ. ɪᴛ ᴡɪʟʟ ʙᴇ ꜱᴇɴᴛ ᴀɴᴏɴʏᴍᴏᴜꜱʟʏ ꜰʀᴏᴍ ᴛʜᴇ ʙᴏᴛ.</blockquote>",
+                parse_mode=ParseMode.HTML
+            )
+            # Store the target user ID for this admin's next message
+            admin_sessions.update_one(
+                {"admin_id": user_id},
+                {"$set": {"message_target": target_id}},
+                upsert=True
+            )
+
+# ---------- Photo Handler ----------
+@app.on_message(filters.photo & filters.private)
+async def handle_screenshot(client: Client, msg: Message):
+    """Handle payment screenshot"""
+    user_id = msg.from_user.id
+    photo = msg.photo.file_id
+    user = get_user(user_id)
+    
+    pending = user.get("pending_deposit") or {}
+    pending["proof"] = photo
+    update_user(user_id, {"pending_deposit": pending, "temp_amount": ""})
+
+    await msg.reply_text(
+        "<blockquote>🛡️ <b>ᴇɴᴛᴇʀ ᴛʜᴇ ᴀᴍᴏᴜɴᴛ ʏᴏᴜ ꜱᴇɴᴛ:</b></blockquote>\n\n<code>0</code>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=numeric_keypad_kb()
+    )
+
+# ---------- Admin Message Forwarding ----------
+@app.on_message(filters.private & filters.user(ADMIN_IDS) & ~filters.command(["start", "connect", "disconnect", "addcountry", "removecountry", "listcountries"]))
+async def handle_admin_message(client: Client, msg: Message):
+    """Handle admin messages to forward to users"""
+    admin_id = msg.from_user.id
+    
+    # Check if admin has a message target
+    session = admin_sessions.find_one({"admin_id": admin_id})
+    if session and session.get("message_target"):
+        target_id = session["message_target"]
+        
+        # Get user info
+        user = get_user(target_id)
+        username = user.get("username", "Unknown")
+        
+        # Forward message to user (anonymously)
+        if msg.text:
+            await client.send_message(
+                target_id,
+                f"""<blockquote>💬 <b>ᴍᴇꜱꜱᴀɢᴇ ꜰʀᴏᴍ ꜱᴜᴘᴘᴏʀᴛ:</b></blockquote>\n\n{msg.text}""",
+                parse_mode=ParseMode.HTML
+            )
+            await msg.reply_text(
+                f"<blockquote>✅ ᴍᴇꜱꜱᴀɢᴇ ꜱᴇɴᴛ ᴛᴏ @{username} ({target_id})</blockquote>",
+                parse_mode=ParseMode.HTML
+            )
+        elif msg.photo:
+            await client.send_photo(
+                target_id,
+                msg.photo.file_id,
+                caption=f"""<blockquote>💬 <b>ᴍᴇꜱꜱᴀɢᴇ ꜰʀᴏᴍ ꜱᴜᴘᴘᴏʀᴛ:</b></blockquote>\n\n{msg.caption or ''}""",
+                parse_mode=ParseMode.HTML
+            )
+            await msg.reply_text(
+                f"<blockquote>✅ ᴘʜᴏᴛᴏ ꜱᴇɴᴛ ᴛᴏ @{username} ({target_id})</blockquote>",
+                parse_mode=ParseMode.HTML
+            )
+        elif msg.document:
+            await client.send_document(
+                target_id,
+                msg.document.file_id,
+                caption=f"""<blockquote>💬 <b>ᴍᴇꜱꜱᴀɢᴇ ꜰʀᴏᴍ ꜱᴜᴘᴘᴏʀᴛ:</b></blockquote>\n\n{msg.caption or ''}""",
+                parse_mode=ParseMode.HTML
+            )
+            await msg.reply_text(
+                f"<blockquote>✅ ᴅᴏᴄᴜᴍᴇɴᴛ ꜱᴇɴᴛ ᴛᴏ @{username} ({target_id})</blockquote>",
+                parse_mode=ParseMode.HTML
+            )
+        
+        # Clear the message target
+        admin_sessions.update_one(
+            {"admin_id": admin_id},
+            {"$set": {"message_target": None}}
+        )
+    else:
+        # If no target, show help
+        await msg.reply_text(
+            "<blockquote>👨‍💼 <b>ᴀᴅᴍɪɴ ᴄᴏɴᴛʀᴏʟ ᴘᴀɴᴇʟ</b></blockquote>\n\n"
+            "<blockquote>ᴀᴠᴀɪʟᴀʙʟᴇ ᴄᴏᴍᴍᴀɴᴅꜱ:</blockquote>\n"
+            "<blockquote>/connect [user_id] - ᴄᴏɴɴᴇᴄᴛ ᴛᴏ ᴀ ᴜꜱᴇʀ</blockquote>\n"
+            "<blockquote>/disconnect [user_id] - ᴅɪꜱᴄᴏɴɴᴇᴄᴛ ꜰʀᴏᴍ ᴀ ᴜꜱᴇʀ</blockquote>\n"
+            "<blockquote>/addcountry - ᴀᴅᴅ ɴᴇᴡ ᴄᴏᴜɴᴛʀʏ</blockquote>\n"
+            "<blockquote>/removecountry - ʀᴇᴍᴏᴠᴇ ᴄᴏᴜɴᴛʀʏ</blockquote>\n"
+            "<blockquote>/listcountries - ʟɪꜱᴛ ᴀʟʟ ᴄᴏᴜɴᴛʀɪᴇꜱ</blockquote>\n\n"
+            "<blockquote>ᴛᴏ ꜱᴇɴᴅ ᴀ ᴍᴇꜱꜱᴀɢᴇ ᴛᴏ ᴀ ᴜꜱᴇʀ:</blockquote>\n"
+            "<blockquote>1. ᴄʟɪᴄᴋ 'ᴄᴏɴɴᴇᴄᴛ' ʙᴜᴛᴛᴏɴ ɪɴ ᴛʜᴇ ᴀᴘᴘʀᴏᴠᴇᴅ ᴅᴇᴘᴏꜱɪᴛ ᴍᴇꜱꜱᴀɢᴇ</blockquote>\n"
+            "<blockquote>2. ᴛʜᴇɴ ᴄʟɪᴄᴋ 'ꜱᴇɴᴅ ᴍᴇꜱꜱᴀɢᴇ' ʙᴜᴛᴛᴏɴ</blockquote>\n"
+            "<blockquote>3. ᴛʏᴘᴇ ʏᴏᴜʀ ᴍᴇꜱꜱᴀɢᴇ ʜᴇʀᴇ</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+
+# ---------- User Message Forwarding ----------
+@app.on_message(filters.private & ~filters.user(ADMIN_IDS) & ~filters.command("start"))
+async def handle_user_message(client: Client, msg: Message):
+    """Forward user messages to connected admin"""
+    user_id = msg.from_user.id
+    user = get_user(user_id)
+    
+    # Check if user is connected to an admin
+    admin_id = user.get("connected_to_admin")
+    if admin_id:
+        # Forward message to admin
+        username = user.get("username", "Unknown")
+        
+        if msg.text:
+            await client.send_message(
+                admin_id,
+                f"""<blockquote>💬 <b>ᴍᴇꜱꜱᴀɢᴇ ꜰʀᴏᴍ ᴜꜱᴇʀ @{username} ({user_id}):</b></blockquote>\n\n{msg.text}""",
+                parse_mode=ParseMode.HTML
+            )
+        elif msg.photo:
+            await client.send_photo(
+                admin_id,
+                msg.photo.file_id,
+                caption=f"""<blockquote>💬 <b>ᴍᴇꜱꜱᴀɢᴇ ꜰʀᴏᴍ ᴜꜱᴇʀ @{username} ({user_id}):</b></blockquote>\n\n{msg.caption or ''}""",
+                parse_mode=ParseMode.HTML
+            )
+        elif msg.document:
+            await client.send_document(
+                admin_id,
+                msg.document.file_id,
+                caption=f"""<blockquote>💬 <b>ᴍᴇꜱꜱᴀɢᴇ ꜰʀᴏᴍ ᴜꜱᴇʀ @{username} ({user_id}):</b></blockquote>\n\n{msg.caption or ''}""",
+                parse_mode=ParseMode.HTML
+            )
+        
+        # Notify user
+        await msg.reply_text(
+            "<blockquote>✅ ʏᴏᴜʀ ᴍᴇꜱꜱᴀɢᴇ ʜᴀꜱ ʙᴇᴇɴ ꜱᴇɴᴛ ᴛᴏ ꜱᴜᴘᴘᴏʀᴛ. ᴡᴇ ᴡɪʟʟ ʀᴇᴘʟʏ ꜱᴏᴏɴ.</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        # If not connected, show main menu
+        await start(client, msg)
+
+# ---------- Admin Commands ----------
+@app.on_message(filters.command("connect"))
+async def connect_command(client, message: Message):
+    """Connect to a user command"""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.reply_text("<blockquote>🚫 ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ.</blockquote>", parse_mode=ParseMode.HTML)
+        return
+    
+    parts = message.text.split(" ", 1)
+    if len(parts) != 2:
+        await message.reply_text(
+            "<blockquote>🕹️ ᴜꜱᴀɢᴇ: /connect [user_id]</blockquote>\n"
+            "<blockquote>ᴇxᴀᴍᴘʟᴇ: /connect 1234567890</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    try:
+        target_id = int(parts[1])
+    except ValueError:
+        await message.reply_text(
+            "<blockquote>⚠️ ɪɴᴠᴀʟɪᴅ ᴜꜱᴇʀ ɪᴅ. ᴘʟᴇᴀꜱᴇ ᴜꜱᴇ ɴᴜᴍᴇʀɪᴄ ɪᴅ.</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    # Check if user exists
+    user = get_user(target_id)
+    if not user:
+        await message.reply_text(
+            "<blockquote>⚠️ ᴜꜱᴇʀ ɴᴏᴛ ꜰᴏᴜɴᴅ ɪɴ ᴅᴀᴛᴀʙᴀꜱᴇ.</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    username = user.get("username", "Unknown")
+    
+    # Connect to user
+    success = connect_user_to_admin(target_id, message.from_user.id)
+    if success:
+        await message.reply_text(
+            f"<blockquote>✅ ꜱᴜᴄᴄᴇꜱꜱꜰᴜʟʟʏ ᴄᴏɴɴᴇᴄᴛᴇᴅ ᴛᴏ ᴜꜱᴇʀ @{username} ({target_id})</blockquote>\n\n"
+            f"<blockquote>ɴᴏᴡ ʏᴏᴜ ᴄᴀɴ ꜱᴇɴᴅ ᴍᴇꜱꜱᴀɢᴇꜱ ᴛᴏ ᴛʜɪꜱ ᴜꜱᴇʀ ᴀɴᴏɴʏᴍᴏᴜꜱʟʏ ᴛʜʀᴏᴜɢʜ ᴛʜᴇ ʙᴏᴛ.</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        await message.reply_text(
+            "<blockquote>❌ ꜰᴀɪʟᴇᴅ ᴛᴏ ᴄᴏɴɴᴇᴄᴛ ᴛᴏ ᴜꜱᴇʀ.</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+
+@app.on_message(filters.command("disconnect"))
+async def disconnect_command(client, message: Message):
+    """Disconnect from a user command"""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.reply_text("<blockquote>🚫 ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ.</blockquote>", parse_mode=ParseMode.HTML)
+        return
+    
+    parts = message.text.split(" ", 1)
+    if len(parts) != 2:
+        await message.reply_text(
+            "<blockquote>🕹️ ᴜꜱᴀɢᴇ: /disconnect [user_id]</blockquote>\n"
+            "<blockquote>ᴇxᴀᴍᴘʟᴇ: /disconnect 1234567890</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    try:
+        target_id = int(parts[1])
+    except ValueError:
+        await message.reply_text(
+            "<blockquote>⚠️ ɪɴᴠᴀʟɪᴅ ᴜꜱᴇʀ ɪᴅ. ᴘʟᴇᴀꜱᴇ ᴜꜱᴇ ɴᴜᴍᴇʀɪᴄ ɪᴅ.</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    # Check if user is connected to this admin
+    user = get_user(target_id)
+    if not user:
+        await message.reply_text(
+            "<blockquote>⚠️ ᴜꜱᴇʀ ɴᴏᴛ ꜰᴏᴜɴᴅ ɪɴ ᴅᴀᴛᴀʙᴀꜱᴇ.</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    connected_admin = user.get("connected_to_admin")
+    if connected_admin != message.from_user.id:
+        await message.reply_text(
+            "<blockquote>⚠️ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴄᴏɴɴᴇᴄᴛᴇᴅ ᴛᴏ ᴛʜɪꜱ ᴜꜱᴇʀ.</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    username = user.get("username", "Unknown")
+    
+    # Disconnect from user
+    success, _ = disconnect_user(target_id)
+    if success:
+        await message.reply_text(
+            f"<blockquote>✅ ꜱᴜᴄᴄᴇꜱꜱꜰᴜʟʟʏ ᴅɪꜱᴄᴏɴɴᴇᴄᴛᴇᴅ ꜰʀᴏᴍ ᴜꜱᴇʀ @{username} ({target_id})</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        await message.reply_text(
+            "<blockquote>❌ ꜰᴀɪʟᴇᴅ ᴛᴏ ᴅɪꜱᴄᴏɴɴᴇᴄᴛ ꜰʀᴏᴍ ᴜꜱᴇʀ.</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+
+@app.on_message(filters.command("addcountry"))
+async def add_country_command(client, message: Message):
+    """Add country command with dual pricing"""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.reply_text("<blockquote>🚫 ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ.</blockquote>", parse_mode=ParseMode.HTML)
+        return
+    
+    try:
+        parts = message.text.split(" ", 4)
+        if len(parts) != 5:
+            await message.reply_text(
+                """<blockquote>🕹️ ᴜꜱᴀɢᴇ: /addcountry ᴘʟᴀᴛꜰᴏʀᴍ ᴄᴏᴜɴᴛʀʏɴᴀᴍᴇ ᴜꜱᴅᴛ_ᴘʀɪᴄᴇ/ɪɴʀ_ᴘʀɪᴄᴇ ꜱᴛᴏᴄᴋ</blockquote>
+<blockquote>ᴘʟᴀᴛꜰᴏʀᴍꜱ: telegram, instagram, twitter</blockquote>
+<blockquote>ᴇxᴀᴍᴘʟᴇ: /addcountry telegram 𝗜𝗡𝗗𝗜𝗔 1.25/119 10</blockquote>
+<blockquote>ᴇxᴀᴍᴘʟᴇ: /addcountry instagram ᴜꜱᴀ 2.5/238 5</blockquote>""",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        
+        _, platform, name, price_input, available = parts
+        platform = platform.lower()
+        
+        if platform not in ["telegram", "instagram", "twitter"]:
+            await message.reply_text(
+                "<blockquote>⚠️ ɪɴᴠᴀʟɪᴅ ᴘʟᴀᴛꜰᴏʀᴍ. ᴜꜱᴇ: telegram, instagram, ᴏʀ twitter</blockquote>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        
+        # Parse dual price input
+        usdt_price, inr_price = parse_price_input(price_input)
+        if usdt_price is None or inr_price is None:
+            await message.reply_text(
+                "<blockquote>⚠️ ɪɴᴠᴀʟɪᴅ ᴘʀɪᴄᴇ ꜰᴏʀᴍᴀᴛ. ᴜꜱᴇ: ᴜꜱᴅᴛ_ᴘʀɪᴄᴇ/ɪɴʀ_ᴘʀɪᴄᴇ (ᴇ.ɢ. 1.25/119)</blockquote>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        
+        available = int(available)
+        
+        add_country(platform, name, usdt_price, inr_price, available)
+        
+        await message.reply_text(
+            f"""<blockquote>✅ ɴᴇᴡ ᴀᴄᴄᴏᴜɴᴛ ᴀᴅᴅᴇᴅ:</blockquote>
+<blockquote>📱 ᴘʟᴀᴛꜰᴏʀᴍ: {platform.title()}
+🌏 ᴄᴏᴜɴᴛʀʏ: {name}
+💰 ᴘʀɪᴄᴇ: ₮{usdt_price} / ₹{inr_price}
+📦 ꜱᴛᴏᴄᴋ: {available}</blockquote>""",
+            parse_mode=ParseMode.HTML
+        )
+        
+    except ValueError:
+        await message.reply_text(
+            "<blockquote>⚠️ ɪɴᴠᴀʟɪᴅ ᴘʀɪᴄᴇ ᴏʀ ꜱᴛᴏᴄᴋ ᴄᴏᴜɴᴛ.</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        await message.reply_text(f"<blockquote>⚠️ ᴇʀʀᴏʀ: {str(e)}</blockquote>", parse_mode=ParseMode.HTML)
+
+@app.on_message(filters.command("removecountry"))
+async def remove_country_command(client, message: Message):
+    """Remove country command"""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.reply_text("<blockquote>🚫 ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ.</blockquote>", parse_mode=ParseMode.HTML)
+        return
+    
+    parts = message.text.split(" ", 2)
+    if len(parts) != 3:
+        await message.reply_text(
+            """<blockquote>🕹️ ᴜꜱᴀɢᴇ: /removecountry ᴘʟᴀᴛꜰᴏʀᴍ ᴄᴏᴜɴᴛʀʏɴᴀᴍᴇ</blockquote>
+<blockquote>ᴇxᴀᴍᴘʟᴇ: /removecountry telegram 𝗜𝗡𝗗𝗜𝗔</blockquote>""",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    _, platform, name = parts
+    platform = platform.lower()
+    
+    if platform not in ["telegram", "instagram", "twitter"]:
+        await message.reply_text(
+            "<blockquote>⚠️ ɪɴᴠᴀʟɪᴅ ᴘʟᴀᴛꜰᴏʀᴍ. ᴜꜱᴇ: telegram, instagram, ᴏʀ twitter</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    if not get_country(platform, name):
+        await message.reply_text(
+            f"<blockquote>⚠️ {platform.title()} ᴄᴏᴜɴᴛʀʏ '{name}' ɴᴏᴛ ꜰᴏᴜɴᴅ.</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    remove_country(platform, name)
+    await message.reply_text(
+        f"<blockquote>🗑️ <b>{platform.title()} ᴄᴏᴜɴᴛʀʏ '{name}' ʀᴇᴍᴏᴠᴇᴅ.</b></blockquote>",
+        parse_mode=ParseMode.HTML
+    )
+
+@app.on_message(filters.command("listcountries"))
+async def list_countries_command(client, message: Message):
+    """List countries command with dual pricing"""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.reply_text("<blockquote>🚫 ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ.</blockquote>", parse_mode=ParseMode.HTML)
+        return
+    
+    parts = message.text.split(" ", 1)
+    platform = None
+    if len(parts) == 2:
+        platform = parts[1].lower()
+        if platform not in ["telegram", "instagram", "twitter", "all"]:
+            await message.reply_text(
+                "<blockquote>⚠️ ɪɴᴠᴀʟɪᴅ ᴘʟᴀᴛꜰᴏʀᴍ. ᴜꜱᴇ: telegram, instagram, twitter, ᴏʀ all</blockquote>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        if platform == "all":
+            platform = None
+    
+    countries = get_countries(platform)
+    if not countries:
+        if platform:
+            await message.reply_text(
+                f"<blockquote>⚠️ ɴᴏ ᴄᴏᴜɴᴛʀɪᴇꜱ ꜰᴏᴜɴᴅ ꜰᴏʀ {platform.title()}.</blockquote>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await message.reply_text(
+                "<blockquote>⚠️ ɴᴏ ᴄᴏᴜɴᴛʀɪᴇꜱ ꜰᴏᴜɴᴅ ɪɴ ᴅᴀᴛᴀʙᴀꜱᴇ.</blockquote>",
+                parse_mode=ParseMode.HTML
+            )
+        return
+    
+    if platform:
+        text = f"<blockquote>🌍 <b>{platform.title()} ᴀᴄᴄᴏᴜɴᴛꜱ:</b></blockquote>\n"
+    else:
+        text = "<blockquote>🌍 <b>ᴀʟʟ ᴀᴄᴄᴏᴜɴᴛꜱ:</b></blockquote>\n"
+    
+    # Group by platform
+    if not platform:
+        accounts_by_platform = {}
+        for c in countries:
+            platform_name = c.get('platform', 'Unknown')
+            if platform_name not in accounts_by_platform:
+                accounts_by_platform[platform_name] = []
+            accounts_by_platform[platform_name].append(c)
+        
+        for platform_name, accounts in accounts_by_platform.items():
+            text += f"\n<blockquote>📱 <b>{platform_name.title()}:</b></blockquote>\n"
+            for c in accounts:
+                text += f"<blockquote>  🔻 {c['name']} — 💸 ₮{c.get('usdt_price', 0)} / ₹{c.get('inr_price', 0)} — 📦 {c['available']}</blockquote>\n"
+    else:
+        for c in countries:
+            text += f"<blockquote>🔻 {c['name']} — 💸 ₮{c.get('usdt_price', 0)} / ₹{c.get('inr_price', 0)} — 📦 {c['available']}</blockquote>\n"
+    
+    await message.reply_text(text, parse_mode=ParseMode.HTML)
+
+# ---------- Run ----------
+if __name__ == "__main__":
+    logger.info("ᴘᴏᴡᴇʀᴇᴅ ʙʏ ❤️ @𝗛𝗘𝗔𝗥𝗧𝗕𝗘𝗔𝗧_𝗙𝗔𝗠 ...")
+    app.run()
+
+use inr only. usdt no need
+NOTE:
+refer the payment functions only in this. ignore other things.
+
+after payment completed asking screenshot and user pm  message approval log group messages are needed. 
+the Approval message needs,
+name with mention, username, userid, Total Amount, payment type, Payment Date: Expiry date: (value by 1 month). with  connect disconnect buttons as usual.
+
+IMPORTANT NOTES:
+1. after i approved. the BOT DEPLOYED(i mean cloneed) Successfully message is sent to users pm. 
+2. bots are automattically disconnected with 1 month expiry date is completed. and also notify the Approval group, Users(downer) pm and (ADMINS-IDS) pm. also send remainder tosend  start 2 days before. sent reminder twise per day. in users pm-> also add one inline button "RENEW" (/renew command also neeed) and "Update Modules". select RENEW to show last payment and gtothe payment option(UPI PAY or QR PAY, then send screenshot to approvals.)after i approved and continue the bot with already selected modules with after expiry date.(and also send the report message to user pm, admins ids and approval group what i need to said before). dont change anything. select UPDATE MODULES to goto the module select option and continue remaining.
+3. donot missing anythings. all things are stored to the server. "DONT RESET ANYTHING FOR AFTER BOT RESTARTS" because this is very important.
+
+add this features and give me a final full code deploy.py( renamed code of clone.py) for dont change the updated logics without missing anything. give me the deploydb.py seperately.

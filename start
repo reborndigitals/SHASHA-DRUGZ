@@ -1,0 +1,12 @@
+#!/bin/bash
+
+echo "Checking Chromium installation..."
+
+if [ ! -d "/ms-playwright" ]; then
+    echo "Chromium not found. Installing..."
+    playwright install chromium
+else
+    echo "Chromium already installed. Skipping download."
+fi
+
+python3 -m SHASHA_DRUGZ
