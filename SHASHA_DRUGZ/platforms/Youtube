@@ -1,0 +1,1016 @@
+# Youtube.py (FINAL VERSION - Playwright persistent profile, auto-refresh, single cookie)
+import asyncio
+import os
+import re
+import json
+import random
+import time
+import datetime
+import io
+import glob
+import logging
+import shutil
+from typing import Union, Optional
+from PIL import Image, ImageDraw, ImageFont
+import yt_dlp
+from yt_dlp.utils import DownloadError
+import aiohttp
+from pyrogram.enums import MessageEntityType
+from pyrogram.types import Message
+from youtubesearchpython.__future__ import VideosSearch
+from playwright.async_api import async_playwright
+
+from SHASHA_DRUGZ import app, LOGGER
+from SHASHA_DRUGZ.utils.formatters import time_to_seconds
+from config import LOG_GROUP_ID
+
+# ========== ENVIRONMENT CONFIGURATION ==========
+YT_EMAIL = os.getenv("YT_EMAIL", "sthfsuh@gmail.com")
+YT_PASSWORD = os.getenv("YT_PASSWORD", "143@Frnds")
+PLAY_URL = os.getenv("PLAY_URL", "https://youtu.be/ip8o5hDFLhI?si=jCdWYdBAEulr2b49")
+
+ENABLE_YT_LOGIN = os.getenv("ENABLE_YT_LOGIN", "true").lower() == "true"
+AUTO_REFRESH_COOKIES = True   # Enable auto‑refresh on auth errors
+
+# Proxies (optional)
+YTDLP_PROXIES = os.getenv("YTDLP_PROXIES", "")
+PLAYWRIGHT_PROXIES = os.getenv("PLAYWRIGHT_PROXIES", "")
+
+# Persistent browser profile directory (Playwright)
+PLAYWRIGHT_PROFILE_DIR = os.path.join(os.getcwd(), "playwright_profile")
+os.makedirs(PLAYWRIGHT_PROFILE_DIR, exist_ok=True)
+
+# Cookie directory and single cookie file
+COOKIES_DIR = os.path.join(os.getcwd(), "cookies")
+os.makedirs(COOKIES_DIR, exist_ok=True)
+COOKIE_FILE = os.path.join(COOKIES_DIR, "cookies.txt")  # Single cookie file
+
+# yt-dlp cache directory
+YT_CACHE_DIR = os.path.join(os.getcwd(), "ytcache")
+os.makedirs(YT_CACHE_DIR, exist_ok=True)
+
+# Download concurrency limit
+DOWNLOAD_SEMAPHORE = asyncio.Semaphore(3)
+
+# ========== LOGGER ==========
+def get_logger(name: str):
+    try:
+        return LOGGER(name)
+    except Exception:
+        log = logging.getLogger(name)
+        if not log.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+            log.addHandler(handler)
+        log.setLevel(logging.INFO)
+        return log
+
+logger = get_logger("HeartBeat/platforms/Youtube.py")
+
+# ========== PROXY HELPERS ==========
+def _parse_proxy_list(proxy_env: str):
+    if not proxy_env:
+        return []
+    return [p.strip() for p in proxy_env.split(",") if p.strip()]
+
+YTDLP_PROXY_POOL = _parse_proxy_list(YTDLP_PROXIES)
+PLAYWRIGHT_PROXY_POOL = _parse_proxy_list(PLAYWRIGHT_PROXIES)
+
+def choose_random_proxy(pool):
+    return random.choice(pool) if pool else None
+
+# ========== LOG GROUP SENDER ==========
+async def generate_verification_screenshot(verification_code: str):
+    try:
+        width, height = 400, 200
+        image = Image.new('RGB', (width, height), color='white')
+        draw = ImageDraw.Draw(image)
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
+        except:
+            font = ImageFont.load_default()
+        draw.text((50, 30), "🔐 Gmail Verification", fill='blue', font=font)
+        draw.text((50, 90), f"Code: {verification_code}", fill='red', font=font)
+        draw.text((50, 140), f"Time: {datetime.datetime.now().strftime('%H:%M:%S')}", fill='black', font=font)
+        img_buffer = io.BytesIO()
+        image.save(img_buffer, format='PNG')
+        img_buffer.seek(0)
+        return img_buffer
+    except Exception as e:
+        logger.error(f"Failed to generate verification screenshot: {e}")
+        return None
+
+async def send_to_log_group(text: str = None, file_obj=None, verification_code: str = None):
+    if not LOG_GROUP_ID:
+        logger.warning("LOG_GROUP_ID not configured, skipping log group send")
+        return
+    try:
+        if verification_code:
+            screenshot = await generate_verification_screenshot(verification_code)
+            if screenshot:
+                await app.send_photo(
+                    chat_id=LOG_GROUP_ID,
+                    photo=screenshot,
+                    caption=f"🔐 **Gmail Login Verification**\n\nEnter this code: `{verification_code}`\n\n👆 Select this number on your device to complete login.\n\n#YouTubeCookies"
+                )
+                logger.info(f"Verification screenshot sent to log group: {verification_code}")
+        elif file_obj and text:
+            await app.send_document(
+                chat_id=LOG_GROUP_ID,
+                document=file_obj,
+                caption=text
+            )
+            logger.info("Cookies.txt sent to log group")
+        elif text:
+            await app.send_message(chat_id=LOG_GROUP_ID, text=text)
+    except Exception as e:
+        logger.error(f"Failed to send to log group: {e}")
+
+# ========== DEVICE INFO COLLECTION (Playwright) ==========
+async def get_public_ip_info():
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get('https://ipapi.co/json/', timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return {
+                        'ip': data.get('ip'),
+                        'city': data.get('city'),
+                        'region': data.get('region'),
+                        'country': data.get('country_name'),
+                        'org': data.get('org'),
+                        'timezone': data.get('timezone')
+                    }
+    except Exception as e:
+        logger.error(f"Failed to fetch IP info: {e}")
+    return None
+
+async def get_device_info(page) -> dict:
+    """Collect device/browser info via JavaScript execution in Playwright."""
+    info = {}
+    try:
+        info['user_agent'] = await page.evaluate('navigator.userAgent')
+    except:
+        info['user_agent'] = 'unknown'
+    try:
+        info['platform'] = await page.evaluate('navigator.platform')
+    except:
+        info['platform'] = 'unknown'
+    try:
+        info['language'] = await page.evaluate('navigator.language')
+    except:
+        info['language'] = 'unknown'
+    try:
+        info['screen'] = await page.evaluate('`${window.screen.width}x${window.screen.height}`')
+    except:
+        info['screen'] = 'unknown'
+    try:
+        info['browser_timezone'] = await page.evaluate('Intl.DateTimeFormat().resolvedOptions().timeZone')
+    except:
+        info['browser_timezone'] = 'unknown'
+    import socket
+    info['hostname'] = socket.gethostname()
+    info['pid'] = os.getpid()
+    info['profile_dir'] = PLAYWRIGHT_PROFILE_DIR
+    info['timestamp'] = datetime.datetime.utcnow().isoformat() + 'Z'
+    ip_info = await get_public_ip_info()
+    if ip_info:
+        info.update(ip_info)
+    else:
+        info['ip'] = 'unknown'
+        info['city'] = 'unknown'
+        info['country'] = 'unknown'
+    return info
+
+# ========== COOKIE VERIFICATION ==========
+def verify_cookies_file(filename: str) -> bool:
+    """Verify cookies file has proper YouTube cookies in Netscape format"""
+    try:
+        if not os.path.exists(filename):
+            logger.error(f"Cookies file does not exist: {filename}")
+            return False
+
+        with open(filename, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # Check for youtube.com domain
+        if 'youtube.com' not in content and '.youtube.com' not in content:
+            logger.error("No youtube.com domain in cookies file")
+            return False
+
+        # Check for required YouTube cookies
+        required_cookies = ['__Secure-YEC', '__Secure-YENID', 'PREF', 'VISITOR_INFO1_LIVE']
+        found_cookies = []
+        for cookie_name in required_cookies:
+            if cookie_name in content:
+                found_cookies.append(cookie_name)
+
+        if len(found_cookies) < 2:
+            logger.warning(f"Missing important cookies. Found: {found_cookies}")
+
+        # Check format - not JSON
+        if content.strip().startswith('{') or '"domain"' in content:
+            logger.error("Cookies file appears to be JSON format, not Netscape")
+            return False
+
+        # Check for proper Netscape format (tabs between fields)
+        lines = content.strip().split('\n')
+        valid_lines = 0
+        for line in lines:
+            if line.startswith('#') or not line.strip():
+                continue
+            if '\t' not in line:
+                logger.error(f"Invalid Netscape format line (no tabs): {line[:100]}")
+                return False
+            valid_lines += 1
+
+        if valid_lines < 3:
+            logger.error(f"Too few valid cookie lines: {valid_lines}")
+            return False
+
+        logger.info(f"✅ Cookies file verified: {filename} (found {found_cookies})")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error verifying cookies file: {e}")
+        return False
+
+def is_cookie_file_expired(filepath: str, max_age: int = 172800) -> bool:
+    """Check if cookie file is older than max_age (default 2 days)"""
+    if os.path.getmtime(filepath) < time.time() - max_age:
+        logger.info(f"Cookie file {filepath} is older than {max_age/3600:.1f} hours, considering expired.")
+        return True
+    return False
+
+# ========== WRITE NETSCAPE COOKIES ==========
+def write_netscape_cookies(cookies, filename):
+    """Write cookies in STRICTLY CORRECT Netscape format for yt-dlp"""
+    with open(filename, "w", newline='', encoding='utf-8') as f:
+        f.write("# Netscape HTTP Cookie File\n")
+        f.write("# This file was generated by YouTube Bot\n")
+        f.write("# https://www.youtube.com\n\n")
+
+        for cookie in cookies:
+            try:
+                domain = cookie.get('domain', '')
+                if not domain:
+                    continue
+
+                # Skip irrelevant domains
+                if 'gstatic.com' in domain or 'doubleclick.net' in domain:
+                    continue
+
+                # Get expiration (handle various formats)
+                expires = cookie.get('expires', cookie.get('expiry', 0))
+                if expires == 0:
+                    expires = int(time.time()) + 86400 * 365  # 1 year default
+                elif expires > 1000000000000:  # Probably milliseconds
+                    expires = int(expires / 1000)
+
+                # Determine flag based on domain format
+                if domain.startswith('.'):
+                    flag = "TRUE"   # domain cookie
+                else:
+                    flag = "FALSE"  # host-only cookie
+
+                path = cookie.get('path', '/')
+                secure = "TRUE" if cookie.get('secure', False) else "FALSE"
+                expires_str = str(int(expires))
+                name = cookie.get('name', '')
+                value = cookie.get('value', '')
+
+                if not name or not value:
+                    continue
+
+                # Handle special characters in value
+                if '\t' in value or '\n' in value:
+                    value = value.replace('\t', ' ').replace('\n', ' ')
+
+                # Write EXACTLY 7 tab-separated fields
+                f.write(f"{domain}\t{flag}\t{path}\t{secure}\t{expires_str}\t{name}\t{value}\n")
+
+            except Exception as e:
+                logger.warning(f"Skipping cookie due to error: {e}")
+                continue
+
+    # Verify we wrote something
+    try:
+        with open(filename, 'r') as f:
+            lines = f.readlines()
+            cookie_lines = [l for l in lines if not l.startswith('#') and l.strip()]
+            if len(cookie_lines) > 0:
+                logger.info(f"✓ Wrote {len(cookie_lines)} cookies to {filename}")
+                return True
+            else:
+                logger.error(f"✗ No cookies written to {filename}")
+                return False
+    except Exception as e:
+        logger.error(f"✗ Failed to verify cookie file: {e}")
+        return False
+
+# ========== METHOD 1: COOKIE FROM BROWSER (yt‑dlp using persistent profile) ==========
+async def refresh_cookies_from_browser() -> Optional[str]:
+    """Extract cookies from persistent Playwright profile using yt-dlp"""
+    logger.info("🚀 Attempting to extract cookies from persistent profile using yt-dlp...")
+
+    try:
+        # Use chrome:PROFILE_DIR syntax
+        profile_path = PLAYWRIGHT_PROFILE_DIR
+        cmd = [
+            "yt-dlp",
+            "--cookies-from-browser", f"chrome:{profile_path}",
+            "--cookies", COOKIE_FILE,
+            "https://www.youtube.com",
+            "--no-check-certificate",
+            "--quiet"
+        ]
+
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+
+        stdout, stderr = await process.communicate()
+
+        if process.returncode == 0 and os.path.exists(COOKIE_FILE):
+            logger.info("✅ Successfully extracted cookies from persistent profile")
+
+            if verify_cookies_file(COOKIE_FILE) and not is_cookie_file_expired(COOKIE_FILE):
+                # Send to log group
+                try:
+                    with open(COOKIE_FILE, "rb") as f:
+                        await send_to_log_group(
+                            text="🌐 **Cookies extracted from persistent profile**\n\n✅ Using persistent Playwright profile\n✅ Ready for downloads\n\n#YouTube #Cookies",
+                            file_obj=f
+                        )
+                except Exception as e:
+                    logger.error(f"Failed to send cookies to log group: {e}")
+
+                return COOKIE_FILE
+            else:
+                logger.error("❌ Profile cookies verification failed or expired")
+                if os.path.exists(COOKIE_FILE):
+                    os.remove(COOKIE_FILE)
+                return None
+        else:
+            error_msg = stderr.decode()[:200] if stderr else "Unknown error"
+            logger.warning(f"Profile cookie extraction failed: {error_msg}")
+            return None
+
+    except Exception as e:
+        logger.error(f"Profile cookie extraction error: {e}")
+        return None
+
+# ========== METHOD 2: PLAYWRIGHT LOGIN (with persistent profile) ==========
+async def refresh_cookies_playwright(force_refresh: bool = False) -> Optional[str]:
+    """Login to YouTube using Playwright with persistent profile, then visit PLAY_URL"""
+    logger.info("🚀 Attempting to generate cookies via Playwright login (persistent profile)...")
+
+    if not YT_EMAIL or not YT_PASSWORD:
+        logger.error("YT_EMAIL and YT_PASSWORD must be set")
+        return None
+
+    if not LOG_GROUP_ID:
+        logger.error("LOG_GROUP_ID must be set for Gmail verification")
+        return None
+
+    proxy = choose_random_proxy(PLAYWRIGHT_PROXY_POOL)
+    logger.info(f"🔄 Using Playwright login. proxy={proxy}")
+
+    verification_code_sent = False
+    context = None
+
+    try:
+        async with async_playwright() as p:
+            # Launch persistent context (preserves cookies across sessions)
+            context = await p.chromium.launch_persistent_context(
+                PLAYWRIGHT_PROFILE_DIR,
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
+                proxy={"server": proxy} if proxy else None,
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080}
+            )
+
+            page = await context.new_page()
+
+            # Go to YouTube
+            await page.goto("https://www.youtube.com", timeout=120000)
+            await page.wait_for_timeout(5000)
+
+            # Check if already logged in
+            avatar_button = await page.query_selector('button#avatar-btn')
+            if not avatar_button or force_refresh:
+                if force_refresh:
+                    logger.info("Forced refresh: attempting login even if already logged in.")
+                else:
+                    logger.info("Not logged in, attempting login...")
+
+                # Click sign in button or go directly to accounts
+                try:
+                    signin_button = await page.query_selector('a[href*="accounts.google.com"]')
+                    if signin_button:
+                        await signin_button.click()
+                        await page.wait_for_timeout(5000)
+                except:
+                    await page.goto("https://accounts.google.com/ServiceLogin?service=youtube", timeout=60000)
+                    await page.wait_for_timeout(5000)
+
+                # Enter email
+                try:
+                    email_field = await page.wait_for_selector('input[type="email"], #identifierId', timeout=10000)
+                    await email_field.fill(YT_EMAIL)
+                    await page.wait_for_timeout(1000)
+
+                    next_button = await page.query_selector('button:has-text("Next"), #identifierNext')
+                    if next_button:
+                        await next_button.click()
+                        await page.wait_for_timeout(5000)
+                except:
+                    pass
+
+                # Enter password
+                try:
+                    await page.wait_for_selector('input[type="password"]', timeout=10000)
+                    await page.fill('input[type="password"]', YT_PASSWORD)
+                    await page.wait_for_timeout(1000)
+
+                    next_button = await page.query_selector('button:has-text("Next"), #passwordNext')
+                    if next_button:
+                        await next_button.click()
+                        await page.wait_for_timeout(10000)
+                except:
+                    pass
+
+                # Handle 2FA if present
+                try:
+                    code_input = await page.query_selector('input[type="tel"], input[aria-label*="code"]')
+                    if code_input:
+                        logger.info("🔐 2FA detected - sending verification to log group")
+                        verification_code = f"{random.randint(100000, 999999)}"
+                        await send_to_log_group(verification_code=verification_code)
+                        verification_code_sent = True
+
+                        logger.info("⏳ Waiting 45s for manual verification...")
+                        await page.wait_for_timeout(45000)
+                except:
+                    pass
+
+            # Verify login success by checking avatar again
+            try:
+                await page.wait_for_selector('button#avatar-btn', timeout=10000)
+                logger.info("✅ Successfully logged in to YouTube.")
+            except:
+                logger.error("Login failed after entering credentials.")
+                await context.close()
+                return None
+
+            # Prime session by visiting PLAY_URL
+            logger.info(f"🎬 Priming session with video: {PLAY_URL}")
+            await page.goto(PLAY_URL, timeout=60000)
+            await page.wait_for_timeout(5000)
+
+            # Collect device information
+            logger.info("📡 Collecting device information...")
+            device_info = await get_device_info(page)
+
+            # Send device info to log group
+            info_text = (
+                f"**✅ YouTube Login Successful**\n\n"
+                f"**Time:** {device_info.get('timestamp')}\n"
+                f"**Email:** `{YT_EMAIL}`\n"
+                f"**IP:** `{device_info.get('ip', 'unknown')}`\n"
+                f"**Location:** {device_info.get('city', 'unknown')}, {device_info.get('country', 'unknown')}\n"
+                f"**ISP/Org:** {device_info.get('org', 'unknown')}\n"
+                f"**User Agent:** `{device_info.get('user_agent', 'unknown')[:100]}`\n"
+                f"**Platform:** {device_info.get('platform', 'unknown')}\n"
+                f"**Screen:** {device_info.get('screen', 'unknown')}\n"
+                f"**Browser Timezone:** {device_info.get('browser_timezone', 'unknown')}\n"
+                f"**Hostname:** {device_info.get('hostname', 'unknown')}\n"
+                f"**Profile Dir:** `{device_info.get('profile_dir', 'unknown')}`\n"
+                f"**PID:** {device_info.get('pid', 'unknown')}\n"
+            )
+            await send_to_log_group(text=info_text)
+
+            # Export cookies to Netscape file
+            cookies = await context.cookies()
+            if not cookies:
+                raise Exception("No cookies captured")
+
+            success = write_netscape_cookies(cookies, COOKIE_FILE)
+
+            await context.close()
+
+            if success and verify_cookies_file(COOKIE_FILE):
+                # Send cookie file to log group
+                try:
+                    with open(COOKIE_FILE, "rb") as f:
+                        await send_to_log_group(
+                            text="🔄 **Fresh YouTube Cookies (Playwright)**\n\n✅ Login successful\n✅ Netscape format verified\n✅ Ready for downloads\n\n#YouTube #Cookies",
+                            file_obj=f
+                        )
+                except Exception as e:
+                    logger.error(f"Failed to send cookies: {e}")
+
+                logger.info(f"✅ Playwright cookies saved: {COOKIE_FILE}")
+                return COOKIE_FILE
+            else:
+                raise Exception("Failed to write or verify cookies file")
+
+    except Exception as e:
+        logger.error(f"❌ Playwright failed: {str(e)[:200]}")
+        if verification_code_sent:
+            logger.info("Verification code was sent - check log group")
+        if context:
+            await context.close()
+        return None
+
+# ========== BACKGROUND REFRESH ==========
+async def background_refresh_cookie():
+    """Run in background to generate a new cookie file (non‑blocking)."""
+    try:
+        logger.info("Background cookie refresh started.")
+        await refresh_cookies_playwright(force_refresh=True)
+        logger.info("Background cookie refresh completed.")
+    except Exception as e:
+        logger.error(f"Background cookie refresh error: {e}")
+
+# ========== MAIN COOKIE GETTER ==========
+async def get_cookies(force_refresh: bool = False) -> Optional[str]:
+    """
+    Get valid cookies.
+    If force_refresh is True, ignore existing file and generate new ones.
+    Otherwise, if existing file is valid, return its path.
+    If not, try browser extraction from persistent profile first, then Playwright login.
+    """
+    # If not forcing refresh, check existing cookie file
+    if not force_refresh and os.path.exists(COOKIE_FILE):
+        if verify_cookies_file(COOKIE_FILE) and not is_cookie_file_expired(COOKIE_FILE):
+            logger.info("✅ Using existing cookies file")
+            return COOKIE_FILE
+        else:
+            logger.warning("Existing cookies file is invalid or expired, will refresh")
+            if os.path.exists(COOKIE_FILE):
+                os.remove(COOKIE_FILE)
+
+    # Try browser extraction from persistent profile first
+    cookie_file = await refresh_cookies_from_browser()
+    if cookie_file:
+        return cookie_file
+
+    # Fallback to Playwright login
+    logger.warning("Profile cookie extraction failed, falling back to Playwright login...")
+    cookie_file = await refresh_cookies_playwright()
+    if cookie_file:
+        return cookie_file
+
+    logger.error("All cookie generation methods failed")
+    return None
+
+# ========== AUTH ERROR DETECTION ==========
+def is_auth_error(exception: Exception) -> bool:
+    """Check if the exception indicates an authentication/robot check issue."""
+    error_str = str(exception).lower()
+    auth_indicators = [
+        "sign in to confirm you're not a bot",
+        "http error 401",
+        "unable to extract video data",
+        "this video may be inappropriate",
+        "confirm your age",
+        "cookie",
+        "login required",
+        "robot",
+        "captcha",
+        "recaptcha",
+        "access denied",
+        "forbidden"
+    ]
+    return any(indicator in error_str for indicator in auth_indicators)
+
+# ========== VIDEO ID EXTRACTION ==========
+def extract_video_id(url: str) -> Optional[str]:
+    """
+    Extract the 11-character video ID from various YouTube URL formats.
+    Supports watch?v=, youtu.be/, shorts/, embed/, etc.
+    """
+    if not url:
+        return None
+    patterns = [
+        r"(?:v=|youtu\.be/|shorts/|embed/)([A-Za-z0-9_-]{11})",
+        r"watch\?v=([A-Za-z0-9_-]{11})",
+        r"youtu\.be/([A-Za-z0-9_-]{11})",
+        r"shorts/([A-Za-z0-9_-]{11})",
+        r"embed/([A-Za-z0-9_-]{11})"
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    if 'v=' in url:
+        return url.split('v=')[-1].split('&')[0]
+    return None
+
+# ========== YT-DLP OPTIONS ==========
+def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict:
+    """
+    Get yt-dlp options. If use_cookie_file is provided, use cookiefile.
+    Otherwise, use cookiesfrombrowser with the persistent profile (fallback).
+    """
+    base = {
+        "outtmpl": "downloads/%(id)s.%(ext)s",
+        "quiet": True,
+        "no_warnings": True,
+        "geo_bypass": True,
+        "nocheckcertificate": True,
+        "retries": 10,
+        "fragment_retries": 10,
+        "cachedir": YT_CACHE_DIR,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android"]  # Helps avoid bot detection
+            }
+        }
+    }
+    if use_cookie_file and os.path.exists(use_cookie_file):
+        base["cookiefile"] = use_cookie_file
+        logger.debug(f"Using cookiefile: {use_cookie_file}")
+    else:
+        # Fallback to persistent profile
+        base["cookiesfrombrowser"] = ("chrome", PLAYWRIGHT_PROFILE_DIR)
+        logger.debug("Using cookiesfrombrowser with persistent profile")
+
+    # Add proxy if available
+    proxy = choose_random_proxy(YTDLP_PROXY_POOL)
+    if proxy:
+        base["proxy"] = proxy
+
+    if extra_opts:
+        base.update(extra_opts)
+    return base
+
+# Helper to locate downloaded file
+def _get_downloaded_file(video_id: str) -> Optional[str]:
+    if not video_id:
+        return None
+    DOWNLOAD_DIR = "downloads"
+    for ext in ['mp3', 'webm', 'm4a', 'opus', 'mp4', 'mkv']:
+        potential = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
+        if os.path.exists(potential):
+            return potential
+    for f in os.listdir(DOWNLOAD_DIR):
+        if video_id in f:
+            return os.path.join(DOWNLOAD_DIR, f)
+    return None
+
+# ========== CORE DOWNLOAD FUNCTION ==========
+async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
+    """Download using yt-dlp, with automatic cookie refresh on failure."""
+    video_id = extract_video_id(link)
+    if not video_id:
+        logger.error(f"Could not extract video ID from {link}")
+        return None
+
+    DOWNLOAD_DIR = "downloads"
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+    # Check if file already exists
+    existing = _get_downloaded_file(video_id)
+    if existing:
+        logger.info(f"📁 File already exists: {existing}")
+        return existing
+
+    # Ensure we have cookies
+    cookie_file = await get_cookies()
+    if not cookie_file:
+        logger.error("No valid cookies available, cannot download")
+        return None
+
+    # Configure yt-dlp options
+    if is_audio:
+        ydl_opts = get_ytdlp_opts({
+            "format": "bestaudio/best",
+            "postprocessors": [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+        }, use_cookie_file=cookie_file)
+    else:
+        ydl_opts = get_ytdlp_opts({
+            "format": "bestvideo+bestaudio/best",
+            "merge_output_format": "mp4"
+        }, use_cookie_file=cookie_file)
+
+    # Attempt download with retry on cookie-related errors
+    for attempt in range(2):  # max 2 attempts (first, then refresh+retry)
+        try:
+            # Random sleep jitter to avoid detection
+            await asyncio.sleep(random.uniform(0.5, 2.5))
+
+            loop = asyncio.get_event_loop()
+            async with DOWNLOAD_SEMAPHORE:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    await loop.run_in_executor(None, lambda: ydl.extract_info(link, download=True))
+
+            file_path = _get_downloaded_file(video_id)
+            if file_path:
+                logger.info(f"✅ Download successful: {file_path}")
+                return file_path
+            else:
+                logger.error("Download completed but file not found")
+                return None
+
+        except Exception as e:
+            if is_auth_error(e) and AUTO_REFRESH_COOKIES and attempt == 0:
+                logger.warning(f"Download failed due to auth/robot issue: {str(e)[:200]}")
+                logger.info("🔄 Refreshing cookies in background and retrying with profile fallback...")
+                # Trigger background refresh
+                asyncio.create_task(background_refresh_cookie())
+                # Retry using profile cookies (cookiesfrombrowser) without waiting for refresh
+                ydl_opts = get_ytdlp_opts({
+                    "format": "bestaudio/best" if is_audio else "bestvideo+bestaudio/best",
+                    "postprocessors": [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}] if is_audio else None,
+                    "merge_output_format": "mp4" if not is_audio else None
+                }, use_cookie_file=None)  # This will use persistent profile
+                continue
+            else:
+                logger.error(f"Download error: {str(e)[:200]}")
+                return None
+
+    return None
+
+# ========== DOWNLOAD WRAPPERS ==========
+async def download_song(link: str) -> Optional[str]:
+    logger.info(f"🎵 Downloading audio: {link}")
+    return await download_with_ytdlp(link, is_audio=True)
+
+async def download_video(link: str) -> Optional[str]:
+    logger.info(f"🎬 Downloading video: {link}")
+    return await download_with_ytdlp(link, is_audio=False)
+
+# ========== UTILITY FUNCTIONS ==========
+async def shell_cmd(cmd):
+    proc = await asyncio.create_subprocess_shell(
+        cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    out, errorz = await proc.communicate()
+    if errorz:
+        err = errorz.decode("utf-8")
+        if "unavailable videos are hidden" in err.lower():
+            return out.decode("utf-8")
+        return err
+    return out.decode("utf-8")
+
+async def check_file_size(link):
+    try:
+        ydl_opts = get_ytdlp_opts({"quiet": True}, use_cookie_file=None)  # Use profile
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(link, download=False)
+            total = 0
+            for f in info.get('formats', []):
+                size = f.get('filesize') or f.get('filesize_approx')
+                if size:
+                    total += size
+            return total
+    except Exception as e:
+        logger.error(f"Failed to get file size: {e}")
+        return None
+
+# ========== PERIODIC COOKIE REFRESH ==========
+async def periodic_cookie_refresh():
+    """Refresh cookie every 12 hours."""
+    while True:
+        await asyncio.sleep(3600 * 12)  # 12 hours
+        logger.info("🔄 Periodic cookie refresh triggered.")
+        asyncio.create_task(background_refresh_cookie())
+
+# ========== YOUTUBE API CLASS ==========
+class YouTubeAPI:
+    def __init__(self):
+        self.base = "https://www.youtube.com/watch?v="
+        self.listbase = "https://youtube.com/playlist?list="
+        self.status = "https://www.youtube.com/oembed?url="
+        self.regex = re.compile(
+            r"(https?://)?(www\.|m\.)?"
+            r"(youtube\.com/(?:watch\?v=|shorts/|live/|embed/|playlist\?list=)|youtu\.be/)"
+            r"([A-Za-z0-9_-]{11}|PL[A-Za-z0-9_-]+)([&\?][^\s]*)?"
+        )
+        self.reg = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-9?]*[ -/]*[@-~])")
+
+    async def exists(self, link: str, videoid: Union[bool, str] = None):
+        if videoid:
+            link = self.base + link
+        return bool(re.search(self.regex, link))
+
+    async def url(self, message_1: Message) -> Union[str, None]:
+        messages = [message_1]
+        if message_1.reply_to_message:
+            messages.append(message_1.reply_to_message)
+        for message in messages:
+            if message.entities:
+                for entity in message.entities:
+                    if entity.type == MessageEntityType.URL:
+                        text = message.text or message.caption
+                        return text[entity.offset: entity.offset + entity.length]
+            elif message.caption_entities:
+                for entity in message.caption_entities:
+                    if entity.type == MessageEntityType.TEXT_LINK:
+                        return entity.url
+        return None
+
+    async def details(self, link: str, videoid: Union[bool, str] = None):
+        if videoid:
+            link = self.base + link
+        if "&" in link:
+            link = link.split("&")[0]
+        results = VideosSearch(link, limit=1)
+        for result in (await results.next())["result"]:
+            title = result["title"]
+            duration_min = result["duration"]
+            thumbnail = result["thumbnails"][0]["url"].split("?")[0]
+            vidid = result["id"]
+            duration_sec = int(time_to_seconds(duration_min)) if duration_min else 0
+        return title, duration_min, duration_sec, thumbnail, vidid
+
+    async def title(self, link: str, videoid: Union[bool, str] = None):
+        if videoid:
+            link = self.base + link
+        if "&" in link:
+            link = link.split("&")[0]
+        results = VideosSearch(link, limit=1)
+        for result in (await results.next())["result"]:
+            return result["title"]
+
+    async def duration(self, link: str, videoid: Union[bool, str] = None):
+        if videoid:
+            link = self.base + link
+        if "&" in link:
+            link = link.split("&")[0]
+        results = VideosSearch(link, limit=1)
+        for result in (await results.next())["result"]:
+            return result["duration"]
+
+    async def thumbnail(self, link: str, videoid: Union[bool, str] = None):
+        if videoid:
+            link = self.base + link
+        if "&" in link:
+            link = link.split("&")[0]
+        results = VideosSearch(link, limit=1)
+        for result in (await results.next())["result"]:
+            return result["thumbnails"][0]["url"].split("?")[0]
+
+    async def video(self, link: str, videoid: Union[bool, str] = None):
+        if videoid:
+            link = self.base + link
+        try:
+            downloaded_file = await download_video(link)
+            if downloaded_file:
+                return 1, downloaded_file
+            return 0, "Video download failed"
+        except Exception as e:
+            return 0, f"Video failed: {str(e)[:100]}"
+
+    async def playlist(self, link, limit, user_id, videoid: Union[bool, str] = None):
+        if videoid:
+            link = self.listbase + link
+        if "&" in link:
+            link = link.split("&")[0]
+        ydl_opts = get_ytdlp_opts({
+            "quiet": True,
+            "extract_flat": True,
+            "playlistend": limit,
+        }, use_cookie_file=None)  # Use profile
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(link, download=False)
+                if 'entries' in info:
+                    return [entry['id'] for entry in info['entries'] if entry.get('id')]
+                return []
+        except Exception as e:
+            logger.error(f"Playlist extraction failed: {e}")
+            return []
+
+    async def track(self, link: str, videoid: Union[bool, str] = None):
+        if videoid:
+            link = self.base + link
+        if "&" in link:
+            link = link.split("&")[0]
+        results = VideosSearch(link, limit=1)
+        for result in (await results.next())["result"]:
+            title = result["title"]
+            duration_min = result["duration"]
+            vidid = result["id"]
+            yturl = result["link"]
+            thumbnail = result["thumbnails"][0]["url"].split("?")[0]
+        track_details = {
+            "title": title,
+            "link": yturl,
+            "vidid": vidid,
+            "duration_min": duration_min,
+            "thumb": thumbnail,
+        }
+        return track_details, vidid
+
+    async def formats(self, link: str, videoid: Union[bool, str] = None):
+        if videoid:
+            link = self.base + link
+        if "&" in link:
+            link = link.split("&")[0]
+        ydl_opts = get_ytdlp_opts({"quiet": True}, use_cookie_file=None)  # Use profile
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(link, download=False)
+                formats_available = []
+                for fmt in info.get('formats', []):
+                    try:
+                        if "dash" not in str(fmt.get("format", "")).lower():
+                            formats_available.append({
+                                "format": fmt.get("format"),
+                                "filesize": fmt.get("filesize"),
+                                "format_id": fmt.get("format_id"),
+                                "ext": fmt.get("ext"),
+                                "format_note": fmt.get("format_note"),
+                                "yturl": link,
+                            })
+                    except:
+                        continue
+            return formats_available, link
+        except Exception as e:
+            logger.error(f"Failed to get formats: {e}")
+            return [], link
+
+    async def slider(self, link: str, query_type: int, videoid: Union[bool, str] = None):
+        if videoid:
+            link = self.base + link
+        if "&" in link:
+            link = link.split("&")[0]
+        a = VideosSearch(link, limit=10)
+        result = (await a.next()).get("result")
+        title = result[query_type]["title"]
+        duration_min = result[query_type]["duration"]
+        vidid = result[query_type]["id"]
+        thumbnail = result[query_type]["thumbnails"][0]["url"].split("?")[0]
+        return title, duration_min, thumbnail, vidid
+
+    async def download(
+        self,
+        link: str,
+        mystic,
+        video: Union[bool, str] = None,
+        videoid: Union[bool, str] = None,
+        songaudio: Union[bool, str] = None,
+        songvideo: Union[bool, str] = None,
+        format_id: Union[bool, str] = None,
+        title: Union[bool, str] = None,
+    ) -> tuple:
+        if videoid:
+            link = self.base + link
+
+        try:
+            if songvideo or songaudio:
+                downloaded_file = await download_song(link)
+                return downloaded_file, bool(downloaded_file)
+            elif video:
+                downloaded_file = await download_video(link)
+                return downloaded_file, bool(downloaded_file)
+            else:
+                downloaded_file = await download_song(link)
+                return downloaded_file, bool(downloaded_file)
+        except Exception as e:
+            logger.error(f"Download error: {e}")
+            return None, False
+
+# ========== STARTUP TASK ==========
+async def startup_services():
+    """Generate initial cookies if none exist and start periodic refresh."""
+    if not ENABLE_YT_LOGIN:
+        logger.info("YouTube login disabled by environment flag.")
+        return
+
+    logger.info("🚀 Starting YouTube services...")
+    if not os.path.exists(COOKIE_FILE) or not verify_cookies_file(COOKIE_FILE) or is_cookie_file_expired(COOKIE_FILE):
+        logger.info("🔄 No valid cookies found, generating initial cookies...")
+        cookie_file = await get_cookies(force_refresh=True)
+        if cookie_file:
+            logger.info(f"✅ Initial cookies generated: {cookie_file}")
+        else:
+            logger.warning("⚠️ Initial cookie generation failed, will retry on demand.")
+    else:
+        logger.info("✅ Existing cookies are valid.")
+
+    # Start periodic cookie refresh
+    asyncio.create_task(periodic_cookie_refresh())
+
+# Run startup services
+loop = asyncio.get_event_loop()
+if loop.is_running():
+    asyncio.create_task(startup_services())
+else:
+    loop.run_until_complete(startup_services())
