@@ -1,12 +1,3 @@
-# ╔══════════════════════════════════════════════════════════════════════╗
-# ║          LIFE GAMES MODULE — SHASHA_DRUGZ BOT                        ║
-# ║          Single-file plugin · MongoDB persistent storage             ║
-# ║                                                                      ║
-# ║  NON-SLASH COMMAND FIX:                                              ║
-# ║  All aliases (bbet/Bbet/BBET, ppay/Ppay/PPAY, etc.) now work        ║
-# ║  via filters.text & manual text matching — fully reliable.           ║
-# ╚══════════════════════════════════════════════════════════════════════╝
-
 import os
 import re
 import random
