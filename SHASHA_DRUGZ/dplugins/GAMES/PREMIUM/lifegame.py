@@ -14,7 +14,7 @@ import asyncio
 import time
 from datetime import datetime
 
-from pyrogram import filters
+from pyrogram import Client, filters
 from pyrogram.types import (
     Message,
     CallbackQuery,
@@ -287,7 +287,7 @@ _pending_loans:    dict = {}
 # ────────────────────────────────────────────
 #  PROFILE — /lifeprofile | pprofile
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifeprofile"]) | _alias_filter("pprofile", "Pprofile", "PPROFILE"))
     & filters.group
 )
@@ -322,7 +322,7 @@ async def profile_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  BALANCE — /lifebalance | bbalance
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifebalance"]) | _alias_filter("bbalance", "Bbalance", "BBALANCE"))
     & filters.group
 )
@@ -333,7 +333,7 @@ async def balance_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  DAILY — /lifedaily | ddaily
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifedaily"]) | _alias_filter("ddaily", "Ddaily", "DDAILY"))
     & filters.group
 )
@@ -360,7 +360,7 @@ async def daily_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  LEADERBOARD — /lifetop | ttop
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifetop"]) | _alias_filter("ttop", "Ttop", "TTOP"))
     & filters.group
 )
@@ -396,22 +396,22 @@ async def _social(m: Message, action: str):
         disable_web_page_preview=True,
     )
 
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifehug"]) | _alias_filter("hhug", "Hhug", "HHUG")) & filters.group
 )
 async def hug_cmd(client, m): await _social(m, "hug")
 
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifekiss"]) | _alias_filter("kkiss", "Kkiss", "KKISS")) & filters.group
 )
 async def kiss_cmd(client, m): await _social(m, "kiss")
 
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifeslap"]) | _alias_filter("sslap", "Sslap", "SSLAP")) & filters.group
 )
 async def slap_cmd(client, m): await _social(m, "slap")
 
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifelove"]) | _alias_filter("llove", "Llove", "LLOVE")) & filters.group
 )
 async def love_cmd(client, m): await _social(m, "love")
@@ -419,7 +419,7 @@ async def love_cmd(client, m): await _social(m, "love")
 # ────────────────────────────────────────────
 #  MARRY — /lifemarry | mmarry
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifemarry"]) | _alias_filter("mmarry", "Mmarry", "MMARRY"))
     & filters.group
 )
@@ -449,7 +449,7 @@ async def marry_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  DIVORCE — /lifedivorce | ddivorce
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifedivorce"]) | _alias_filter("ddivorce", "Ddivorce", "DDIVORCE"))
     & filters.group
 )
@@ -465,7 +465,7 @@ async def divorce_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  PARENT — /lifeparent | pparent
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifeparent"]) | _alias_filter("pparent", "Pparent", "PPARENT"))
     & filters.group
 )
@@ -483,7 +483,7 @@ async def parent_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  SIBLING — /lifesibling | ssibling
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifesibling"]) | _alias_filter("ssibling", "Ssibling", "SSIBLING"))
     & filters.group
 )
@@ -503,7 +503,7 @@ async def sibling_cmd(client, m: Message):
 #  STEAL — /steal | ssteal | Ssteal | SSTEAL
 #  ROB   — /rob   | rrob | Rrob | RROB
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (
         filters.command(["steal", "rob"])
         | _alias_filter("ssteal", "Ssteal", "SSTEAL", "rrob", "Rrob", "RROB")
@@ -560,7 +560,7 @@ async def steal_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  DUEL — /duel | dduel | Dduel | DDUEL
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["duel"]) | _alias_filter("dduel", "Dduel", "DDUEL"))
     & filters.group
 )
@@ -595,7 +595,7 @@ async def duel_cmd(client, m: Message):
         disable_web_page_preview=True,
     )
 
-@app.on_callback_query(filters.regex(r"^duel_(accept|decline)_(.+)$"))
+@Client.on_callback_query(filters.regex(r"^duel_(accept|decline)_(.+)$"))
 async def duel_response(client, q: CallbackQuery):
     action = q.matches[0].group(1)
     key    = q.matches[0].group(2)
@@ -637,7 +637,7 @@ async def duel_response(client, q: CallbackQuery):
 # ────────────────────────────────────────────
 #  BOWLING — /lifebowling | bbowling | Bbowling | BBOWLING
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifebowling"]) | _alias_filter("bbowling", "Bbowling", "BBOWLING"))
     & filters.group
 )
@@ -674,7 +674,7 @@ async def bowling_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  SLOTS — /sslots | sslots | Sslots | SSLOTS
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["sslots", "slots"]) | _alias_filter("sslots", "Sslots", "SSLOTS"))
     & filters.group
 )
@@ -721,7 +721,7 @@ async def slots_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  JOB — /lifejob | jjob | Jjob | JJOB
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifejob"]) | _alias_filter("jjob", "Jjob", "JJOB"))
     & filters.group
 )
@@ -762,7 +762,7 @@ async def job_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  WORK — /lifework | wwork | Wwork | WWORK
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifework"]) | _alias_filter("wwork", "Wwork", "WWORK"))
     & filters.group
 )
@@ -788,7 +788,7 @@ async def work_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  FIGHT — /lifefight | ffight | Ffight | FFIGHT
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifefight"]) | _alias_filter("ffight", "Ffight", "FFIGHT"))
     & filters.group
 )
@@ -854,7 +854,7 @@ async def _end_giveaway(key: str, host_uid: int, amount: int, reply_msg):
     except Exception:
         pass
 
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifegiveaway"]) | _alias_filter("ggiveaway", "Ggiveaway", "GGIVEAWAY"))
     & filters.group
 )
@@ -885,7 +885,7 @@ async def giveaway_cmd(client, m: Message):
     )
     asyncio.create_task(_end_giveaway(key, uid, amount, sent))
 
-@app.on_callback_query(filters.regex(r"^giveaway_join_(.+)$"))
+@Client.on_callback_query(filters.regex(r"^giveaway_join_(.+)$"))
 async def giveaway_join_cb(client, q: CallbackQuery):
     key = q.matches[0].group(1)
     ga  = _active_giveaways.get(key)
@@ -900,26 +900,26 @@ async def giveaway_join_cb(client, q: CallbackQuery):
 # ────────────────────────────────────────────
 #  SHOP — /lifeshop | sshop | Sshop | SSHOP
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifeshop"]) | _alias_filter("sshop", "Sshop", "SSHOP"))
     & filters.group
 )
 async def shop_cmd(client, m: Message):
     await m.reply("<blockquote>🛒 **ʟɪғᴇ ɢᴀᴍᴇs sʜᴏᴘ**\nᴄʜᴏᴏsᴇ ᴀ ᴄᴀᴛᴇɢᴏʀʏ:</blockquote>", reply_markup=_shop_main_kb())
 
-@app.on_callback_query(filters.regex(r"^shop_main$"))
+@Client.on_callback_query(filters.regex(r"^shop_main$"))
 async def shop_main_cb(client, q: CallbackQuery):
     await q.message.edit("<blockquote>🛒 **ʟɪғᴇ ɢᴀᴍᴇs sʜᴏᴘ**\nᴄʜᴏᴏsᴇ ᴀ ᴄᴀᴛᴇɢᴏʀʏ:</blockquote>", reply_markup=_shop_main_kb())
 
-@app.on_callback_query(filters.regex(r"^shop_armory$"))
+@Client.on_callback_query(filters.regex(r"^shop_armory$"))
 async def shop_armory_cb(client, q: CallbackQuery):
     await q.message.edit("<blockquote>🔫 **ᴀʀᴍᴏʀʏ sʜᴏᴘ**</blockquote>\n<blockquote>ᴄʜᴏᴏsᴇ ᴀ ᴡᴇᴀᴘᴏɴ ᴏʀ ɢᴇᴀʀ:</blockquote>", reply_markup=_armory_kb())
 
-@app.on_callback_query(filters.regex(r"^shop_petshop$"))
+@Client.on_callback_query(filters.regex(r"^shop_petshop$"))
 async def shop_petshop_cb(client, q: CallbackQuery):
     await q.message.edit("<blockquote>🐾 **ᴘᴇᴛ sʜᴏᴘ**</blockquote>\n<blockquote>ᴄʜᴏᴏsᴇ ᴀ ᴘᴇᴛ:</blockquote>", reply_markup=_petshop_kb())
 
-@app.on_callback_query(filters.regex(r"^buy_gun_(.+)$"))
+@Client.on_callback_query(filters.regex(r"^buy_gun_(.+)$"))
 async def buy_gun_cb(client, q: CallbackQuery):
     key  = q.matches[0].group(1)
     item = GUNS.get(key)
@@ -941,7 +941,7 @@ async def buy_gun_cb(client, q: CallbackQuery):
         ]]),
     )
 
-@app.on_callback_query(filters.regex(r"^buy_armor_(.+)$"))
+@Client.on_callback_query(filters.regex(r"^buy_armor_(.+)$"))
 async def buy_armor_cb(client, q: CallbackQuery):
     key  = q.matches[0].group(1)
     item = ARMOR.get(key)
@@ -964,7 +964,7 @@ async def buy_armor_cb(client, q: CallbackQuery):
         ]]),
     )
 
-@app.on_callback_query(filters.regex(r"^buy_pet_(.+)$"))
+@Client.on_callback_query(filters.regex(r"^buy_pet_(.+)$"))
 async def buy_pet_cb(client, q: CallbackQuery):
     key  = q.matches[0].group(1)
     item = PETS.get(key)
@@ -986,7 +986,7 @@ async def buy_pet_cb(client, q: CallbackQuery):
         ]]),
     )
 
-@app.on_callback_query(filters.regex(r"^shop_inventory$"))
+@Client.on_callback_query(filters.regex(r"^shop_inventory$"))
 async def shop_inventory_cb(client, q: CallbackQuery):
     uid = q.from_user.id
     u   = await _run(_get_user, uid)
@@ -1007,7 +1007,7 @@ async def shop_inventory_cb(client, q: CallbackQuery):
 # ────────────────────────────────────────────
 #  INVENTORY — /lifeinventory | iinventory
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifeinventory"]) | _alias_filter("iinventory", "Iinventory", "IINVENTORY"))
     & filters.group
 )
@@ -1034,7 +1034,7 @@ async def inventory_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  SETTINGS — /lifesettings | ssettings
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifesettings"]) | _alias_filter("ssettings", "Ssettings", "SSETTINGS"))
     & filters.group
 )
@@ -1059,7 +1059,7 @@ async def settings_cmd(client, m: Message):
         ]),
     )
 
-@app.on_callback_query(filters.regex(r"^setting_(games|betting)_(-?\d+)$"))
+@Client.on_callback_query(filters.regex(r"^setting_(games|betting)_(-?\d+)$"))
 async def settings_toggle_cb(client, q: CallbackQuery):
     setting = q.matches[0].group(1)
     chat_id = int(q.matches[0].group(2))
@@ -1073,7 +1073,7 @@ async def settings_toggle_cb(client, q: CallbackQuery):
 # ────────────────────────────────────────────
 #  ENABLE / DISABLE — admin only
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifeenable"]) | _alias_filter("eenable", "Eenable", "EENABLE"))
     & filters.group
 )
@@ -1083,7 +1083,7 @@ async def enable_cmd(client, m: Message):
     groups_col.update_one({"chat_id": m.chat.id}, {"$set": {"games_enabled": True}}, upsert=True)
     await m.reply("<blockquote>✅ ʟɪғᴇ ɢᴀᴍᴇs **ᴇɴᴀʙʟᴇᴅ** ɪɴ ᴛʜɪs ɢʀᴏᴜᴘ!</blockquote>")
 
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifedisable"]) | _alias_filter("ddisable", "Ddisable", "DDISABLE"))
     & filters.group
 )
@@ -1096,7 +1096,7 @@ async def disable_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  RESET — /lifereset | rreset (owner/sudo only)
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifereset"]) | _alias_filter("rreset", "Rreset", "RRESET"))
     & filters.group
 )
@@ -1118,7 +1118,7 @@ async def reset_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  ADD COINS — /lifeaddcoins | aaddcoins (owner/sudo only)
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifeaddcoins"]) | _alias_filter("aaddcoins", "Aaddcoins", "AADDCOINS"))
     & filters.group
 )
@@ -1143,7 +1143,7 @@ async def addcoins_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  DEPOSIT — /deposit | deposit | Deposit | DEPOSIT
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["deposit"]) | _alias_filter("deposit", "Deposit", "DEPOSIT"))
     & filters.group
 )
@@ -1167,7 +1167,7 @@ async def deposit_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  WITHDRAW — /withdraw | withdraw | Withdraw | WITHDRAW
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["withdraw"]) | _alias_filter("withdraw", "Withdraw", "WITHDRAW"))
     & filters.group
 )
@@ -1191,7 +1191,7 @@ async def withdraw_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  BET — /bet | bbet | Bbet | BBET
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (
         filters.command(["bet"])
         | _alias_filter("bbet", "Bbet", "BBET")
@@ -1242,7 +1242,7 @@ async def bet_cmd(client, m: Message):
 #  - With amount:    /pay 500   → pay 500 coins
 #  - Without amount: /pay       → pay your FULL wallet balance
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (
         filters.command(["pay"])
         | _alias_filter("ppay", "Ppay", "PPAY")
@@ -1290,7 +1290,7 @@ async def pay_cmd(client, m: Message):
 # ────────────────────────────────────────────
 #  LOAN — /loan | lloan | Lloan | LLOAN
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["loan"]) | _alias_filter("lloan", "Lloan", "LLOAN"))
     & filters.group
 )
@@ -1334,7 +1334,7 @@ async def loan_cmd(client, m: Message):
         disable_web_page_preview=True,
     )
 
-@app.on_callback_query(filters.regex(r"^loan_(accept|decline)_(.+)$"))
+@Client.on_callback_query(filters.regex(r"^loan_(accept|decline)_(.+)$"))
 async def loan_response(client, q: CallbackQuery):
     action = q.matches[0].group(1)
     key    = q.matches[0].group(2)
@@ -1365,7 +1365,7 @@ async def loan_response(client, q: CallbackQuery):
 # ────────────────────────────────────────────
 #  HELP — /lifehelp | hhelp | Hhelp | HHELP
 # ────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     (filters.command(["lifehelp"]) | _alias_filter("hhelp", "Hhelp", "HHELP"))
     & filters.group
 )
@@ -1446,3 +1446,7 @@ __help__     = """
 🔻 /deposit       ➠ ᴅᴇᴘᴏꜱɪᴛ ᴄᴏɪɴꜱ ᴛᴏ ʙᴀɴᴋ
 🔻 /withdraw      ➠ ᴡɪᴛʜᴅʀᴀᴡ ꜰʀᴏᴍ ʙᴀɴᴋ
 """
+
+MOD_TYPE = "GAMES"
+MOD_NAME = "LifeGame"
+MOD_PRICE = "250"
