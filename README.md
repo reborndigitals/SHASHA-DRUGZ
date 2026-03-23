@@ -3,9 +3,9 @@
 
 
 <h2 align="center">
-    ˹𝐒ʜᴧƨнᴧ ༭ 𝐌ʋ𝗌ιᴄ˼𓆩𔘓⃭𓆪
+     [˹𝐒ʜᴧƨнᴧ ༭ 𝐃꧊ꝛʋɢ𝗌˼𓆩𔘓⃭𓆪](https://telegram.me/ShashaOffiBot)
 
-★ @HeartBeat_Offi ★
+★ [@ʜᴇᴧꝛᴛʙᴇᴧᴛ_ᴏғғɪ](https://telegram.me/HeartBeat_Offi) | [@ʜᴇᴧꝛᴛʙᴇᴧᴛ_ғᴧϻ](https://telegram.me/HeartBeat_Fam) ★
 </h2>
 <img src="https://readme-typing-svg.herokuapp.com?color=FF0000&width=420&lines=♦𝙳𝙴𝙿𝙻𝙾𝚈+𝙾𝙽+𝙷𝙴𝚁𝙾𝙺𝚄♦;♨️+𝙽𝙾+𝙷𝙴𝚁𝙾𝙺𝚄+𝙱𝙰𝙽+𝙸𝚂𝚂𝚄𝙴+𝙰𝙻𝚂𝙾+𝚅𝙿𝚂+𝙳𝙴𝙿𝙻𝙾𝚈+📍+𝙿𝚁𝙴𝚂𝙴𝙽𝚃;🎭+𝙿𝙾𝚆𝙴𝚁𝙳+𝙱𝚈+HEART+BEAT+🎭">
 
