@@ -3,7 +3,6 @@ from pyrogram.types import Message
 from SHASHA_DRUGZ.mongo.pretenderdb import impo_off, impo_on, check_pretender, add_userdata, get_userdata, usr_data
 from SHASHA_DRUGZ import app
 
-print("[imposter] imposter")
 
 # In-memory set to store chat IDs where imposter is explicitly disabled
 disabled_chats = set()
