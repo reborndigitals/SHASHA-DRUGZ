@@ -14,8 +14,8 @@
 # ║  function exists per feature.                                        ║
 # ║                                                                      ║
 # ║  Pattern used everywhere:                                            ║
-# ║    @app.on_message(filters.command([...]))          # group 0        ║
-# ║    @app.on_message(filters.regex(..., IGNORECASE),  # group -1       ║
+# ║    @Client.on_message(filters.command([...]))          # group 0        ║
+# ║    @Client.on_message(filters.regex(..., IGNORECASE),  # group -1       ║
 # ║                    group=-1)                                         ║
 # ║  Both decorators point to the SAME handler function.                 ║
 # ║                                                                      ║
@@ -28,7 +28,7 @@ import random
 import asyncio
 import time
 import re
-from pyrogram import filters
+from pyrogram import Client, filters
 from pyrogram.types import (
     Message,
     CallbackQuery,
@@ -269,11 +269,11 @@ def _rf(pattern: str):
 #
 #    async def _xxx_handler(client, m): ...   ← single implementation
 #
-#    @app.on_message(filters.command(["..."]) & filters.group)
+#    @Client.on_message(filters.command(["..."]) & filters.group)
 #    async def xxx_slash(client, m):           ← /slash  (group 0)
 #        await _xxx_handler(client, m)
 #
-#    @app.on_message(_rf(r"^(alias|word)\b"), group=-1)
+#    @Client.on_message(_rf(r"^(alias|word)\b"), group=-1)
 #    async def xxx_noslash(client, m):         ← no-slash (group -1, higher priority)
 #        await _xxx_handler(client, m)
 #
@@ -314,11 +314,11 @@ async def _profile_handler(client, m: Message):
         disable_web_page_preview=True,
     )
 
-@app.on_message(filters.command(["lifeprofile"]) & filters.group)
+@Client.on_message(filters.command(["lifeprofile"]) & filters.group)
 async def profile_slash(client, m: Message):
     await _profile_handler(client, m)
 
-@app.on_message(_rf(r"^(pprofile|profile)\b"), group=-1)
+@Client.on_message(_rf(r"^(pprofile|profile)\b"), group=-1)
 async def profile_noslash(client, m: Message):
     await _profile_handler(client, m)
 
@@ -330,11 +330,11 @@ async def _balance_handler(client, m: Message):
     coins = await _run(_get_coins, m.from_user.id)
     await m.reply(f"<blockquote>💰 ʏᴏᴜʀ ʙᴀʟᴀɴᴄᴇ: **{coins:,}** ᴄᴏɪɴs</blockquote>")
 
-@app.on_message(filters.command(["lifebalance"]) & filters.group)
+@Client.on_message(filters.command(["lifebalance"]) & filters.group)
 async def balance_slash(client, m: Message):
     await _balance_handler(client, m)
 
-@app.on_message(_rf(r"^(bbalance|balance)\b"), group=-1)
+@Client.on_message(_rf(r"^(bbalance|balance)\b"), group=-1)
 async def balance_noslash(client, m: Message):
     await _balance_handler(client, m)
 
@@ -365,11 +365,11 @@ async def _daily_handler(client, m: Message):
         f"⭐ **+10** xᴘ</blockquote>"
     )
 
-@app.on_message(filters.command(["lifedaily"]) & filters.group)
+@Client.on_message(filters.command(["lifedaily"]) & filters.group)
 async def daily_slash(client, m: Message):
     await _daily_handler(client, m)
 
-@app.on_message(_rf(r"^(ddaily|daily)\b"), group=-1)
+@Client.on_message(_rf(r"^(ddaily|daily)\b"), group=-1)
 async def daily_noslash(client, m: Message):
     await _daily_handler(client, m)
 
@@ -398,11 +398,11 @@ async def _top_handler(client, m: Message):
         disable_web_page_preview=True,
     )
 
-@app.on_message(filters.command(["lifetop"]) & filters.group)
+@Client.on_message(filters.command(["lifetop"]) & filters.group)
 async def top_slash(client, m: Message):
     await _top_handler(client, m)
 
-@app.on_message(_rf(r"^(ttop|top)\b"), group=-1)
+@Client.on_message(_rf(r"^(ttop|top)\b"), group=-1)
 async def top_noslash(client, m: Message):
     await _top_handler(client, m)
 
@@ -420,24 +420,24 @@ async def _social(m: Message, action: str):
         disable_web_page_preview=True,
     )
 
-@app.on_message(filters.command(["lifehug"]) & filters.group)
+@Client.on_message(filters.command(["lifehug"]) & filters.group)
 async def hug_slash(client, m): await _social(m, "hug")
-@app.on_message(_rf(r"^(hhug|hug)\b"), group=-1)
+@Client.on_message(_rf(r"^(hhug|hug)\b"), group=-1)
 async def hug_noslash(client, m): await _social(m, "hug")
 
-@app.on_message(filters.command(["lifekiss"]) & filters.group)
+@Client.on_message(filters.command(["lifekiss"]) & filters.group)
 async def kiss_slash(client, m): await _social(m, "kiss")
-@app.on_message(_rf(r"^(kkiss|kiss)\b"), group=-1)
+@Client.on_message(_rf(r"^(kkiss|kiss)\b"), group=-1)
 async def kiss_noslash(client, m): await _social(m, "kiss")
 
-@app.on_message(filters.command(["lifeslap"]) & filters.group)
+@Client.on_message(filters.command(["lifeslap"]) & filters.group)
 async def slap_slash(client, m): await _social(m, "slap")
-@app.on_message(_rf(r"^(sslap|slap)\b"), group=-1)
+@Client.on_message(_rf(r"^(sslap|slap)\b"), group=-1)
 async def slap_noslash(client, m): await _social(m, "slap")
 
-@app.on_message(filters.command(["lifelove"]) & filters.group)
+@Client.on_message(filters.command(["lifelove"]) & filters.group)
 async def love_slash(client, m): await _social(m, "love")
-@app.on_message(_rf(r"^(llove|love)\b"), group=-1)
+@Client.on_message(_rf(r"^(llove|love)\b"), group=-1)
 async def love_noslash(client, m): await _social(m, "love")
 
 
@@ -467,9 +467,9 @@ async def _marry_handler(client, m: Message):
         disable_web_page_preview=True,
     )
 
-@app.on_message(filters.command(["lifemarry"]) & filters.group)
+@Client.on_message(filters.command(["lifemarry"]) & filters.group)
 async def marry_slash(client, m): await _marry_handler(client, m)
-@app.on_message(_rf(r"^(mmarry|marry)\b"), group=-1)
+@Client.on_message(_rf(r"^(mmarry|marry)\b"), group=-1)
 async def marry_noslash(client, m): await _marry_handler(client, m)
 
 
@@ -485,9 +485,9 @@ async def _divorce_handler(client, m: Message):
     await _run(_update_user, uid, {"partner": 0})
     await m.reply("<blockquote>💔 ʏᴏᴜ ᴀʀᴇ ɴᴏᴡ ᴅɪᴠᴏʀᴄᴇᴅ.</blockquote>")
 
-@app.on_message(filters.command(["lifedivorce"]) & filters.group)
+@Client.on_message(filters.command(["lifedivorce"]) & filters.group)
 async def divorce_slash(client, m): await _divorce_handler(client, m)
-@app.on_message(_rf(r"^(ddivorce|divorce)\b"), group=-1)
+@Client.on_message(_rf(r"^(ddivorce|divorce)\b"), group=-1)
 async def divorce_noslash(client, m): await _divorce_handler(client, m)
 
 
@@ -505,9 +505,9 @@ async def _parent_handler(client, m: Message):
         disable_web_page_preview=True,
     )
 
-@app.on_message(filters.command(["lifeparent"]) & filters.group)
+@Client.on_message(filters.command(["lifeparent"]) & filters.group)
 async def parent_slash(client, m): await _parent_handler(client, m)
-@app.on_message(_rf(r"^(pparent|parent)\b"), group=-1)
+@Client.on_message(_rf(r"^(pparent|parent)\b"), group=-1)
 async def parent_noslash(client, m): await _parent_handler(client, m)
 
 
@@ -526,9 +526,9 @@ async def _sibling_handler(client, m: Message):
         disable_web_page_preview=True,
     )
 
-@app.on_message(filters.command(["lifesibling"]) & filters.group)
+@Client.on_message(filters.command(["lifesibling"]) & filters.group)
 async def sibling_slash(client, m): await _sibling_handler(client, m)
-@app.on_message(_rf(r"^(ssibling|sibling)\b"), group=-1)
+@Client.on_message(_rf(r"^(ssibling|sibling)\b"), group=-1)
 async def sibling_noslash(client, m): await _sibling_handler(client, m)
 
 
@@ -578,9 +578,9 @@ async def _steal_handler(client, m: Message):
             f"🚔 ᴊᴀɪʟᴇᴅ **10 ᴍɪɴᴜᴛᴇs**</blockquote>"
         )
 
-@app.on_message(filters.command(["steal"]) & filters.group)
+@Client.on_message(filters.command(["steal"]) & filters.group)
 async def steal_slash(client, m): await _steal_handler(client, m)
-@app.on_message(_rf(r"^(ssteal|steal)\b"), group=-1)
+@Client.on_message(_rf(r"^(ssteal|steal)\b"), group=-1)
 async def steal_noslash(client, m): await _steal_handler(client, m)
 
 
@@ -621,12 +621,12 @@ async def _duel_handler(client, m: Message):
         disable_web_page_preview=True,
     )
 
-@app.on_message(filters.command(["duel"]) & filters.group)
+@Client.on_message(filters.command(["duel"]) & filters.group)
 async def duel_slash(client, m): await _duel_handler(client, m)
-@app.on_message(_rf(r"^(dduel|duel)\b"), group=-1)
+@Client.on_message(_rf(r"^(dduel|duel)\b"), group=-1)
 async def duel_noslash(client, m): await _duel_handler(client, m)
 
-@app.on_callback_query(filters.regex(r"^duel_(accept|decline)_(.+)$"))
+@Client.on_callback_query(filters.regex(r"^duel_(accept|decline)_(.+)$"))
 async def duel_response(client, q: CallbackQuery):
     action = q.matches[0].group(1)
     key    = q.matches[0].group(2)
@@ -695,9 +695,9 @@ async def _bowling_handler(client, m: Message):
         result = f"<blockquote>🎳 sᴄᴏʀᴇ: **{score}/6** — ɢᴜᴛᴛᴇʀʙᴀʟʟ!\n💸 ʟᴏsᴛ **{bet:,}** ᴄᴏɪɴs</blockquote>"
     await m.reply(result)
 
-@app.on_message(filters.command(["lifebowling"]) & filters.group)
+@Client.on_message(filters.command(["lifebowling"]) & filters.group)
 async def bowling_slash(client, m): await _bowling_handler(client, m)
-@app.on_message(_rf(r"^(bbowling|bowling)\b"), group=-1)
+@Client.on_message(_rf(r"^(bbowling|bowling)\b"), group=-1)
 async def bowling_noslash(client, m): await _bowling_handler(client, m)
 
 
@@ -741,9 +741,9 @@ async def _slots_handler(client, m: Message):
         body += f"<blockquote>💀 **ɴᴏ ᴍᴀᴛᴄʜ!**\n💸 ʟᴏsᴛ **{bet:,}** ᴄᴏɪɴs</blockquote>"
     await msg.edit(body)
 
-@app.on_message(filters.command(["sslots", "slots"]) & filters.group)
+@Client.on_message(filters.command(["sslots", "slots"]) & filters.group)
 async def slots_slash(client, m): await _slots_handler(client, m)
-@app.on_message(_rf(r"^(sslots|slots)\b"), group=-1)
+@Client.on_message(_rf(r"^(sslots|slots)\b"), group=-1)
 async def slots_noslash(client, m): await _slots_handler(client, m)
 
 
@@ -781,9 +781,9 @@ async def _job_handler(client, m: Message):
         f"🎯 ʙᴏɴᴜs: +{ji['bonus_val']}% {ji['bonus_type'].replace('_', ' ')}</blockquote>"
     )
 
-@app.on_message(filters.command(["lifejob"]) & filters.group)
+@Client.on_message(filters.command(["lifejob"]) & filters.group)
 async def job_slash(client, m): await _job_handler(client, m)
-@app.on_message(_rf(r"^(jjob|job)\b"), group=-1)
+@Client.on_message(_rf(r"^(jjob|job)\b"), group=-1)
 async def job_noslash(client, m): await _job_handler(client, m)
 
 
@@ -810,9 +810,9 @@ async def _work_handler(client, m: Message):
         f"<blockquote>💰 ᴇᴀʀɴᴇᴅ: **{salary:,}** · ⭐ +20 xᴘ</blockquote>"
     )
 
-@app.on_message(filters.command(["lifework"]) & filters.group)
+@Client.on_message(filters.command(["lifework"]) & filters.group)
 async def work_slash(client, m): await _work_handler(client, m)
-@app.on_message(_rf(r"^(wwork|work)\b"), group=-1)
+@Client.on_message(_rf(r"^(wwork|work)\b"), group=-1)
 async def work_noslash(client, m): await _work_handler(client, m)
 
 
@@ -851,9 +851,9 @@ async def _fight_handler(client, m: Message):
         f"💰 **{reward:,}** coins · ⭐ +20 xᴘ</blockquote>"
     )
 
-@app.on_message(filters.command(["lifefight"]) & filters.group)
+@Client.on_message(filters.command(["lifefight"]) & filters.group)
 async def fight_slash(client, m): await _fight_handler(client, m)
-@app.on_message(_rf(r"^(ffight|fight)\b"), group=-1)
+@Client.on_message(_rf(r"^(ffight|fight)\b"), group=-1)
 async def fight_noslash(client, m): await _fight_handler(client, m)
 
 
@@ -908,12 +908,12 @@ async def _giveaway_handler(client, m: Message):
     )
     asyncio.create_task(_end_giveaway(key, uid, amount, sent))
 
-@app.on_message(filters.command(["lifegiveaway"]) & filters.group)
+@Client.on_message(filters.command(["lifegiveaway"]) & filters.group)
 async def giveaway_slash(client, m): await _giveaway_handler(client, m)
-@app.on_message(_rf(r"^(ggiveaway|giveaway)\b"), group=-1)
+@Client.on_message(_rf(r"^(ggiveaway|giveaway)\b"), group=-1)
 async def giveaway_noslash(client, m): await _giveaway_handler(client, m)
 
-@app.on_callback_query(filters.regex(r"^giveaway_join_(.+)$"))
+@Client.on_callback_query(filters.regex(r"^giveaway_join_(.+)$"))
 async def giveaway_join_cb(client, q: CallbackQuery):
     key = q.matches[0].group(1)
     ga  = _active_giveaways.get(key)
@@ -935,24 +935,24 @@ async def _shop_handler(client, m: Message):
         reply_markup=_shop_main_kb(),
     )
 
-@app.on_message(filters.command(["lifeshop"]) & filters.group)
+@Client.on_message(filters.command(["lifeshop"]) & filters.group)
 async def shop_slash(client, m): await _shop_handler(client, m)
-@app.on_message(_rf(r"^(sshop|shop)\b"), group=-1)
+@Client.on_message(_rf(r"^(sshop|shop)\b"), group=-1)
 async def shop_noslash(client, m): await _shop_handler(client, m)
 
-@app.on_callback_query(filters.regex(r"^shop_main$"))
+@Client.on_callback_query(filters.regex(r"^shop_main$"))
 async def shop_main_cb(client, q: CallbackQuery):
     await q.message.edit("<blockquote>🛒 **ʟɪғᴇ sʜᴏᴘ**\nᴄʜᴏᴏsᴇ:</blockquote>", reply_markup=_shop_main_kb())
 
-@app.on_callback_query(filters.regex(r"^shop_armory$"))
+@Client.on_callback_query(filters.regex(r"^shop_armory$"))
 async def shop_armory_cb(client, q: CallbackQuery):
     await q.message.edit("<blockquote>🔫 **ᴀʀᴍᴏʀʏ**</blockquote>", reply_markup=_armory_kb())
 
-@app.on_callback_query(filters.regex(r"^shop_petshop$"))
+@Client.on_callback_query(filters.regex(r"^shop_petshop$"))
 async def shop_petshop_cb(client, q: CallbackQuery):
     await q.message.edit("<blockquote>🐾 **ᴘᴇᴛ sʜᴏᴘ**</blockquote>", reply_markup=_petshop_kb())
 
-@app.on_callback_query(filters.regex(r"^buy_gun_(.+)$"))
+@Client.on_callback_query(filters.regex(r"^buy_gun_(.+)$"))
 async def buy_gun_cb(client, q: CallbackQuery):
     key  = q.matches[0].group(1)
     item = GUNS.get(key)
@@ -970,7 +970,7 @@ async def buy_gun_cb(client, q: CallbackQuery):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅ ʙᴀᴄᴋ", callback_data="shop_armory")]]),
     )
 
-@app.on_callback_query(filters.regex(r"^buy_armor_(.+)$"))
+@Client.on_callback_query(filters.regex(r"^buy_armor_(.+)$"))
 async def buy_armor_cb(client, q: CallbackQuery):
     key  = q.matches[0].group(1)
     item = ARMOR.get(key)
@@ -989,7 +989,7 @@ async def buy_armor_cb(client, q: CallbackQuery):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅ ʙᴀᴄᴋ", callback_data="shop_armory")]]),
     )
 
-@app.on_callback_query(filters.regex(r"^buy_pet_(.+)$"))
+@Client.on_callback_query(filters.regex(r"^buy_pet_(.+)$"))
 async def buy_pet_cb(client, q: CallbackQuery):
     key  = q.matches[0].group(1)
     item = PETS.get(key)
@@ -1007,7 +1007,7 @@ async def buy_pet_cb(client, q: CallbackQuery):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅ ʙᴀᴄᴋ", callback_data="shop_petshop")]]),
     )
 
-@app.on_callback_query(filters.regex(r"^shop_inventory$"))
+@Client.on_callback_query(filters.regex(r"^shop_inventory$"))
 async def shop_inventory_cb(client, q: CallbackQuery):
     uid = q.from_user.id
     u   = await _run(_get_user, uid)
@@ -1051,9 +1051,9 @@ async def _inventory_handler(client, m: Message):
         f"💼 ᴊᴏʙ: {JOBS.get(u['job'],{}).get('emoji','❌')} **{u['job'].capitalize() or 'None'}**"
     )
 
-@app.on_message(filters.command(["lifeinventory"]) & filters.group)
+@Client.on_message(filters.command(["lifeinventory"]) & filters.group)
 async def inventory_slash(client, m): await _inventory_handler(client, m)
-@app.on_message(_rf(r"^(iinventory|inventory)\b"), group=-1)
+@Client.on_message(_rf(r"^(iinventory|inventory)\b"), group=-1)
 async def inventory_noslash(client, m): await _inventory_handler(client, m)
 
 
@@ -1081,12 +1081,12 @@ async def _settings_handler(client, m: Message):
         ]),
     )
 
-@app.on_message(filters.command(["lifesettings"]) & filters.group)
+@Client.on_message(filters.command(["lifesettings"]) & filters.group)
 async def settings_slash(client, m): await _settings_handler(client, m)
-@app.on_message(_rf(r"^(ssettings|settings)\b"), group=-1)
+@Client.on_message(_rf(r"^(ssettings|settings)\b"), group=-1)
 async def settings_noslash(client, m): await _settings_handler(client, m)
 
-@app.on_callback_query(filters.regex(r"^setting_(games|betting)_(-?\d+)$"))
+@Client.on_callback_query(filters.regex(r"^setting_(games|betting)_(-?\d+)$"))
 async def settings_toggle_cb(client, q: CallbackQuery):
     setting = q.matches[0].group(1)
     chat_id = int(q.matches[0].group(2))
@@ -1112,14 +1112,14 @@ async def _disable_handler(client, m: Message):
     groups_col.update_one({"chat_id": m.chat.id}, {"$set": {"games_enabled": False}}, upsert=True)
     await m.reply("<blockquote>❌ ɢᴀᴍᴇs **ᴅɪsᴀʙʟᴇᴅ**!</blockquote>")
 
-@app.on_message(filters.command(["lifeenable"]) & filters.group)
+@Client.on_message(filters.command(["lifeenable"]) & filters.group)
 async def enable_slash(client, m): await _enable_handler(client, m)
-@app.on_message(_rf(r"^(eenable|enable)\b"), group=-1)
+@Client.on_message(_rf(r"^(eenable|enable)\b"), group=-1)
 async def enable_noslash(client, m): await _enable_handler(client, m)
 
-@app.on_message(filters.command(["lifedisable"]) & filters.group)
+@Client.on_message(filters.command(["lifedisable"]) & filters.group)
 async def disable_slash(client, m): await _disable_handler(client, m)
-@app.on_message(_rf(r"^(ddisable|disable)\b"), group=-1)
+@Client.on_message(_rf(r"^(ddisable|disable)\b"), group=-1)
 async def disable_noslash(client, m): await _disable_handler(client, m)
 
 
@@ -1140,9 +1140,9 @@ async def _reset_handler(client, m: Message):
         disable_web_page_preview=True,
     )
 
-@app.on_message(filters.command(["lifereset"]) & filters.group)
+@Client.on_message(filters.command(["lifereset"]) & filters.group)
 async def reset_slash(client, m): await _reset_handler(client, m)
-@app.on_message(_rf(r"^(rreset|reset)\b"), group=-1)
+@Client.on_message(_rf(r"^(rreset|reset)\b"), group=-1)
 async def reset_noslash(client, m): await _reset_handler(client, m)
 
 
@@ -1167,9 +1167,9 @@ async def _addcoins_handler(client, m: Message):
         disable_web_page_preview=True,
     )
 
-@app.on_message(filters.command(["lifeaddcoins"]) & filters.group)
+@Client.on_message(filters.command(["lifeaddcoins"]) & filters.group)
 async def addcoins_slash(client, m): await _addcoins_handler(client, m)
-@app.on_message(_rf(r"^(aaddcoins|addcoins)\b"), group=-1)
+@Client.on_message(_rf(r"^(aaddcoins|addcoins)\b"), group=-1)
 async def addcoins_noslash(client, m): await _addcoins_handler(client, m)
 
 
@@ -1193,9 +1193,9 @@ async def _deposit_handler(client, m: Message):
     await _run(_update_user, uid, {"bank": user.get("bank", 0) + amount})
     await m.reply(f"<blockquote>🏦 ᴅᴇᴘᴏsɪᴛᴇᴅ **{amount:,}** ᴄᴏɪɴs</blockquote>")
 
-@app.on_message(filters.command(["deposit"]) & filters.group)
+@Client.on_message(filters.command(["deposit"]) & filters.group)
 async def deposit_slash(client, m): await _deposit_handler(client, m)
-@app.on_message(_rf(r"^deposit\b"), group=-1)
+@Client.on_message(_rf(r"^deposit\b"), group=-1)
 async def deposit_noslash(client, m): await _deposit_handler(client, m)
 
 
@@ -1219,9 +1219,9 @@ async def _withdraw_handler(client, m: Message):
     await _run(_add_coins, uid, amount)
     await m.reply(f"<blockquote>🏦 ᴡɪᴛʜᴅʀᴀᴡɴ **{amount:,}** ᴄᴏɪɴs</blockquote>")
 
-@app.on_message(filters.command(["withdraw"]) & filters.group)
+@Client.on_message(filters.command(["withdraw"]) & filters.group)
 async def withdraw_slash(client, m): await _withdraw_handler(client, m)
-@app.on_message(_rf(r"^withdraw\b"), group=-1)
+@Client.on_message(_rf(r"^withdraw\b"), group=-1)
 async def withdraw_noslash(client, m): await _withdraw_handler(client, m)
 
 
@@ -1262,9 +1262,9 @@ async def _bet_handler(client, m: Message):
         )
         await _send_life_image(m, "loss", caption)
 
-@app.on_message(filters.command(["bet"]) & filters.group)
+@Client.on_message(filters.command(["bet"]) & filters.group)
 async def bet_slash(client, m): await _bet_handler(client, m)
-@app.on_message(_rf(r"^(bbet|bet)\b"), group=-1)
+@Client.on_message(_rf(r"^(bbet|bet)\b"), group=-1)
 async def bet_noslash(client, m): await _bet_handler(client, m)
 
 
@@ -1295,9 +1295,9 @@ async def _rob_handler(client, m: Message):
             f"<blockquote>🚨 **ғᴀɪʟᴇᴅ!**\n💸 ғɪɴᴇ: {fine:,} ᴄᴏɪɴs</blockquote>"
         )
 
-@app.on_message(filters.command(["rob"]) & filters.group)
+@Client.on_message(filters.command(["rob"]) & filters.group)
 async def rob_slash(client, m): await _rob_handler(client, m)
-@app.on_message(_rf(r"^(rrob|rob)\b"), group=-1)
+@Client.on_message(_rf(r"^(rrob|rob)\b"), group=-1)
 async def rob_noslash(client, m): await _rob_handler(client, m)
 
 
@@ -1333,9 +1333,9 @@ async def _pay_handler(client, m: Message):
         disable_web_page_preview=True,
     )
 
-@app.on_message(filters.command(["pay"]) & filters.group)
+@Client.on_message(filters.command(["pay"]) & filters.group)
 async def pay_slash(client, m): await _pay_handler(client, m)
-@app.on_message(_rf(r"^(ppay|pay)\b"), group=-1)
+@Client.on_message(_rf(r"^(ppay|pay)\b"), group=-1)
 async def pay_noslash(client, m): await _pay_handler(client, m)
 
 
@@ -1365,9 +1365,9 @@ async def _loan_handler(client, m: Message):
         disable_web_page_preview=True,
     )
 
-@app.on_message(filters.command(["loan"]) & filters.group)
+@Client.on_message(filters.command(["loan"]) & filters.group)
 async def loan_slash(client, m): await _loan_handler(client, m)
-@app.on_message(_rf(r"^(lloan|loan)\b"), group=-1)
+@Client.on_message(_rf(r"^(lloan|loan)\b"), group=-1)
 async def loan_noslash(client, m): await _loan_handler(client, m)
 
 
@@ -1401,9 +1401,9 @@ async def _help_handler(client, m: Message):
         "sʟᴀsʜ: `/bet` `/lifebowling` ✅</blockquote>"
     )
 
-@app.on_message(filters.command(["lifehelp"]) & filters.group)
+@Client.on_message(filters.command(["lifehelp"]) & filters.group)
 async def help_slash(client, m): await _help_handler(client, m)
-@app.on_message(_rf(r"^(hhelp|lifehelp)\b"), group=-1)
+@Client.on_message(_rf(r"^(hhelp|lifehelp)\b"), group=-1)
 async def help_noslash(client, m): await _help_handler(client, m)
 
 
