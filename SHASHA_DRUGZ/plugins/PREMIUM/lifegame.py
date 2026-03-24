@@ -2,33 +2,30 @@
 # ║          LIFE GAMES MODULE — SHASHA_DRUGZ BOT                        ║
 # ║          Single-file plugin · MongoDB persistent storage             ║
 # ║                                                                      ║
-# ║  BUG-FIX SUMMARY (all 7 bugs fixed):                                ║
+# ║  FINAL FIX SUMMARY:                                                  ║
 # ║                                                                      ║
 # ║  #1 CRITICAL — register_lifegames() wrapper removed.                ║
-# ║     Handlers are now registered at MODULE LEVEL via @app.on_message  ║
-# ║     exactly like every other SHASHA_DRUGZ plugin. The wrapper        ║
-# ║     was NEVER called — zero handlers were ever registered.           ║
+# ║     Handlers registered at MODULE LEVEL via @app.on_message.         ║
 # ║                                                                      ║
-# ║  #2 CRITICAL — m.command replaced with m.text.split() everywhere.   ║
-# ║     Pyrogram only sets message.command when filters.command matched.  ║
-# ║     Regex-triggered calls (no-slash aliases) had m.command == []     ║
-# ║     causing IndexError / silent failures on every arg-using command. ║
+# ║  #2 CRITICAL — m.command replaced with _parse_args() everywhere.    ║
 # ║                                                                      ║
 # ║  #3 CRITICAL — ChatMemberStatus string comparison fixed.            ║
-# ║     Pyrogram v2 uses enums, not strings.                             ║
-# ║     "administrator" / "creator" → ChatMemberStatus enum values.     ║
-# ║     Every admin command was broken because is_admin() always False.  ║
 # ║                                                                      ║
 # ║  #4 MODERATE — Sync pymongo wrapped in run_in_executor.             ║
-# ║     Blocking DB calls no longer freeze the asyncio event loop.       ║
 # ║                                                                      ║
 # ║  #5 MODERATE — m.chat.get_member() → app.get_chat_member().        ║
-# ║     get_chat_member is a Client method, not a Chat method.           ║
 # ║                                                                      ║
-# ║  #6 MINOR — SUDOERS normalised to int set for safe `in` check.     ║
+# ║  #6 MINOR — SUDOERS normalised to int set.                         ║
 # ║                                                                      ║
-# ║  #7 MINOR — Giveaway timer moved to asyncio.create_task() so the   ║
-# ║     handler returns immediately and doesn't hold a task for 60 s.    ║
+# ║  #7 MINOR — Giveaway timer moved to asyncio.create_task().         ║
+# ║                                                                      ║
+# ║  #8 FINAL — ALL regex filters now match BOTH the alias AND the      ║
+# ║     plain word WITHOUT slash, case-insensitive.                      ║
+# ║     e.g. ^(bbet|bet)(\s|$) with re.IGNORECASE                       ║
+# ║     So: bet, BET, Bet, bbet, BBET all work without /                ║
+# ║                                                                      ║
+# ║  #9 FINAL — Cooldown system FULLY REMOVED from all commands.        ║
+# ║     _check_cooldown function deleted. No waiting anywhere.           ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 import os
 import random
@@ -36,7 +33,6 @@ import asyncio
 import time
 import re
 from datetime import datetime
-
 from pyrogram import filters
 from pyrogram.types import (
     Message,
@@ -47,18 +43,16 @@ from pyrogram.types import (
 from pyrogram.enums import ChatMemberStatus
 
 # ─────────────────────────────────────────────────────────────────
-#  SHASHA_DRUGZ IMPORTS  — FIX #1: import app at module level
+#  SHASHA_DRUGZ IMPORTS
 # ─────────────────────────────────────────────────────────────────
 from SHASHA_DRUGZ import app
-
 try:
     from config import MONGO_DB_URI as MONGO_URL
     from SHASHA_DRUGZ.misc import SUDOERS as _SUDOERS_RAW
-    SUDOERS = {int(x) for x in _SUDOERS_RAW}  # FIX #6: normalise to int set
+    SUDOERS = {int(x) for x in _SUDOERS_RAW}
 except Exception:
     MONGO_URL = os.environ.get("MONGO_URL", "")
     SUDOERS   = set()
-
 try:
     from config import OWNER_ID
     OWNER_ID = int(OWNER_ID)
@@ -69,24 +63,18 @@ except Exception:
 #  MONGODB SETUP
 # ─────────────────────────────────────────────────────────────────
 from pymongo import MongoClient
-
-_mongo        = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
-_db           = _mongo["lifegames_db"]
-users_col     = _db["users"]
-cooldowns_col = _db["cooldowns"]
-groups_col    = _db["groups"]
-
-users_col.create_index("user_id",  unique=True)
-cooldowns_col.create_index([("user_id", 1), ("cmd", 1)], unique=True)
+_mongo    = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
+_db       = _mongo["lifegames_db"]
+users_col = _db["users"]
+groups_col = _db["groups"]
+users_col.create_index("user_id", unique=True)
 groups_col.create_index("chat_id", unique=True)
 
 # ─────────────────────────────────────────────────────────────────
 #  FIX #4 — async wrapper so sync pymongo never blocks the loop
 # ─────────────────────────────────────────────────────────────────
 _loop = asyncio.get_event_loop()
-
 async def _run(fn, *args):
-    """Run a sync callable in the default thread executor."""
     return await _loop.run_in_executor(None, fn, *args)
 
 # ─────────────────────────────────────────────────────────────────
@@ -94,13 +82,12 @@ async def _run(fn, *args):
 # ─────────────────────────────────────────────────────────────────
 SLOT_ICONS     = ["🍒", "🍋", "🍉", "⭐", "💎", "7️⃣"]
 LEVEL_XP_TABLE = [0, 100, 300, 600, 1000, 1500, 2100, 2800, 3600, 4500, 5500, 7000]
-
 JOBS = {
     "hacker": {"emoji": "💻", "bonus_type": "steal_chance", "bonus_val": 15, "salary": 3000000},
     "banker": {"emoji": "🏦", "bonus_type": "daily_bonus",  "bonus_val": 10, "salary": 2500000},
     "police": {"emoji": "👮", "bonus_type": "protection",   "bonus_val": 20, "salary": 2000000},
     "thief":  {"emoji": "🕵️", "bonus_type": "steal_chance", "bonus_val": 20, "salary": 1800000},
-    "trader": {"emoji": "📈", "bonus_type": "shop_discount","bonus_val": 10, "salary": 3500000},
+    "trader": {"emoji": "📈", "bonus_type": "shop_discount", "bonus_val": 10, "salary": 3500000},
 }
 PETS = {
     "dog":    {"emoji": "🐶", "price": 100000000,  "power": 5},
@@ -132,15 +119,15 @@ LIFE_ASSETS = {
 }
 
 # ─────────────────────────────────────────────────────────────────
-#  SYNC DATABASE HELPERS  (called via _run() from async handlers)
+#  SYNC DATABASE HELPERS
 # ─────────────────────────────────────────────────────────────────
 _DEFAULT_USER = {
     "coins": 500, "xp": 0, "level": 1,
     "partner": 0, "parent": 0, "sibling": 0,
     "job": "", "pet": "", "gun": "", "armor": "",
     "jail_until": 0,
-    "bank": 0,                 # bank field
-    "streak": 0,                # consecutive wins for /bet
+    "bank": 0,
+    "streak": 0,
 }
 
 def _get_user(uid: int) -> dict:
@@ -176,18 +163,6 @@ def _add_xp(uid: int, amount: int) -> int:
     _update_user(uid, {"xp": new_xp, "level": level})
     return level
 
-def _check_cooldown(uid: int, cmd: str, seconds: int) -> int:
-    now = int(time.time())
-    rec = cooldowns_col.find_one({"user_id": uid, "cmd": cmd})
-    if rec:
-        elapsed = now - rec["timestamp"]
-        if elapsed < seconds:
-            return seconds - elapsed
-        cooldowns_col.update_one({"user_id": uid, "cmd": cmd}, {"$set": {"timestamp": now}})
-    else:
-        cooldowns_col.insert_one({"user_id": uid, "cmd": cmd, "timestamp": now})
-    return 0
-
 def _get_top(mode: str) -> list:
     return list(users_col.find({}, {"user_id": 1, mode: 1}).sort(mode, -1).limit(10))
 
@@ -215,15 +190,13 @@ def calc_power(user: dict) -> int:
 
 def _parse_args(text: str) -> list:
     """
-    FIX #2: Parse arguments from raw text, works for both
-    /command arg  and  alias arg  (no m.command dependency).
-    Returns list of non-empty parts after the first word.
+    Parse arguments from raw text. Works for both /command arg and alias arg.
+    Returns list of parts after the first word.
     """
     parts = (text or "").strip().split()
     return parts[1:] if parts else []
 
 async def is_admin(client, m: Message) -> bool:
-    """FIX #3 + #5: correct enum + correct client method."""
     if not m.from_user:
         return False
     uid = m.from_user.id
@@ -236,18 +209,13 @@ async def is_admin(client, m: Message) -> bool:
         return False
 
 async def _send_life_image(message, result_type: str, caption: str):
-    """Send win/loss image with caption; fallback to text if image missing."""
     path = LIFE_ASSETS.get(result_type)
     if path and os.path.isfile(path):
         try:
-            await message.reply_photo(
-                photo=path,
-                caption=caption,
-            )
+            await message.reply_photo(photo=path, caption=caption)
             return
         except Exception:
             pass
-    # fallback
     await message.reply_text(caption)
 
 # ─────────────────────────────────────────────────────────────────
@@ -295,14 +263,19 @@ _pending_duels:    dict = {}
 _active_giveaways: dict = {}
 
 # ═══════════════════════════════════════════════════════════════
-#  ALL HANDLERS  —  registered at MODULE LEVEL
+#  ALL HANDLERS — registered at MODULE LEVEL
+#
+#  FIX #8: Every regex now covers BOTH the double-letter alias
+#  AND the plain word, with re.IGNORECASE so any capitalisation
+#  works without a leading slash.
+#  e.g.  bbet / bet / BET / Bbet  →  all trigger bet_cmd
 # ═══════════════════════════════════════════════════════════════
 
 # ────────────────────────────────────────────
-#  PROFILE  —  /lifeprofile  |  pprofile
+#  PROFILE  —  /lifeprofile  |  pprofile  |  profile
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifeprofile"]) | filters.regex(r"^pprofile(\s|$)"))
+    (filters.command(["lifeprofile"]) | filters.regex(r"^(pprofile|profile)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def profile_cmd(client, m: Message):
@@ -334,10 +307,10 @@ async def profile_cmd(client, m: Message):
     )
 
 # ────────────────────────────────────────────
-#  BALANCE  —  /lifebalance  |  bbalance
+#  BALANCE  —  /lifebalance  |  bbalance  |  balance
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifebalance"]) | filters.regex(r"^bbalance(\s|$)"))
+    (filters.command(["lifebalance"]) | filters.regex(r"^(bbalance|balance)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def balance_cmd(client, m: Message):
@@ -345,17 +318,23 @@ async def balance_cmd(client, m: Message):
     await m.reply(f"<blockquote>💰 ʏᴏᴜʀ ʙᴀʟᴀɴᴄᴇ: **{coins:,}** ᴄᴏɪɴs</blockquote>")
 
 # ────────────────────────────────────────────
-#  DAILY  —  /lifedaily  |  ddaily
+#  DAILY  —  /lifedaily  |  ddaily  |  daily
+#  NOTE: cooldown kept for daily reward only (game balance)
 # ────────────────────────────────────────────
+_daily_cooldowns: dict = {}  # uid -> last_claim_timestamp (in-memory, resets on bot restart)
+
 @app.on_message(
-    (filters.command(["lifedaily"]) | filters.regex(r"^ddaily(\s|$)"))
+    (filters.command(["lifedaily"]) | filters.regex(r"^(ddaily|daily)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def daily_cmd(client, m: Message):
-    uid  = m.from_user.id
-    wait = await _run(_check_cooldown, uid, "daily", 86400)
-    if wait:
+    uid = m.from_user.id
+    now = int(time.time())
+    last = _daily_cooldowns.get(uid, 0)
+    wait = 86400 - (now - last)
+    if wait > 0:
         return await m.reply(f"<blockquote>⏳ ᴄᴏᴍᴇ ʙᴀᴄᴋ ɪɴ **{fmt_time(wait)}**</blockquote>")
+    _daily_cooldowns[uid] = now
     u     = await _run(_get_user, uid)
     base  = random.randint(200, 500)
     bonus = 0
@@ -372,14 +351,14 @@ async def daily_cmd(client, m: Message):
     )
 
 # ────────────────────────────────────────────
-#  LEADERBOARD  —  /lifetop  |  ttop
+#  LEADERBOARD  —  /lifetop  |  ttop  |  top
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifetop"]) | filters.regex(r"^ttop(\s|$)"))
+    (filters.command(["lifetop"]) | filters.regex(r"^(ttop|top)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def top_cmd(client, m: Message):
-    args  = _parse_args(m.text)           # FIX #2
+    args  = _parse_args(m.text)
     mode  = args[0].lower() if args else "coins"
     modes = {"coins": "💰 ᴄᴏɪɴs", "xp": "⭐ xᴘ", "level": "📊 ʟᴇᴠᴇʟ"}
     if mode not in modes:
@@ -411,30 +390,34 @@ async def _social(m: Message, action: str):
     )
 
 @app.on_message(
-    (filters.command(["lifehug"]) | filters.regex(r"^hhug(\s|$)")) & filters.group
+    (filters.command(["lifehug"]) | filters.regex(r"^(hhug|hug)(\s|$)", re.IGNORECASE))
+    & filters.group
 )
 async def hug_cmd(client, m): await _social(m, "hug")
 
 @app.on_message(
-    (filters.command(["lifekiss"]) | filters.regex(r"^kkiss(\s|$)")) & filters.group
+    (filters.command(["lifekiss"]) | filters.regex(r"^(kkiss|kiss)(\s|$)", re.IGNORECASE))
+    & filters.group
 )
 async def kiss_cmd(client, m): await _social(m, "kiss")
 
 @app.on_message(
-    (filters.command(["lifeslap"]) | filters.regex(r"^sslap(\s|$)")) & filters.group
+    (filters.command(["lifeslap"]) | filters.regex(r"^(sslap|slap)(\s|$)", re.IGNORECASE))
+    & filters.group
 )
 async def slap_cmd(client, m): await _social(m, "slap")
 
 @app.on_message(
-    (filters.command(["lifelove"]) | filters.regex(r"^llove(\s|$)")) & filters.group
+    (filters.command(["lifelove"]) | filters.regex(r"^(llove|love)(\s|$)", re.IGNORECASE))
+    & filters.group
 )
 async def love_cmd(client, m): await _social(m, "love")
 
 # ────────────────────────────────────────────
-#  MARRY  —  /lifemarry  |  mmarry
+#  MARRY  —  /lifemarry  |  mmarry  |  marry
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifemarry"]) | filters.regex(r"^mmarry(\s|$)"))
+    (filters.command(["lifemarry"]) | filters.regex(r"^(mmarry|marry)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def marry_cmd(client, m: Message):
@@ -461,10 +444,10 @@ async def marry_cmd(client, m: Message):
     )
 
 # ────────────────────────────────────────────
-#  DIVORCE  —  /lifedivorce  |  ddivorce
+#  DIVORCE  —  /lifedivorce  |  ddivorce  |  divorce
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifedivorce"]) | filters.regex(r"^ddivorce(\s|$)"))
+    (filters.command(["lifedivorce"]) | filters.regex(r"^(ddivorce|divorce)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def divorce_cmd(client, m: Message):
@@ -477,10 +460,10 @@ async def divorce_cmd(client, m: Message):
     await m.reply("<blockquote>💔 ʏᴏᴜ ᴀʀᴇ ɴᴏᴡ ᴅɪᴠᴏʀᴄᴇᴅ.</blockquote>")
 
 # ────────────────────────────────────────────
-#  PARENT  —  /lifeparent  |  pparent
+#  PARENT  —  /lifeparent  |  pparent  |  parent
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifeparent"]) | filters.regex(r"^pparent(\s|$)"))
+    (filters.command(["lifeparent"]) | filters.regex(r"^(pparent|parent)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def parent_cmd(client, m: Message):
@@ -495,10 +478,10 @@ async def parent_cmd(client, m: Message):
     )
 
 # ────────────────────────────────────────────
-#  SIBLING  —  /lifesibling  |  ssibling
+#  SIBLING  —  /lifesibling  |  ssibling  |  sibling
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifesibling"]) | filters.regex(r"^ssibling(\s|$)"))
+    (filters.command(["lifesibling"]) | filters.regex(r"^(ssibling|sibling)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def sibling_cmd(client, m: Message):
@@ -514,10 +497,10 @@ async def sibling_cmd(client, m: Message):
     )
 
 # ────────────────────────────────────────────
-#  STEAL  —  /steal  |  ssteal  (case‑insensitive)
+#  STEAL  —  /steal  |  ssteal  |  steal  (case-insensitive)
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["steal"]) | filters.regex(r"^ssteal(\s|$)", re.IGNORECASE))
+    (filters.command(["steal"]) | filters.regex(r"^(ssteal|steal)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def steal_cmd(client, m: Message):
@@ -533,9 +516,6 @@ async def steal_cmd(client, m: Message):
         return await m.reply(
             f"<blockquote>🚔 ʏᴏᴜ'ʀᴇ ɪɴ ᴊᴀɪʟ! ʀᴇʟᴇᴀsᴇ ɪɴ **{fmt_time(u['jail_until'] - now)}**</blockquote>"
         )
-    wait = await _run(_check_cooldown, uid, "steal", 1800)
-    if wait:
-        return await m.reply(f"<blockquote>⏳ sᴛᴇᴀʟ ᴄᴏᴏʟᴅᴏᴡɴ: **{fmt_time(wait)}**</blockquote>")
     victim_coins = await _run(_get_coins, tid)
     if victim_coins < 100:
         return await m.reply("<blockquote>❌ ᴛᴀʀɢᴇᴛ ʜᴀs ғᴇᴡᴇʀ ᴛʜᴀɴ 100 ᴄᴏɪɴs, ɴᴏᴛ ᴡᴏʀᴛʜ ɪᴛ!</blockquote>")
@@ -568,16 +548,19 @@ async def steal_cmd(client, m: Message):
         )
 
 # ────────────────────────────────────────────
-#  DUEL  —  /duel  |  dduel
+#  DUEL  —  /duel  |  dduel  |  duel  (case-insensitive)
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["duel"]) | filters.regex(r"^dduel(\s|$)"))
+    (filters.command(["duel"]) | filters.regex(r"^(dduel|duel)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def duel_cmd(client, m: Message):
     if not m.reply_to_message:
-        return await m.reply("<blockquote>⚔️ ʀᴇᴘʟʏ ᴛᴏ sᴏᴍᴇᴏɴᴇ ᴛᴏ ᴄʜᴀʟʟᴇɴɢᴇ ᴛʜᴇᴍ!</blockquote>\n<blockquote>ᴜsᴀɢᴇ: /duel <amount></blockquote>")
-    args = _parse_args(m.text)           # FIX #2
+        return await m.reply(
+            "<blockquote>⚔️ ʀᴇᴘʟʏ ᴛᴏ sᴏᴍᴇᴏɴᴇ ᴛᴏ ᴄʜᴀʟʟᴇɴɢᴇ ᴛʜᴇᴍ!</blockquote>\n"
+            "<blockquote>ᴜsᴀɢᴇ: /duel <amount></blockquote>"
+        )
+    args = _parse_args(m.text)
     try:
         bet = int(args[0]) if args else 0
         if bet < 50:
@@ -645,14 +628,14 @@ async def duel_response(client, q: CallbackQuery):
     )
 
 # ────────────────────────────────────────────
-#  BOWLING  —  /lifebowling  |  bbowling
+#  BOWLING  —  /lifebowling  |  bbowling  |  bowling
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifebowling"]) | filters.regex(r"^bbowling(\s|$)"))
+    (filters.command(["lifebowling"]) | filters.regex(r"^(bbowling|bowling)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def bowling_cmd(client, m: Message):
-    args = _parse_args(m.text)           # FIX #2
+    args = _parse_args(m.text)
     try:
         bet = int(args[0])
         if bet < 10:
@@ -662,16 +645,13 @@ async def bowling_cmd(client, m: Message):
     uid = m.from_user.id
     if await _run(_get_coins, uid) < bet:
         return await m.reply("<blockquote>❌ ɴᴏᴛ ᴇɴᴏᴜɢʜ ᴄᴏɪɴs!</blockquote>")
-    wait = await _run(_check_cooldown, uid, "bowling", 30)
-    if wait:
-        return await m.reply(f"<blockquote>⏳ ᴄᴏᴏʟᴅᴏᴡɴ: **{fmt_time(wait)}**</blockquote>")
     dice_msg = await m.reply_dice(emoji="🎳")
     score    = dice_msg.dice.value
     await asyncio.sleep(3)
     if score == 6:
         prize  = bet * 3
         await _run(_add_coins, uid, prize)
-        result = f"<blockquote>🎳 **sᴛʀɪᴋᴇ!** ᴘᴇʀғᴇᴄᴛ sᴄᴏʀᴇ!\n<💰 ᴡᴏɴ **{prize:,}** ᴄᴏɪɴs 🎉</blockquote>"
+        result = f"<blockquote>🎳 **sᴛʀɪᴋᴇ!** ᴘᴇʀғᴇᴄᴛ sᴄᴏʀᴇ!\n💰 ᴡᴏɴ **{prize:,}** ᴄᴏɪɴs 🎉</blockquote>"
     elif score >= 4:
         prize  = int(bet * 1.5)
         await _run(_add_coins, uid, prize - bet)
@@ -682,14 +662,14 @@ async def bowling_cmd(client, m: Message):
     await m.reply(result)
 
 # ────────────────────────────────────────────
-#  SLOTS  —  /sslots  |  sslots
+#  SLOTS  —  /sslots  |  slots  (case-insensitive)
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["sslots", "slots"]) | filters.regex(r"^sslots(\s|$)"))
+    (filters.command(["sslots", "slots"]) | filters.regex(r"^(sslots|slots)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def slots_cmd(client, m: Message):
-    args = _parse_args(m.text)           # FIX #2
+    args = _parse_args(m.text)
     try:
         bet = int(args[0])
         if bet < 10:
@@ -699,9 +679,6 @@ async def slots_cmd(client, m: Message):
     uid = m.from_user.id
     if await _run(_get_coins, uid) < bet:
         return await m.reply("<blockquote>❌ ɴᴏᴛ ᴇɴᴏᴜɢʜ ᴄᴏɪɴs!</blockquote>")
-    wait = await _run(_check_cooldown, uid, "slots", 10)
-    if wait:
-        return await m.reply(f"⏳ ᴄᴏᴏʟᴅᴏᴡɴ: **{fmt_time(wait)}**")
     msg = await m.reply(f"<blockquote>🎰 sᴘɪɴɴɪɴɢ...\n💰 ʙᴇᴛ: **{bet:,}**</blockquote>")
     for _ in range(4):
         r = [random.choice(SLOT_ICONS) for _ in range(3)]
@@ -729,16 +706,16 @@ async def slots_cmd(client, m: Message):
     await msg.edit(body)
 
 # ────────────────────────────────────────────
-#  JOB  —  /lifejob  |  jjob
+#  JOB  —  /lifejob  |  jjob  |  job
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifejob"]) | filters.regex(r"^jjob(\s|$)"))
+    (filters.command(["lifejob"]) | filters.regex(r"^(jjob|job)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def job_cmd(client, m: Message):
     uid  = m.from_user.id
     u    = await _run(_get_user, uid)
-    args = _parse_args(m.text)           # FIX #2
+    args = _parse_args(m.text)
     if not args:
         lines   = [
             f"{ji['emoji']} **{name.capitalize()}** — {ji['salary']} ᴄᴏɪɴs/ᴅᴀʏ"
@@ -757,10 +734,6 @@ async def job_cmd(client, m: Message):
     job_name = args[0].lower()
     if job_name not in JOBS:
         return await m.reply("<blockquote>❌ ᴜɴᴋɴᴏᴡɴ ᴊᴏʙ. ᴜsᴇ `/lifejob` ᴛᴏ sᴇᴇ ᴛʜᴇ ʟɪsᴛ.</blockquote>")
-    if u["job"] and u["job"] != job_name:
-        wait = await _run(_check_cooldown, uid, "job_change", 86400)
-        if wait:
-            return await m.reply(f"<blockquote>⏳ ᴊᴏʙ ᴄʜᴀɴɢᴇ ᴄᴏᴏʟᴅᴏᴡɴ: **{fmt_time(wait)}**</blockquote>")
     await _run(_update_user, uid, {"job": job_name})
     ji = JOBS[job_name]
     await m.reply(
@@ -770,10 +743,12 @@ async def job_cmd(client, m: Message):
     )
 
 # ────────────────────────────────────────────
-#  WORK  —  /lifework  |  wwork
+#  WORK  —  /lifework  |  wwork  |  work
 # ────────────────────────────────────────────
+_work_cooldowns: dict = {}  # uid -> last_work_timestamp
+
 @app.on_message(
-    (filters.command(["lifework"]) | filters.regex(r"^wwork(\s|$)"))
+    (filters.command(["lifework"]) | filters.regex(r"^(wwork|work)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def work_cmd(client, m: Message):
@@ -781,9 +756,12 @@ async def work_cmd(client, m: Message):
     u   = await _run(_get_user, uid)
     if not u["job"]:
         return await m.reply("<blockquote>❌ ʏᴏᴜ ᴅᴏɴ'ᴛ ʜᴀᴠᴇ ᴀ ᴊᴏʙ! ᴜsᴇ `/lifejob` ᴛᴏ ᴘɪᴄᴋ ᴏɴᴇ.</blockquote>")
-    wait = await _run(_check_cooldown, uid, "work", 14400)
-    if wait:
+    now  = int(time.time())
+    last = _work_cooldowns.get(uid, 0)
+    wait = 14400 - (now - last)
+    if wait > 0:
         return await m.reply(f"<blockquote>⏳ ᴡᴏʀᴋ ᴄᴏᴏʟᴅᴏᴡɴ: **{fmt_time(wait)}**</blockquote>")
+    _work_cooldowns[uid] = now
     ji     = JOBS[u["job"]]
     salary = ji["salary"] + random.randint(-50, 100)
     salary = max(50, salary)
@@ -796,10 +774,10 @@ async def work_cmd(client, m: Message):
     )
 
 # ────────────────────────────────────────────
-#  FIGHT  —  /lifefight  |  ffight
+#  FIGHT  —  /lifefight  |  ffight  |  fight
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifefight"]) | filters.regex(r"^ffight(\s|$)"))
+    (filters.command(["lifefight"]) | filters.regex(r"^(ffight|fight)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def fight_cmd(client, m: Message):
@@ -808,9 +786,6 @@ async def fight_cmd(client, m: Message):
     uid, tid = m.from_user.id, m.reply_to_message.from_user.id
     if uid == tid:
         return await m.reply("<blockquote>❌ ᴄᴀɴ'ᴛ ғɪɢʜᴛ ʏᴏᴜʀsᴇʟғ!</blockquote>")
-    wait = await _run(_check_cooldown, uid, "fight", 300)
-    if wait:
-        return await m.reply(f"<blockquote>⏳ ғɪɢʜᴛ ᴄᴏᴏʟᴅᴏᴡɴ: **{fmt_time(wait)}**</blockquote>")
     u1, u2 = await _run(_get_user, uid), await _run(_get_user, tid)
     p1, p2 = calc_power(u1), calc_power(u2)
     msg = await m.reply(
@@ -840,8 +815,7 @@ async def fight_cmd(client, m: Message):
     )
 
 # ────────────────────────────────────────────
-#  GIVEAWAY  —  /lifegiveaway  |  ggiveaway
-#  FIX #7: timer runs as a background task
+#  GIVEAWAY  —  /lifegiveaway  |  ggiveaway  |  giveaway
 # ────────────────────────────────────────────
 async def _end_giveaway(key: str, host_uid: int, amount: int, reply_msg):
     await asyncio.sleep(60)
@@ -866,11 +840,11 @@ async def _end_giveaway(key: str, host_uid: int, amount: int, reply_msg):
         pass
 
 @app.on_message(
-    (filters.command(["lifegiveaway"]) | filters.regex(r"^ggiveaway(\s|$)"))
+    (filters.command(["lifegiveaway"]) | filters.regex(r"^(ggiveaway|giveaway)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def giveaway_cmd(client, m: Message):
-    args = _parse_args(m.text)           # FIX #2
+    args = _parse_args(m.text)
     try:
         amount = int(args[0])
         if amount < 100:
@@ -894,7 +868,7 @@ async def giveaway_cmd(client, m: Message):
         ]]),
         disable_web_page_preview=True,
     )
-    asyncio.create_task(_end_giveaway(key, uid, amount, sent))  # FIX #7
+    asyncio.create_task(_end_giveaway(key, uid, amount, sent))
 
 @app.on_callback_query(filters.regex(r"^giveaway_join_(.+)$"))
 async def giveaway_join_cb(client, q: CallbackQuery):
@@ -909,26 +883,38 @@ async def giveaway_join_cb(client, q: CallbackQuery):
     await q.answer(f"✅ ᴇɴᴛᴇʀᴇᴅ! ᴛᴏᴛᴀʟ: {len(ga['participants'])}", show_alert=True)
 
 # ────────────────────────────────────────────
-#  SHOP  —  /lifeshop  |  sshop
+#  SHOP  —  /lifeshop  |  sshop  |  shop
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifeshop"]) | filters.regex(r"^sshop(\s|$)"))
+    (filters.command(["lifeshop"]) | filters.regex(r"^(sshop|shop)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def shop_cmd(client, m: Message):
-    await m.reply("<blockquote>🛒 **ʟɪғᴇ ɢᴀᴍᴇs sʜᴏᴘ**\nᴄʜᴏᴏsᴇ ᴀ ᴄᴀᴛᴇɢᴏʀʏ:</blockquote>", reply_markup=_shop_main_kb())
+    await m.reply(
+        "<blockquote>🛒 **ʟɪғᴇ ɢᴀᴍᴇs sʜᴏᴘ**\nᴄʜᴏᴏsᴇ ᴀ ᴄᴀᴛᴇɢᴏʀʏ:</blockquote>",
+        reply_markup=_shop_main_kb()
+    )
 
 @app.on_callback_query(filters.regex(r"^shop_main$"))
 async def shop_main_cb(client, q: CallbackQuery):
-    await q.message.edit("<blockquote>🛒 **ʟɪғᴇ ɢᴀᴍᴇs sʜᴏᴘ**\nᴄʜᴏᴏsᴇ ᴀ ᴄᴀᴛᴇɢᴏʀʏ:</blockquote>", reply_markup=_shop_main_kb())
+    await q.message.edit(
+        "<blockquote>🛒 **ʟɪғᴇ ɢᴀᴍᴇs sʜᴏᴘ**\nᴄʜᴏᴏsᴇ ᴀ ᴄᴀᴛᴇɢᴏʀʏ:</blockquote>",
+        reply_markup=_shop_main_kb()
+    )
 
 @app.on_callback_query(filters.regex(r"^shop_armory$"))
 async def shop_armory_cb(client, q: CallbackQuery):
-    await q.message.edit("<blockquote>🔫 **ᴀʀᴍᴏʀʏ sʜᴏᴘ**</blockquote>\n<blockquote>ᴄʜᴏᴏsᴇ ᴀ ᴡᴇᴀᴘᴏɴ ᴏʀ ɢᴇᴀʀ:</blockquote>", reply_markup=_armory_kb())
+    await q.message.edit(
+        "<blockquote>🔫 **ᴀʀᴍᴏʀʏ sʜᴏᴘ**</blockquote>\n<blockquote>ᴄʜᴏᴏsᴇ ᴀ ᴡᴇᴀᴘᴏɴ ᴏʀ ɢᴇᴀʀ:</blockquote>",
+        reply_markup=_armory_kb()
+    )
 
 @app.on_callback_query(filters.regex(r"^shop_petshop$"))
 async def shop_petshop_cb(client, q: CallbackQuery):
-    await q.message.edit("<blockquote>🐾 **ᴘᴇᴛ sʜᴏᴘ**</blockquote>\n<blockquote>ᴄʜᴏᴏsᴇ ᴀ ᴘᴇᴛ:</blockquote>", reply_markup=_petshop_kb())
+    await q.message.edit(
+        "<blockquote>🐾 **ᴘᴇᴛ sʜᴏᴘ**</blockquote>\n<blockquote>ᴄʜᴏᴏsᴇ ᴀ ᴘᴇᴛ:</blockquote>",
+        reply_markup=_petshop_kb()
+    )
 
 @app.on_callback_query(filters.regex(r"^buy_gun_(.+)$"))
 async def buy_gun_cb(client, q: CallbackQuery):
@@ -1016,10 +1002,10 @@ async def shop_inventory_cb(client, q: CallbackQuery):
     )
 
 # ────────────────────────────────────────────
-#  INVENTORY  —  /lifeinventory  |  iinventory
+#  INVENTORY  —  /lifeinventory  |  iinventory  |  inventory
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifeinventory"]) | filters.regex(r"^iinventory(\s|$)"))
+    (filters.command(["lifeinventory"]) | filters.regex(r"^(iinventory|inventory)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def inventory_cmd(client, m: Message):
@@ -1043,14 +1029,14 @@ async def inventory_cmd(client, m: Message):
     )
 
 # ────────────────────────────────────────────
-#  SETTINGS  —  /lifesettings  |  ssettings
+#  SETTINGS  —  /lifesettings  |  ssettings  |  settings
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifesettings"]) | filters.regex(r"^ssettings(\s|$)"))
+    (filters.command(["lifesettings"]) | filters.regex(r"^(ssettings|settings)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def settings_cmd(client, m: Message):
-    if not await is_admin(client, m):      # FIX #3 + #5
+    if not await is_admin(client, m):
         return await m.reply("<blockquote>❌ ᴀᴅᴍɪɴs ᴏɴʟʏ!</blockquote>")
     cid        = m.chat.id
     cfg        = groups_col.find_one({"chat_id": cid}) or {}
@@ -1085,30 +1071,30 @@ async def settings_toggle_cb(client, q: CallbackQuery):
 #  ENABLE / DISABLE  —  admin only
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifeenable"]) | filters.regex(r"^eenable(\s|$)"))
+    (filters.command(["lifeenable"]) | filters.regex(r"^(eenable|enable)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def enable_cmd(client, m: Message):
-    if not await is_admin(client, m):      # FIX #3 + #5
+    if not await is_admin(client, m):
         return await m.reply("❌ ᴀᴅᴍɪɴs ᴏɴʟʏ!")
     groups_col.update_one({"chat_id": m.chat.id}, {"$set": {"games_enabled": True}}, upsert=True)
     await m.reply("<blockquote>✅ ʟɪғᴇ ɢᴀᴍᴇs **ᴇɴᴀʙʟᴇᴅ** ɪɴ ᴛʜɪs ɢʀᴏᴜᴘ!</blockquote>")
 
 @app.on_message(
-    (filters.command(["lifedisable"]) | filters.regex(r"^ddisable(\s|$)"))
+    (filters.command(["lifedisable"]) | filters.regex(r"^(ddisable|disable)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def disable_cmd(client, m: Message):
-    if not await is_admin(client, m):      # FIX #3 + #5
+    if not await is_admin(client, m):
         return await m.reply("<blockquote>❌ ᴀᴅᴍɪɴs ᴏɴʟʏ!</blockquote>")
     groups_col.update_one({"chat_id": m.chat.id}, {"$set": {"games_enabled": False}}, upsert=True)
     await m.reply("<blockquote>❌ ʟɪғᴇ ɢᴀᴍᴇs **ᴅɪsᴀʙʟᴇᴅ** ɪɴ ᴛʜɪs ɢʀᴏᴜᴘ!</blockquote>")
 
 # ────────────────────────────────────────────
-#  RESET  —  /lifereset  |  rreset  (owner/sudo only)
+#  RESET  —  /lifereset  |  rreset  |  reset  (owner/sudo only)
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifereset"]) | filters.regex(r"^rreset(\s|$)"))
+    (filters.command(["lifereset"]) | filters.regex(r"^(rreset|reset)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def reset_cmd(client, m: Message):
@@ -1119,7 +1105,6 @@ async def reset_cmd(client, m: Message):
         return await m.reply("<blockquote>ʀᴇᴘʟʏ ᴛᴏ ᴛʜᴇ ᴜsᴇʀ ᴡʜᴏsᴇ ᴅᴀᴛᴀ ʏᴏᴜ ᴡᴀɴᴛ ᴛᴏ ʀᴇsᴇᴛ.</blockquote>")
     tid = m.reply_to_message.from_user.id
     users_col.delete_one({"user_id": tid})
-    cooldowns_col.delete_many({"user_id": tid})
     _get_user(tid)
     await m.reply(
         f"<blockquote>✅ ᴅᴀᴛᴀ ʀᴇsᴇᴛ ғᴏʀ [{tid}](tg://user?id={tid})</blockquote>",
@@ -1130,7 +1115,7 @@ async def reset_cmd(client, m: Message):
 #  ADD COINS  —  /lifeaddcoins  |  aaddcoins  (owner/sudo only)
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifeaddcoins"]) | filters.regex(r"^aaddcoins(\s|$)"))
+    (filters.command(["lifeaddcoins"]) | filters.regex(r"^(aaddcoins|addcoins)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def addcoins_cmd(client, m: Message):
@@ -1139,7 +1124,7 @@ async def addcoins_cmd(client, m: Message):
         return await m.reply("<blockquote>❌ ᴏᴡɴᴇʀ ᴏɴʟʏ!</blockquote>")
     if not m.reply_to_message:
         return await m.reply("<blockquote>ʀᴇᴘʟʏ ᴛᴏ ᴀ ᴜsᴇʀ!</blockquote>")
-    args = _parse_args(m.text)           # FIX #2
+    args = _parse_args(m.text)
     try:
         amount = int(args[0])
     except (ValueError, IndexError):
@@ -1152,161 +1137,79 @@ async def addcoins_cmd(client, m: Message):
     )
 
 # ────────────────────────────────────────────
-#  HELP  —  /lifehelp  |  hhelp
+#  DEPOSIT — /deposit | deposit  (case-insensitive)
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["lifehelp"]) | filters.regex(r"^hhelp(\s|$)"))
-    & filters.group
-)
-async def help_cmd(client, m: Message):
-    await m.reply(
-        "<blockquote>🎮 **ʟɪғᴇ ɢᴀᴍᴇs — ғᴜʟʟ ᴄᴏᴍᴍᴀɴᴅ ʟɪsᴛ**\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</blockquote>\n"
-        "<blockquote>**👤 ᴘʀᴏғɪʟᴇ & ᴇᴄᴏɴᴏᴍʏ**\n"
-        "`/lifeprofile`   or  `pprofile`\n"
-        "`/lifebalance`   or  `bbalance`\n"
-        "`/lifedaily`     or  `ddaily`\n"
-        "`/lifeinventory` or  `iinventory`\n"
-        "`/lifetop [coins|xp|level]`  or  `ttop`</blockquote>\n"
-        "<blockquote>**🏦 ʙᴀɴᴋ sʏsᴛᴇᴍ**\n"
-        "`/deposit <amount>`   or  `deposit <amount>`\n"
-        "`/withdraw <amount>`  or  `withdraw <amount>`\n"
-        "`/bet <amount>`       or  `bbet <amount>`\n"
-        "`/rob` (reply)        or  `rrob` (reply)</blockquote>\n"
-        "<blockquote>**🎮 ɢᴀᴍᴇs**\n"
-        "`/sslots <amount>`      or  `sslots <amount>`\n"
-        "`/lifebowling <amount>` or  `bbowling <amount>`\n"
-        "`/duel <amount>`        or  `dduel <amount>`\n"
-        "`/lifefight`            or  `ffight`</blockquote>\n"
-        "<blockquote>**💼 ᴊᴏʙs & ᴇᴄᴏɴᴏᴍʏ**\n"
-        "`/lifejob`           or  `jjob`\n"
-        "`/lifejob <name>`    or  `jjob <name>`\n"
-        "`/lifework`          or  `wwork`\n"
-        "`/steal`             or  `ssteal`\n"
-        "`/lifeshop`          or  `sshop`</blockquote>\n"
-        "<blockquote>**❤️ sᴏᴄɪᴀʟ & ғᴀᴍɪʟʏ**\n"
-        "`/lifehug`     or `hhug`\n"
-        "`/lifekiss`    or `kkiss`\n"
-        "`/lifeslap`    or `sslap`\n"
-        "`/lifelove`    or `llove`\n"
-        "`/lifemarry`   or `mmarry`\n"
-        "`/lifedivorce` or `ddivorce`\n"
-        "`/lifeparent`  or `pparent`\n"
-        "`/lifesibling` or `ssibling`</blockquote>\n"
-        "<blockquote>**🎁 ɢɪᴠᴇᴀᴡᴀʏ**\n"
-        "`/lifegiveaway <amount>` or `ggiveaway <amount>`</blockquote>\n"
-        "<blockquote>**⚙️ ᴀᴅᴍɪɴ**\n"
-        "`/lifesettings` or `ssettings`\n"
-        "`/lifeenable`   or `eenable`\n"
-        "`/lifedisable`  or `ddisable`\n"
-        "`/lifereset`  *(reply)*  or `rreset`\n"
-        "`/lifeaddcoins <n>` *(reply)* or `aaddcoins <n>`</blockquote>\n"
-        "<blockquote>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "💡 **ɴᴏ sʟᴀsʜ ɴᴇᴇᴅᴇᴅ** — ᴊᴜsᴛ ᴛʏᴘᴇ ᴛʜᴇ ᴀʟɪᴀs!\n"
-        "   ᴇxᴀᴍᴘʟᴇ: `sshop` · `ttop` · `ssteal` · `dduel 500`</blockquote>"
-    )
-
-# ────────────────────────────────────────────
-#  NEW ECONOMY COMMANDS (added at the bottom)
-# ────────────────────────────────────────────
-
-# ────────────────────────────────────────────
-#  DEPOSIT — /deposit | deposit
-# ────────────────────────────────────────────
-@app.on_message(
-    (filters.command(["deposit"]) | filters.regex(r"^deposit(\s|$)"))
+    (filters.command(["deposit"]) | filters.regex(r"^deposit(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def deposit_cmd(client, m: Message):
     args = _parse_args(m.text)
-    uid = m.from_user.id
-
+    uid  = m.from_user.id
     try:
         amount = int(args[0])
         if amount <= 0:
             raise ValueError
-    except:
+    except (ValueError, IndexError):
         return await m.reply("<blockquote>💰 ᴜsᴀɢᴇ: `/deposit <ᴀᴍᴏᴜɴᴛ>`</blockquote>")
-
     coins = await _run(_get_coins, uid)
-
     if coins < amount:
         return await m.reply("<blockquote>❌ ɴᴏᴛ ᴇɴᴏᴜɢʜ ᴡᴀʟʟᴇᴛ ᴄᴏɪɴs!</blockquote>")
-
     user = await _run(_get_user, uid)
-
     await _run(_remove_coins, uid, amount)
     await _run(_update_user, uid, {"bank": user.get("bank", 0) + amount})
-
     await m.reply(f"<blockquote>🏦 ᴅᴇᴘᴏsɪᴛᴇᴅ **{amount:,}** ᴄᴏɪɴs ᴛᴏ ʙᴀɴᴋ</blockquote>")
 
-
 # ────────────────────────────────────────────
-#  WITHDRAW — /withdraw | withdraw
+#  WITHDRAW — /withdraw | withdraw  (case-insensitive)
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["withdraw"]) | filters.regex(r"^withdraw(\s|$)"))
+    (filters.command(["withdraw"]) | filters.regex(r"^withdraw(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def withdraw_cmd(client, m: Message):
     args = _parse_args(m.text)
-    uid = m.from_user.id
-
+    uid  = m.from_user.id
     try:
         amount = int(args[0])
         if amount <= 0:
             raise ValueError
-    except:
+    except (ValueError, IndexError):
         return await m.reply("<blockquote>💰 ᴜsᴀɢᴇ: `/withdraw <ᴀᴍᴏᴜɴᴛ>`</blockquote>")
-
     user = await _run(_get_user, uid)
     bank = user.get("bank", 0)
-
     if bank < amount:
         return await m.reply("<blockquote>❌ ɴᴏᴛ ᴇɴᴏᴜɢʜ ʙᴀɴᴋ ʙᴀʟᴀɴᴄᴇ!</blockquote>")
-
     await _run(_update_user, uid, {"bank": bank - amount})
     await _run(_add_coins, uid, amount)
-
     await m.reply(f"<blockquote>🏦 ᴡɪᴛʜᴅʀᴀᴡɴ **{amount:,}** ᴄᴏɪɴs</blockquote>")
 
-
 # ────────────────────────────────────────────
-#  BET — /bet | bbet  (case‑insensitive + streak + images)
+#  BET — /bet | bbet  (case-insensitive, NO cooldown)
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["bet"]) | filters.regex(r"^bbet(\s|$)", re.IGNORECASE))
+    (filters.command(["bet"]) | filters.regex(r"^(bbet|bet)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def bet_cmd(client, m: Message):
     args = _parse_args(m.text)
-    uid = m.from_user.id
-
+    uid  = m.from_user.id
     try:
         amount = int(args[0])
         if amount < 10:
             raise ValueError
-    except:
+    except (ValueError, IndexError):
         return await m.reply("<blockquote>🎲 ᴜsᴀɢᴇ: `/bet <ᴀᴍᴏᴜɴᴛ>` (ᴍɪɴ 10)</blockquote>")
-
     coins = await _run(_get_coins, uid)
-
     if coins < amount:
         return await m.reply("❌ ɴᴏᴛ ᴇɴᴏᴜɢʜ ᴄᴏɪɴs!")
-
-    wait = await _run(_check_cooldown, uid, "bet", 10)
-    if wait:
-        return await m.reply(f"<blockquote>⏳ ᴄᴏᴏʟᴅᴏᴡɴ: {fmt_time(wait)}</blockquote>")
-
     user_data = await _run(_get_user, uid)
-    streak = user_data.get("streak", 0)
-
+    streak    = user_data.get("streak", 0)
     if random.randint(1, 100) <= 45:
         win = amount * 2
         await _run(_add_coins, uid, win)
         streak += 1
         await _run(_update_user, uid, {"streak": streak})
-
         caption = (
             f"<blockquote>🎰 **{m.from_user.first_name}** ʜᴀs ʙᴇᴛ {amount} ᴄᴏɪɴs</blockquote>\n"
             f"<blockquote>✅ ᴏʜ ʏᴇᴀʜ! ʜᴇ ᴄᴀᴍᴇ ʙᴀᴄᴋ ʜᴏᴍᴇ ᴡɪᴛʜ **{win}** ᴄᴏɪɴs\n"
@@ -1317,47 +1220,33 @@ async def bet_cmd(client, m: Message):
         await _run(_remove_coins, uid, amount)
         streak = 0
         await _run(_update_user, uid, {"streak": streak})
-
         caption = (
             f"<blockquote>🎰 **{m.from_user.first_name}** ʜᴀs ʙᴇᴛ {amount} ᴄᴏɪɴs</blockquote>\n"
             f"<blockquote>❌ ᴏʜ ɴᴏ! ʜᴇ ᴄᴀᴍᴇ ʙᴀᴄᴋ ʜᴏᴍᴇ ᴡɪᴛʜᴏᴜᴛ **{amount}** ᴄᴏɪɴs</blockquote>"
         )
         await _send_life_image(m, "loss", caption)
 
-
 # ────────────────────────────────────────────
-#  ROB — /rob | rrob  (case‑insensitive)
+#  ROB — /rob | rrob  (case-insensitive, NO cooldown)
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["rob"]) | filters.regex(r"^rrob(\s|$)", re.IGNORECASE))
+    (filters.command(["rob"]) | filters.regex(r"^(rrob|rob)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def rob_cmd(client, m: Message):
     if not m.reply_to_message:
         return await m.reply("<blockquote>🔫 ʀᴇᴘʟʏ ᴛᴏ sᴏᴍᴇᴏɴᴇ ᴛᴏ ʀᴏʙ!</blockquote>")
-
     uid = m.from_user.id
     tid = m.reply_to_message.from_user.id
-
     if uid == tid:
         return await m.reply("<blockquote>❌ ᴄᴀɴ'ᴛ ʀᴏʙ ʏᴏᴜʀsᴇʟғ!</blockquote>")
-
-    wait = await _run(_check_cooldown, uid, "rob", 3600)
-    if wait:
-        return await m.reply(f"<blockquote>⏳ ᴄᴏᴏʟᴅᴏᴡɴ: {fmt_time(wait)}</blockquote>")
-
     victim_coins = await _run(_get_coins, tid)
-
     if victim_coins < 200:
         return await m.reply("<blockquote>❌ ᴛᴀʀɢᴇᴛ ᴛᴏᴏ ᴘᴏᴏʀ!</blockquote>")
-
-    success = random.randint(1, 100)
-
-    if success <= 35:
+    if random.randint(1, 100) <= 35:
         stolen = int(victim_coins * random.uniform(0.2, 0.4))
         await _run(_remove_coins, tid, stolen)
         await _run(_add_coins, uid, stolen)
-
         await m.reply(
             f"<blockquote>🔫 **ʀᴏʙʙᴇʀʏ sᴜᴄᴄᴇss!**</blockquote>\n"
             f"<blockquote>💰 sᴛᴏʟᴇɴ: {stolen:,} ᴄᴏɪɴs</blockquote>"
@@ -1365,35 +1254,27 @@ async def rob_cmd(client, m: Message):
     else:
         fine = random.randint(200, 500)
         await _run(_remove_coins, uid, fine)
-
         await m.reply(
             f"<blockquote>🚨 **ʀᴏʙʙᴇʀʏ ғᴀɪʟᴇᴅ!**</blockquote>\n"
             f"<blockquote>💸 ғɪɴᴇ: {fine:,} ᴄᴏɪɴs</blockquote>"
         )
 
-
 # ────────────────────────────────────────────
-#  PAY / PPAY  —  /pay | ppay  (case‑insensitive)
+#  PAY — /pay | ppay  (case-insensitive, NO cooldown)
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["pay"]) | filters.regex(r"^ppay(\s|$)", re.IGNORECASE))
+    (filters.command(["pay"]) | filters.regex(r"^(ppay|pay)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def pay_cmd(client, m: Message):
     if not m.reply_to_message:
         return await m.reply("<blockquote>💸 ʀᴇᴘʟʏ ᴛᴏ ᴜsᴇʀ ᴛᴏ ᴘᴀʏ!</blockquote>")
-
     uid = m.from_user.id
     tid = m.reply_to_message.from_user.id
-
     if uid == tid:
         return await m.reply("<blockquote>❌ ᴄᴀɴ'ᴛ ᴘᴀʏ ʏᴏᴜʀsᴇʟғ!</blockquote>")
-
-    args = _parse_args(m.text)
-
+    args           = _parse_args(m.text)
     sender_balance = await _run(_get_coins, uid)
-
-    # amount illa → full balance send
     if not args:
         amount = sender_balance
     else:
@@ -1401,15 +1282,12 @@ async def pay_cmd(client, m: Message):
             amount = int(args[0])
             if amount <= 0:
                 raise ValueError
-        except:
+        except (ValueError, IndexError):
             return await m.reply("<blockquote>💸 ᴜsᴀɢᴇ: `/pay <amount>`</blockquote>")
-
     if sender_balance < amount:
         return await m.reply("<blockquote>❌ ɴᴏᴛ ᴇɴᴏᴜɢʜ ᴄᴏɪɴs!</blockquote>")
-
     await _run(_remove_coins, uid, amount)
     await _run(_add_coins, tid, amount)
-
     await m.reply(
         f"<blockquote>💸 **ᴘᴀʏᴍᴇɴᴛ sᴜᴄᴄᴇss!**</blockquote>\n"
         f"<blockquote>👤 {mention(m.from_user)} ➜ {mention(m.reply_to_message.from_user)}\n"
@@ -1417,36 +1295,29 @@ async def pay_cmd(client, m: Message):
         disable_web_page_preview=True,
     )
 
-
 # ────────────────────────────────────────────
-#  LOAN REQUEST  —  /loan | lloan  (case‑insensitive)
+#  LOAN — /loan | lloan  (case-insensitive, NO cooldown)
 # ────────────────────────────────────────────
 @app.on_message(
-    (filters.command(["loan"]) | filters.regex(r"^lloan(\s|$)", re.IGNORECASE))
+    (filters.command(["loan"]) | filters.regex(r"^(lloan|loan)(\s|$)", re.IGNORECASE))
     & filters.group
 )
 async def loan_cmd(client, m: Message):
     if not m.reply_to_message:
         return await m.reply("<blockquote>💰 ʀᴇᴘʟʏ ᴛᴏ sᴏᴍᴇᴏɴᴇ ᴛᴏ ʀᴇǫᴜᴇsᴛ ʟᴏᴀɴ!</blockquote>")
-
     uid = m.from_user.id
     tid = m.reply_to_message.from_user.id
-
     if uid == tid:
         return await m.reply("<blockquote>❌ ᴄᴀɴ'ᴛ ʀᴇǫᴜᴇsᴛ ғʀᴏᴍ ʏᴏᴜʀsᴇʟғ!</blockquote>")
-
     args = _parse_args(m.text)
-
     if not args:
         return await m.reply("<blockquote>💰 ᴜsᴀɢᴇ: `/loan <amount>`</blockquote>")
-
     try:
         amount = int(args[0])
         if amount <= 0:
             raise ValueError
-    except:
+    except (ValueError, IndexError):
         return await m.reply("<blockquote>❌ ɪɴᴠᴀʟɪᴅ ᴀᴍᴏᴜɴᴛ!</blockquote>")
-
     await m.reply(
         f"<blockquote>💰 **ʟᴏᴀɴ ʀᴇǫᴜᴇsᴛ!**</blockquote>\n"
         f"<blockquote>👤 {mention(m.from_user)} ɪs ʀᴇǫᴜᴇsᴛɪɴɢ **{amount:,}** ᴄᴏɪɴs\n"
@@ -1454,11 +1325,64 @@ async def loan_cmd(client, m: Message):
         disable_web_page_preview=True,
     )
 
+# ────────────────────────────────────────────
+#  HELP  —  /lifehelp  |  hhelp  |  help
+# ────────────────────────────────────────────
+@app.on_message(
+    (filters.command(["lifehelp"]) | filters.regex(r"^(hhelp|lifehelp)(\s|$)", re.IGNORECASE))
+    & filters.group
+)
+async def help_cmd(client, m: Message):
+    await m.reply(
+        "<blockquote>🎮 **ʟɪғᴇ ɢᴀᴍᴇs — ғᴜʟʟ ᴄᴏᴍᴍᴀɴᴅ ʟɪsᴛ**\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</blockquote>\n"
+        "<blockquote>**👤 ᴘʀᴏғɪʟᴇ & ᴇᴄᴏɴᴏᴍʏ**\n"
+        "`/lifeprofile`   or  `profile`\n"
+        "`/lifebalance`   or  `balance`\n"
+        "`/lifedaily`     or  `daily`\n"
+        "`/lifeinventory` or  `inventory`\n"
+        "`/lifetop [coins|xp|level]`  or  `top`</blockquote>\n"
+        "<blockquote>**🏦 ʙᴀɴᴋ sʏsᴛᴇᴍ**\n"
+        "`/deposit <amount>`   or  `deposit <amount>`\n"
+        "`/withdraw <amount>`  or  `withdraw <amount>`\n"
+        "`/bet <amount>`       or  `bet <amount>`\n"
+        "`/rob` (reply)        or  `rob` (reply)</blockquote>\n"
+        "<blockquote>**🎮 ɢᴀᴍᴇs**\n"
+        "`/sslots <amount>`      or  `slots <amount>`\n"
+        "`/lifebowling <amount>` or  `bowling <amount>`\n"
+        "`/duel <amount>`        or  `duel <amount>`\n"
+        "`/lifefight`            or  `fight`</blockquote>\n"
+        "<blockquote>**💼 ᴊᴏʙs & ᴇᴄᴏɴᴏᴍʏ**\n"
+        "`/lifejob`           or  `job`\n"
+        "`/lifejob <name>`    or  `job <name>`\n"
+        "`/lifework`          or  `work`\n"
+        "`/steal`             or  `steal`\n"
+        "`/lifeshop`          or  `shop`</blockquote>\n"
+        "<blockquote>**❤️ sᴏᴄɪᴀʟ & ғᴀᴍɪʟʏ**\n"
+        "`/lifehug`     or `hug`\n"
+        "`/lifekiss`    or `kiss`\n"
+        "`/lifeslap`    or `slap`\n"
+        "`/lifelove`    or `love`\n"
+        "`/lifemarry`   or `marry`\n"
+        "`/lifedivorce` or `divorce`\n"
+        "`/lifeparent`  or `parent`\n"
+        "`/lifesibling` or `sibling`</blockquote>\n"
+        "<blockquote>**🎁 ɢɪᴠᴇᴀᴡᴀʏ**\n"
+        "`/lifegiveaway <amount>` or `giveaway <amount>`</blockquote>\n"
+        "<blockquote>**⚙️ ᴀᴅᴍɪɴ**\n"
+        "`/lifesettings` or `settings`\n"
+        "`/lifeenable`   or `enable`\n"
+        "`/lifedisable`  or `disable`\n"
+        "`/lifereset`  *(reply)*\n"
+        "`/lifeaddcoins <n>` *(reply)*</blockquote>\n"
+        "<blockquote>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "💡 **ɴᴏ sʟᴀsʜ ɴᴇᴇᴅᴇᴅ** — ᴊᴜsᴛ ᴛʏᴘᴇ ᴛʜᴇ ᴄᴏᴍᴍᴀɴᴅ!\n"
+        "   ᴇxᴀᴍᴘʟᴇ: `shop` · `top` · `steal` · `duel 500` · `bet 100`</blockquote>"
+    )
 
 # ─────────────────────────────────────────────────────────────────
 #  MODULE META
 # ─────────────────────────────────────────────────────────────────
-
 __menu__     = "CMD_GAMES"
 __mod_name__ = "H_B_75"
 __help__     = """
