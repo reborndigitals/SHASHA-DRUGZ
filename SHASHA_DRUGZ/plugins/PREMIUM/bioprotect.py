@@ -7,7 +7,7 @@
 #    • Per-group enable/disable via /biolink toggle
 #    • Penalty modes: delete-only (default), warn→action, mute, ban
 #    • Warn limit selector (0–5), configurable penalty after warns
-#    • Whitelist system: /free, /unfree, /freelist
+#    • Whitelist system: /free, /unfree, 
 #    • Config panel: /config  (admins only)
 #    • All actions have inline undo buttons (unmute / unban / whitelist)
 #
