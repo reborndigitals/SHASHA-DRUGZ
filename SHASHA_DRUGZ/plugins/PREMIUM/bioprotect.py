@@ -12,7 +12,7 @@
 #    • All actions have inline undo buttons (unmute / unban / whitelist)
 #
 #  DEFAULT BEHAVIOR (before any /config):
-#    • biolink = DISABLED (group owner must enable)
+#    • biolink = ENABLED  (auto-enabled when bot is added to group)
 #    • mode    = "delete"  (just removes the message, no warn/mute/ban)
 #    • limit   = 3         (warn limit, used when mode = "warn")
 #    • penalty = "delete"  (action after warns = delete only)
@@ -34,6 +34,9 @@
 #         if message.text and message.text.startswith("/"): return
 #    3. Cleaner/safer URL regex (https?://\S+ style)
 #    4. Entity-based URL detection added alongside regex
+#    5. DEFAULT enabled=True — protection is ON by default for every group.
+#    6. Auto-enable on bot add — ChatMemberUpdated handler sets enabled=True
+#         when the bot is added to a new group (or promoted to admin).
 #
 #  ISOLATION:
 #    Uses SHASHA_DRUGZ's shared MongoDB collections with chat_id scoping.
@@ -42,6 +45,7 @@
 import re
 import logging
 from pyrogram import filters, errors
+from pyrogram.enums import ChatMemberStatus
 from SHASHA_DRUGZ import app
 from pyrogram.types import (
     InlineKeyboardMarkup,
@@ -83,7 +87,7 @@ async def _get_cfg(chat_id: int) -> dict:
     if doc is None:
         doc = {
             "chat_id": chat_id,
-            "enabled": False,       # disabled by default — owner must enable
+            "enabled": True,        # FIX 5: enabled by default
             "mode":    "delete",    # delete | warn | mute | ban
             "limit":   3,           # warn limit (used when mode=warn)
             "penalty": "delete",    # action after warns: delete | mute | ban
@@ -143,6 +147,47 @@ async def _is_owner(client, chat_id: int, user_id: int) -> bool:
         return m.status.value in ("creator", "owner")
     except Exception:
         return False
+
+# ══════════════════════════════════════════════════════════════
+#  FIX 6: AUTO-ENABLE WHEN BOT IS ADDED TO A GROUP
+#
+#  Listens for ChatMemberUpdated events. When the bot itself is added
+#  to a group (or promoted to admin), we upsert the config with
+#  enabled=True so protection is active from the very first message.
+#  Uses upsert=True so it also works for groups that already existed
+#  in the DB with enabled=False.
+# ══════════════════════════════════════════════════════════════
+@app.on_chat_member_updated(filters.group)
+async def on_bot_added(client, update):
+    """Auto-enable bio-protect when the bot is added to a group."""
+    try:
+        bot = await client.get_me()
+        # Only react when the updated member is the bot itself
+        if update.new_chat_member and update.new_chat_member.user.id == bot.id:
+            new_status = update.new_chat_member.status
+            # Trigger on member / administrator (i.e. the bot was just added or promoted)
+            if new_status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR):
+                chat_id = update.chat.id
+                await _cfg_col.update_one(
+                    {"chat_id": chat_id},
+                    {
+                        "$setOnInsert": {
+                            "chat_id": chat_id,
+                            "mode":    "delete",
+                            "limit":   3,
+                            "penalty": "delete",
+                        },
+                        "$set": {"enabled": True},
+                    },
+                    upsert=True,
+                )
+                logger.info(
+                    "BioProtect auto-enabled for chat %s (%s)",
+                    chat_id,
+                    getattr(update.chat, "title", "?"),
+                )
+    except Exception as e:
+        logger.warning("on_bot_added error: %s", e)
 
 # ══════════════════════════════════════════════════════════════
 #  KEYBOARDS
@@ -230,12 +275,15 @@ def _after_penalty_kb(penalty: str) -> InlineKeyboardMarkup:
 async def biolink_cmd(client, message):
     chat_id = message.chat.id
     user_id = message.from_user.id
+
     if not await _is_owner(client, chat_id, user_id):
         return await message.reply_text(
             "<blockquote>❌ ᴏɴʟʏ ɢʀᴏᴜᴘ ᴏᴡɴᴇʀ ᴄᴀɴ ᴛᴏɢɢʟᴇ ʙɪᴏ ʟɪɴᴋ ᴘʀᴏᴛᴇᴄᴛɪᴏɴ.</blockquote>"
         )
+
     cfg = await _get_cfg(chat_id)
     args = message.command
+
     # /biolink enable / disable — direct toggle
     if len(args) > 1:
         arg = args[1].lower()
@@ -245,6 +293,7 @@ async def biolink_cmd(client, message):
         elif arg == "disable":
             await _set_cfg(chat_id, enabled=False)
             cfg["enabled"] = False
+
     status  = cfg["enabled"]
     mode    = cfg["mode"]
     limit   = cfg["limit"]
@@ -266,8 +315,10 @@ async def biolink_cmd(client, message):
 async def biolink_toggle_cb(client, cq):
     chat_id = int(cq.data.split("_")[2])
     user_id = cq.from_user.id
+
     if not await _is_owner(client, chat_id, user_id):
         return await cq.answer("❌ ɢʀᴏᴜᴘ ᴏᴡɴᴇʀ ᴏɴʟʏ.", show_alert=True)
+
     cfg     = await _get_cfg(chat_id)
     new_val = not cfg["enabled"]
     await _set_cfg(chat_id, enabled=new_val)
@@ -294,8 +345,10 @@ async def biolink_toggle_cb(client, cq):
 async def config_cmd(client, message):
     chat_id = message.chat.id
     user_id = message.from_user.id
+
     if not await _is_admin(client, chat_id, user_id):
         return
+
     cfg     = await _get_cfg(chat_id)
     mode    = cfg["mode"]
     penalty = cfg["penalty"]
@@ -322,8 +375,10 @@ async def bp_callbacks(client, cq):
     data    = cq.data
     chat_id = cq.message.chat.id
     user_id = cq.from_user.id
+
     if not await _is_admin(client, chat_id, user_id):
         return await cq.answer("❌ ɴᴏᴛ ᴀɴ ᴀᴅᴍɪɴ.", show_alert=True)
+
     cfg = await _get_cfg(chat_id)
 
     # ── Close ─────────────────────────────────────────────────────────────────
@@ -630,7 +685,6 @@ async def check_bio(client, message):
     # FIX 2: Extra safety — skip if message is a command
     if message.text and message.text.startswith("/"):
         return
-
     if not message.from_user:
         return
 
@@ -659,14 +713,12 @@ async def check_bio(client, message):
     # ── FIX 4: Entity-based URL detection (bonus — more reliable) ────────────
     def _bio_has_link(bio_text: str) -> bool:
         """Check for links using both regex and a simple entity-style scan."""
-        # Primary: regex check
         if _URL_RE.search(bio_text):
             return True
         return False
 
     # ── Clean bio — reset warns and exit ─────────────────────────────────────
     if not _bio_has_link(bio):
-        # Only reset if they previously had a link (avoid unnecessary DB writes)
         warns = await _get_warns(chat_id, user_id)
         if warns > 0:
             await _reset_warns(chat_id, user_id)
@@ -680,8 +732,6 @@ async def check_bio(client, message):
     penalty = cfg["penalty"]
 
     # Always try to delete the triggering message first
-    # NOTE: This is safe now because commands are excluded above,
-    # so we will never accidentally delete a command message.
     try:
         await message.delete()
     except errors.MessageDeleteForbidden:
