@@ -820,8 +820,8 @@ async def handle_guess(client, message: Message):
             f"ᴡᴏʀᴅ: **{word.upper()}**\n"
             f"ᴀᴛᴛᴇᴍᴘᴛs: {att_str}\n\n"
             f"⭐ **+{total} ᴘᴏɪɴᴛs**\n"
-            f"   └ ʙᴀsᴇ {base}  •  ᴛɪᴍᴇ ʙᴏɴᴜs +{tb}  •  ᴀᴛᴛᴇᴍᴘᴛ ʙᴏɴᴜs +{ab}\n\n"
-            f"📝 ᴀʟᴘʜᴀʙᴇᴛ ᴛʀᴀᴄᴋᴇʀ:\n{tracker}</blockquote>",
+            f"   └ ʙᴀsᴇ {base}  •  ᴛɪᴍᴇ ʙᴏɴᴜs +{tb}  •  ᴀᴛᴛᴇᴍᴘᴛ ʙᴏɴᴜs +{ab}</blockquote>\n\n",
+            #f"📝 ᴀʟᴘʜᴀʙᴇᴛ ᴛʀᴀᴄᴋᴇʀ:\n{tracker}</blockquote>",
             quote=True,
         )
 
@@ -832,8 +832,8 @@ async def handle_guess(client, message: Message):
         return await message.reply(
             f"<blockquote>{board}</blockquote>\n"
             f"<blockquote>💀 **ɢᴀᴍᴇ ᴏᴠᴇʀ!** ɴᴏ ᴍᴏʀᴇ ᴀᴛᴛᴇᴍᴘᴛs.\n"
-            f"ᴛʜᴇ ᴡᴏʀᴅ ᴡᴀs: **{word.upper()}**</blockquote>\n"
-            f"<blockquote>📝 ᴀʟᴘʜᴀʙᴇᴛ ᴛʀᴀᴄᴋᴇʀ:\n{tracker}</blockquote>",
+            f"ᴛʜᴇ ᴡᴏʀᴅ ᴡᴀs: **{word.upper()}**</blockquote>\n",
+            #f"<blockquote>📝 ᴀʟᴘʜᴀʙᴇᴛ ᴛʀᴀᴄᴋᴇʀ:\n{tracker}</blockquote>",
             quote=True,
         )
 
@@ -852,8 +852,8 @@ async def handle_guess(client, message: Message):
 
     await message.reply(
         f"<blockquote>{board}</blockquote>\n"
-        f"<blockquote>ᴀᴛᴛᴇᴍᴘᴛs: {att_str}{hint_text}\n\n"
-        f"📝 ᴀʟᴘʜᴀʙᴇᴛ ᴛʀᴀᴄᴋᴇʀ:\n{tracker}</blockquote>",
+        f"<blockquote>ᴀᴛᴛᴇᴍᴘᴛs: {att_str}{hint_text}\n\n",
+        #f"📝 ᴀʟᴘʜᴀʙᴇᴛ ᴛʀᴀᴄᴋᴇʀ:\n{tracker}</blockquote>",
         quote=True,
     )
 
