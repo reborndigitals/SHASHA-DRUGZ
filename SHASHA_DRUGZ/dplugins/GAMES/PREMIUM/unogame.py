@@ -24,7 +24,7 @@
 import random
 import asyncio
 from datetime import datetime, timezone
-from pyrogram import filters
+from pyrogram import Client, filters
 from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -470,7 +470,7 @@ try:
 except Exception as _e:
     print(f"[unogame] Recovery error: {_e}")
 
-@app.on_message(filters.command("unorecovery", prefixes=["/", "!", "."]) & filters.private)
+@Client.on_message(filters.command("unorecovery", prefixes=["/", "!", "."]) & filters.private)
 async def uno_recovery_cmd(client, message):
     count = 0
     async for game in games_col.find({"started": True}):
@@ -482,7 +482,7 @@ async def uno_recovery_cmd(client, message):
 # ─────────────────────────────────────────────────────────────────────────────
 # /unogame — Create lobby
 # ─────────────────────────────────────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     filters.command(["unogame", "unonew"], prefixes=["/", "!", "."]) &
     filters.group
 )
@@ -528,7 +528,7 @@ async def uno_create(client, message):
 # ─────────────────────────────────────────────────────────────────────────────
 # /unojoin
 # ─────────────────────────────────────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     filters.command("unojoin", prefixes=["/", "!", "."]) &
     filters.group
 )
@@ -536,7 +536,7 @@ async def uno_join_cmd(client, message):
     result = await _do_join(message.chat.id, message.from_user)
     await message.reply(result)
 
-@app.on_callback_query(filters.regex("^uno_join$"))
+@Client.on_callback_query(filters.regex("^uno_join$"))
 async def uno_join_cb(client, cq):
     result = await _do_join(cq.message.chat.id, cq.from_user)
     await cq.answer(result, show_alert=False)
@@ -564,14 +564,14 @@ async def _do_join(chat_id: int, user) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # /unostart
 # ─────────────────────────────────────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     filters.command("unostart", prefixes=["/", "!", "."]) &
     filters.group
 )
 async def uno_start_cmd(client, message):
     await _do_start(message.chat.id, message.from_user.id, reply_func=message.reply)
 
-@app.on_callback_query(filters.regex("^uno_start_btn$"))
+@Client.on_callback_query(filters.regex("^uno_start_btn$"))
 async def uno_start_cb(client, cq):
     await _do_start(cq.message.chat.id, cq.from_user.id, reply_func=cq.answer)
 
@@ -631,7 +631,7 @@ async def _do_start(chat_id: int, user_id: int, reply_func) -> None:
 # group=-1 → runs before all other inline handlers
 # FIX #1: uid is scoped to its own chat_id only
 # ─────────────────────────────────────────────────────────────────────────────
-@app.on_inline_query(group=-1)
+@Client.on_inline_query(group=-1)
 async def uno_inline(client, query):
     if query.query.strip().lower() != "uno":
         return
@@ -774,7 +774,7 @@ async def uno_inline(client, query):
 # ─────────────────────────────────────────────────────────────────────────────
 # CHOSEN INLINE RESULT — Process the played card
 # ─────────────────────────────────────────────────────────────────────────────
-@app.on_chosen_inline_result(group=-1)
+@Client.on_chosen_inline_result(group=-1)
 async def uno_chosen(client, result):
     uid     = result.from_user.id
     res_id  = result.result_id
@@ -965,7 +965,7 @@ async def _handle_win(chat_id: int, uid: int, game: dict) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # /unoleave
 # ─────────────────────────────────────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     filters.command("unoleave", prefixes=["/", "!", "."]) &
     filters.group
 )
@@ -1010,7 +1010,7 @@ async def uno_leave(client, message):
 # ─────────────────────────────────────────────────────────────────────────────
 # /unoend
 # ─────────────────────────────────────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     filters.command("unoend", prefixes=["/", "!", "."]) &
     filters.group
 )
@@ -1031,7 +1031,7 @@ async def uno_end(client, message):
 # ─────────────────────────────────────────────────────────────────────────────
 # /unostatus
 # ─────────────────────────────────────────────────────────────────────────────
-@app.on_message(
+@Client.on_message(
     filters.command("unostatus", prefixes=["/", "!", "."]) &
     filters.group
 )
@@ -1071,7 +1071,7 @@ async def uno_status(client, message):
 # ─────────────────────────────────────────────────────────────────────────────
 # /unostats
 # ─────────────────────────────────────────────────────────────────────────────
-@app.on_message(filters.command("unostats", prefixes=["/", "!", "."]))
+@Client.on_message(filters.command("unostats", prefixes=["/", "!", "."]))
 async def uno_stats(client, message):
     uid   = message.from_user.id
     data  = await stats_col.find_one({"user": uid}) or {}
@@ -1088,7 +1088,7 @@ async def uno_stats(client, message):
 # ─────────────────────────────────────────────────────────────────────────────
 # /unotop
 # ─────────────────────────────────────────────────────────────────────────────
-@app.on_message(filters.command("unotop", prefixes=["/", "!", "."]))
+@Client.on_message(filters.command("unotop", prefixes=["/", "!", "."]))
 async def uno_top(client, message):
     lines  = ["🏆 **ᴜɴᴏ ʟᴇᴀᴅᴇʀʙᴏᴀʀᴅ**\n"]
     medals = ["🥇", "🥈", "🥉"]
@@ -1107,7 +1107,7 @@ async def uno_top(client, message):
 # ─────────────────────────────────────────────────────────────────────────────
 # /unohelp
 # ─────────────────────────────────────────────────────────────────────────────
-@app.on_message(filters.command("unohelp", prefixes=["/", "!", "."]))
+@Client.on_message(filters.command("unohelp", prefixes=["/", "!", "."]))
 async def uno_help(client, message):
     await message.reply(
         "<blockquote>🃏 **ᴜɴᴏ ɢᴀᴍᴇ ᴄᴏᴍᴍᴀɴᴅs**</blockquote>\n"
