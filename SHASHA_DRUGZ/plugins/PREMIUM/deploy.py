@@ -64,12 +64,13 @@ AUTO_BOT_TYPES = {
     "CHAT":       {"path": "CHAT",     "price": 250, "display": "ᴄʜᴀᴛ ʙᴏᴛ"},
     "REACTION":   {"path": "REACTION", "price": 100, "display": "ʀᴇᴀᴄᴛɪᴏɴ ʙᴏᴛ"},
     "GAME":       {"path": "GAMES",    "price": 300, "display": "ɢᴀᴍᴇ ʙᴏᴛ"},
-    "USERBOT":    {"path": "USERBOT",  "price": 350, "display": "ᴜ𝗌ᴇʀʙᴏᴛ"},
+    "PRO-BOTS":    {"path": "PRO-BOTS",  "price": 350, "display": "ᴘʀᴏ ʙᴏᴛs"},
 }
 AUTO_COMBOS = {
-    "MANAGEMENT+MUSIC": {"bots": ["MANAGEMENT","MUSIC"],  "price": 999,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴍᴜsɪᴄ"},
-    "MUSIC+CHAT":       {"bots": ["MUSIC","CHAT"],        "price": 599,  "display": "ᴍᴜsɪᴄ+ᴄʜᴀᴛ"},
-    "CHAT+REACTION":    {"bots": ["CHAT","REACTION"],     "price": 299,  "display": "ᴄʜᴀᴛ+ʀᴇᴀᴄᴛɪᴏɴ"},
+    "MANAGEMENT+MUSIC":    {"bots": ["MANAGEMENT","MUSIC"],     "price": 999,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴍᴜsɪᴄ"},
+    "MUSIC+CHAT":          {"bots": ["MUSIC","CHAT"],           "price": 599,  "display": "ᴍᴜsɪᴄ+ᴄʜᴀᴛ"},
+    "CHAT+REACTION":       {"bots": ["CHAT","REACTION"],        "price": 299,  "display": "ᴄʜᴀᴛ+ʀᴇᴀᴄᴛɪᴏɴ"},
+    "MANAGEMENT+PRO-BOTS": {"bots": ["MANAGEMENT","PRO-BOTS"],  "price": 850,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴘʀᴏ"},
 }
 
 # ─── Plugin helpers ────────────────────────────────────────────────────────────
