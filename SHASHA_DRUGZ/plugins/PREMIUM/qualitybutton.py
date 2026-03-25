@@ -753,7 +753,7 @@ async def qb_callbacks(client, cq):
 async def _scheduler_loop():
     await _create_indexes()
     await asyncio.sleep(10)
-    logger.info("QualityButton scheduler started.")
+    #logger.info("QualityButton scheduler started.")
 
     while True:
         _pending_cleanup()
