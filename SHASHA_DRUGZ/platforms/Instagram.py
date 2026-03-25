@@ -1,450 +1,271 @@
-import asyncio
+# SHASHA_DRUGZ/VIPMUSIC/platforms/Instagram.py
+# ══════════════════════════════════════════════════════════════
+#  Instagram Platform Handler
+#  Supports: Reels, Posts (video), IGTV, Stories (public)
+#  Downloads via yt-dlp (same as YouTube handler uses internally)
+#  Falls back to instaloader if yt-dlp fails
+#
+#  Usage in play.py:
+#    from VIPMUSIC import Instagram
+#    elif await Instagram.valid(url):
+#        details, track_id = await Instagram.track(url)
+# ══════════════════════════════════════════════════════════════
+
 import os
 import re
-import json
-import random
+import asyncio
 import time
-import datetime
-import io
-import logging
-from typing import Optional, Dict, Any
-from PIL import Image, ImageDraw, ImageFont
+from typing import Union
+
+import aiohttp
 import yt_dlp
-from pyrogram.enums import MessageEntityType
-from pyrogram.types import Message
 
-# Playwright imports
-from playwright.async_api import async_playwright, Browser, Page
+# ── Optional: instaloader as fallback ────────────────────────
+try:
+    import instaloader
+    INSTALOADER_AVAILABLE = True
+except ImportError:
+    INSTALOADER_AVAILABLE = False
 
-from SHASHA_DRUGZ import app, LOGGER
-from config import LOG_GROUP_ID
 
-# ========== ENVIRONMENT CONFIGURATION ==========
-INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME", "onixxghostt")
-INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD", "143@Frnds")
-PLAY_URL = os.getenv("PLAY_URL", "https://www.instagram.com/reel/DTP92HdEyiu/?igsh=MTVtb2d4dzdkMmprYg==")
-
-# Paths for Playwright profile and cookies
-PLAYWRIGHT_PROFILE_DIR = os.path.join(os.getcwd(), "instagram_profile")
-COOKIES_DIR = os.path.join(os.getcwd(), "cookies")
-COOKIE_FILE = os.path.join(COOKIES_DIR, "instagram_cookies.txt")   # single cookie file
-DOWNLOAD_DIR = "downloads"
-
-os.makedirs(PLAYWRIGHT_PROFILE_DIR, exist_ok=True)
-os.makedirs(COOKIES_DIR, exist_ok=True)
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-# ========== GLOBAL BROWSER ==========
-browser: Optional[Browser] = None
-browser_lock = asyncio.Lock()
-
-# ========== LOGGER ==========
-def get_logger(name: str):
-    try:
-        return LOGGER(name)
-    except Exception:
-        log = logging.getLogger(name)
-        if not log.handlers:
-            handler = logging.StreamHandler()
-            handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
-            log.addHandler(handler)
-        log.setLevel(logging.INFO)
-        return log
-
-logger = get_logger("HeartBeat/platforms/Instagram.py")
-
-# ========== LOG GROUP HELPER ==========
-async def send_to_log_group(text: str, file=None):
-    if not LOG_GROUP_ID:
-        logger.warning("LOG_GROUP_ID not set, cannot send to log group")
-        return
-    try:
-        if file:
-            await app.send_document(chat_id=LOG_GROUP_ID, document=file, caption=text)
-        else:
-            await app.send_message(chat_id=LOG_GROUP_ID, text=text)
-    except Exception as e:
-        logger.error(f"Failed to send to log group: {e}", exc_info=True)
-
-async def generate_verification_screenshot(verification_code: str):
-    """Generate a simple PNG with the code (kept for compatibility, but no longer used)."""
-    try:
-        width, height = 400, 200
-        image = Image.new('RGB', (width, height), color='white')
-        draw = ImageDraw.Draw(image)
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
-        except:
-            font = ImageFont.load_default()
-        draw.text((50, 30), "🔐 Instagram Verification", fill='purple', font=font)
-        draw.text((50, 90), f"Code: {verification_code}", fill='red', font=font)
-        draw.text((50, 140), f"Time: {datetime.datetime.now().strftime('%H:%M:%S')}", fill='black', font=font)
-        img_buffer = io.BytesIO()
-        image.save(img_buffer, format='PNG')
-        img_buffer.seek(0)
-        return img_buffer
-    except Exception as e:
-        logger.error(f"Failed to generate verification screenshot: {e}", exc_info=True)
-        return None
-
-# ========== PLAYWRIGHT BROWSER MANAGEMENT ==========
-async def launch_playwright_browser(headless: bool = True):
-    """Launch a persistent Playwright Chromium browser with a user data directory."""
-    playwright = await async_playwright().start()
-    context = await playwright.chromium.launch_persistent_context(
-        user_data_dir=PLAYWRIGHT_PROFILE_DIR,
-        headless=headless,
-        args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
-            "--disable-infobars",
-            "--window-size=1920,1080",
-        ],
-        viewport={'width': 1920, 'height': 1080}
-    )
-    return context
-
-async def get_browser_context():
-    """Ensure global browser context is launched."""
-    global browser
-    async with browser_lock:
-        if browser is None:
-            logger.info("Launching Playwright browser for Instagram...")
-            try:
-                browser = await launch_playwright_browser(headless=True)
-                logger.info("Playwright browser started successfully.")
-            except Exception as e:
-                logger.error(f"Failed to launch Playwright: {e}")
-                browser = None
-                raise
-    return browser
-
-# ========== COOKIE FILE MANAGEMENT (SINGLE NETSCAPE FILE) ==========
-
-def write_netscape_cookies(cookies, filename):
-    """Write cookies in Netscape format for yt-dlp."""
-    with open(filename, "w", newline='', encoding='utf-8') as f:
-        f.write("# Netscape HTTP Cookie File\n")
-        f.write("# This file was generated by SHASHA_DRUGZ - Playwright\n")
-        f.write("# https://www.instagram.com\n\n")
-        
-        for cookie in cookies:
-            try:
-                domain = cookie.get('domain', '')
-                if not domain:
-                    continue
-                
-                # Skip irrelevant domains
-                if 'facebook.com' in domain or 'cdninstagram.com' in domain:
-                    continue
-                
-                expires = cookie.get('expires', 0)
-                if expires == 0:
-                    expires = int(time.time()) + 86400 * 365  # 1 year default
-                elif expires > 1000000000000:
-                    expires = int(expires / 1000)
-                
-                flag = "TRUE" if domain.startswith('.') else "FALSE"
-                path = cookie.get('path', '/')
-                secure = "TRUE" if cookie.get('secure', False) else "FALSE"
-                expires_str = str(int(expires))
-                name = cookie.get('name', '')
-                value = cookie.get('value', '')
-                
-                if not name or not value:
-                    continue
-                
-                f.write(f"{domain}\t{flag}\t{path}\t{secure}\t{expires_str}\t{name}\t{value}\n")
-                
-            except Exception as e:
-                logger.warning(f"Skipping cookie due to error: {e}")
-                continue
-
-def verify_cookies_file(filename: str) -> bool:
-    """Verify cookies file has proper Instagram cookies in Netscape format."""
-    try:
-        if not os.path.exists(filename):
-            return False
-        with open(filename, 'r', encoding='utf-8') as f:
-            content = f.read()
-        if 'instagram.com' not in content and '.instagram.com' not in content:
-            return False
-        return True
-    except:
-        return False
-
-def is_cookie_file_expired(filepath: str) -> bool:
-    """Check if cookie file is older than 2 days."""
-    if os.path.getmtime(filepath) < time.time() - 172800:  # 2 days
-        return True
-    return False
-
-def get_valid_cookie_file() -> Optional[str]:
-    """Return the path to the single cookie file if it exists and is valid, else None."""
-    if os.path.exists(COOKIE_FILE) and verify_cookies_file(COOKIE_FILE) and not is_cookie_file_expired(COOKIE_FILE):
-        return COOKIE_FILE
-    else:
-        if os.path.exists(COOKIE_FILE):
-            try:
-                os.remove(COOKIE_FILE)
-                logger.info(f"Removed invalid/expired cookie file: {COOKIE_FILE}")
-            except:
-                pass
-        return None
-
-async def export_cookies_from_playwright(context) -> Optional[str]:
-    """Export current Playwright context cookies to a Netscape file."""
-    try:
-        cookies = await context.cookies()
-        if not cookies:
-            logger.error("No cookies to export")
-            return None
-        write_netscape_cookies(cookies, COOKIE_FILE)
-        if verify_cookies_file(COOKIE_FILE):
-            logger.info(f"✓ Cookies saved to {COOKIE_FILE}")
-            return COOKIE_FILE
-        else:
-            logger.error("Failed to verify cookies file")
-            return None
-    except Exception as e:
-        logger.error(f"Error exporting cookies: {e}")
-        return None
-
-async def playwright_login() -> bool:
-    """
-    Perform Instagram login using Playwright and save cookies.
-    Returns True if successful.
-    """
-    logger.info("🚀 Opening Instagram login page...")
-    context = await get_browser_context()
-    page = await context.new_page()
-
-    try:
-        await page.goto("https://www.instagram.com/accounts/login/", wait_until="domcontentloaded")
-        await asyncio.sleep(3)
-
-        # Wait for login form
-        await page.wait_for_selector("input[name='username']", timeout=10000)
-        await page.fill("input[name='username']", INSTAGRAM_USERNAME)
-        await page.fill("input[name='password']", INSTAGRAM_PASSWORD)
-
-        # Click login button
-        await page.click("button[type='submit']")
-        await asyncio.sleep(5)
-
-        # Wait for home page or challenge
-        # Check if challenge appears
-        if "challenge" in page.url.lower():
-            logger.warning("⚠️ Login challenge required – manual intervention needed.")
-            return False
-
-        # Wait for home icon to confirm login
-        try:
-            await page.wait_for_selector("svg[aria-label='Home']", timeout=15000)
-            logger.info("✅ Login confirmed by home icon.")
-        except:
-            logger.error("Login failed: home icon not found.")
-            return False
-
-        # Save cookies
-        await export_cookies_from_playwright(context)
-        return True
-
-    except Exception as e:
-        logger.error(f"Login error: {e}", exc_info=True)
-        return False
-    finally:
-        await page.close()
-
-# ========== DOWNLOAD FUNCTION WITH AUTO RELOGIN ==========
-async def download_instagram_reel(url: str) -> Optional[str]:
-    """
-    Download Instagram reel using yt-dlp with cookie file.
-    If download fails (cookies expired), auto‑relogin and retry.
-    Returns file path if successful, else None.
-    """
-    ydl_opts = {
-        "outtmpl": os.path.join(DOWNLOAD_DIR, "insta_%(id)s.%(ext)s"),
-        "quiet": True,
-        "no_warnings": True,
-        "geo_bypass": True,
-        "noplaylist": True,
-        "format": "best",
-        "retries": 10,
-        "fragment_retries": 10,
-        "cookiefile": COOKIE_FILE,
-    }
-
-    # First attempt
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            file_path = ydl.prepare_filename(info)
-
-        if os.path.exists(file_path):
-            logger.info(f"✅ Instagram download succeeded: {file_path}")
-            return file_path
-        else:
-            logger.warning("yt-dlp download completed but file not found.")
-            return None
-    except Exception as e:
-        logger.warning(f"⚠️ Instagram download failed (cookies may be expired): {e}")
-
-    # Cookies expired – relogin
-    logger.info("🔄 Attempting auto relogin...")
-    login_success = await playwright_login()
-    if not login_success:
-        logger.error("❌ Auto relogin failed.")
-        return None
-
-    # Retry download after fresh login
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            file_path = ydl.prepare_filename(info)
-
-        if os.path.exists(file_path):
-            logger.info(f"✅ Instagram download succeeded after relogin: {file_path}")
-            return file_path
-        else:
-            logger.warning("yt-dlp download completed after relogin but file not found.")
-            return None
-    except Exception as e:
-        logger.error(f"❌ Instagram download failed even after relogin: {e}")
-        return None
-
-# ========== INSTAGRAM API CLASS ==========
 class InstagramAPI:
     def __init__(self):
-        # URL patterns
-        self.regex_post = r"(https?://)?(www\.)?instagram\.com/(p|reel|tv)/([A-Za-z0-9_-]+)/?(\?.*)?$"
-        self.regex_story = r"(https?://)?(www\.)?instagram\.com/stories/([A-Za-z0-9._]+)/([0-9]+)/?(\?.*)?$"
-        self.regex_profile = r"(https?://)?(www\.)?instagram\.com/([A-Za-z0-9._]+)/?(\?.*)?$"
-        self.regex_highlight = r"(https?://)?(www\.)?instagram\.com/stories/highlights/([0-9]+)/?(\?.*)?$"
-        self.regex_extra = re.compile(
-            r"(?i)https?://(?:www\.)?(?:instagram\.com|instagr\.am)/(?:p|reel|reels|tv|stories/(?:highlights/)?[\w._-]+)?/?[\w._-]*"
+        # Matches all common Instagram video/reel/post/igtv URLs
+        self.regex = (
+            r"(?:https?://)?(?:www\.)?instagram\.com/"
+            r"(?:p|reel|reels|tv|stories)/([A-Za-z0-9_\-]+)"
         )
-        self.post_pattern = re.compile(self.regex_post)
-        self.story_pattern = re.compile(self.regex_story)
-        self.profile_pattern = re.compile(self.regex_profile)
-        self.highlight_pattern = re.compile(self.regex_highlight)
+        self.base = "https://www.instagram.com/"
 
+    # ── URL Validation ────────────────────────────────────────
     async def valid(self, link: str) -> bool:
-        return bool(
-            self.post_pattern.match(link) or
-            self.story_pattern.match(link) or
-            self.profile_pattern.match(link) or
-            self.highlight_pattern.match(link) or
-            self.regex_extra.match(link)
+        return bool(re.search(self.regex, link))
+
+    def _extract_shortcode(self, url: str) -> Union[str, None]:
+        match = re.search(self.regex, url)
+        return match.group(1) if match else None
+
+    # ── yt-dlp options ────────────────────────────────────────
+    def _ytdlp_opts(self, output_path: str, audio_only: bool = False) -> dict:
+        fmt = (
+            "bestaudio/best"
+            if audio_only
+            else "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
         )
+        return {
+            "format":            fmt,
+            "outtmpl":           output_path,
+            "quiet":             True,
+            "no_warnings":       True,
+            "noplaylist":        True,
+            "geo_bypass":        True,
+            "nocheckcertificate": True,
+            "retries":           3,
+            "socket_timeout":    30,
+            "postprocessors": [
+                {
+                    "key":            "FFmpegVideoConvertor",
+                    "preferedformat": "mp4",
+                }
+            ] if not audio_only else [],
+        }
 
-    async def extract_shortcode(self, link: str) -> Optional[str]:
-        match = self.post_pattern.match(link)
-        if match:
-            return match.group(4)
-        return None
+    # ── Fetch metadata (no download) ─────────────────────────
+    async def _fetch_info(self, url: str) -> Union[dict, None]:
+        loop = asyncio.get_event_loop()
 
-    async def extract_username(self, link: str) -> Optional[str]:
-        match = self.profile_pattern.match(link)
-        if match:
-            return match.group(3)
-        return None
-
-    async def get_info(self, link: str) -> Optional[Dict[str, Any]]:
-        """
-        Get media info using yt-dlp (without download).
-        Returns a dict with title, uploader, duration, etc.
-        """
-        logger.info(f"🔍 Getting Instagram info: {link}")
-        try:
-            ydl_opts = {
-                "quiet": True,
-                "no_warnings": True,
-                "geo_bypass": True,
-                "cookiefile": COOKIE_FILE,
+        def _extract():
+            opts = {
+                "quiet":             True,
+                "no_warnings":       True,
+                "noplaylist":        True,
+                "skip_download":     True,
+                "geo_bypass":        True,
+                "nocheckcertificate": True,
+                "socket_timeout":    20,
             }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(link, download=False)
-                if info:
-                    return {
-                        "id": info.get("id"),
-                        "title": info.get("title") or "Instagram Media",
-                        "uploader": info.get("uploader"),
-                        "uploader_id": info.get("uploader_id"),
-                        "duration": info.get("duration"),
-                        "thumbnail": info.get("thumbnail"),
-                        "webpage_url": info.get("webpage_url"),
-                        "is_video": info.get("_type") != "playlist" and info.get("ext") in ["mp4", "mov"],
-                        "formats": info.get("formats"),
-                    }
-        except Exception as e:
-            logger.error(f"yt-dlp get_info failed: {e}", exc_info=True)
-        return None
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=False)
 
-    async def track(self, link: str) -> tuple:
-        """Convert Instagram link to track format for playback."""
-        logger.info(f"🔄 Processing Instagram link for direct playback: {link}")
-        shortcode = await self.extract_shortcode(link)
-        info = await self.get_info(link) if shortcode else None
+        try:
+            info = await loop.run_in_executor(None, _extract)
+            return info
+        except Exception:
+            return None
+
+    # ── track() — returns details dict + track_id (shortcode) ─
+    async def track(
+        self,
+        url: str,
+        playid: Union[bool, str] = None,
+    ) -> tuple:
+        """
+        Returns:
+            (track_details dict, shortcode str)
+
+        track_details keys match YouTube.track() output so the
+        existing stream() function works without modification:
+            title, link, vidid, duration_min, thumb
+        Also includes extra keys:
+            duration_sec, platform="instagram"
+        """
+        if playid:
+            url = self.base + url
+
+        shortcode = self._extract_shortcode(url) or "instagram"
+        info      = await self._fetch_info(url)
 
         if info:
-            duration_str = None
-            if info.get("duration"):
-                total_seconds = int(info["duration"])
-                minutes = total_seconds // 60
-                seconds = total_seconds % 60
-                duration_str = f"{minutes}:{seconds:02d}"
+            title        = info.get("title") or info.get("description") or "Instagram Video"
+            # Clean up title
+            title        = title[:80].strip()
+            duration_sec = int(info.get("duration") or 0)
+            thumbnail    = info.get("thumbnail") or ""
+            uploader     = info.get("uploader") or info.get("channel") or "Instagram"
+            webpage_url  = info.get("webpage_url") or url
+        else:
+            # Minimal fallback if yt-dlp metadata fetch fails
+            title        = f"Instagram Reel — {shortcode}"
+            duration_sec = 0
+            thumbnail    = ""
+            uploader     = "Instagram"
+            webpage_url  = url
 
-            track_details = {
-                "title": info.get("title", "Instagram Media"),
-                "link": link,
-                "vidid": info.get("id", shortcode),
-                "duration_min": duration_str,
-                "thumb": info.get("thumbnail"),
-                "source": "instagram",
-                "original_url": link,
-            }
-            return track_details, info.get("id", shortcode)
+        # Format duration as MM:SS
+        if duration_sec > 0:
+            minutes      = duration_sec // 60
+            seconds      = duration_sec % 60
+            duration_min = f"{minutes:02d}:{seconds:02d}"
+        else:
+            duration_min = "00:00"
 
-        # Fallback minimal info
         track_details = {
-            "title": "Instagram Media",
-            "link": link,
-            "vidid": shortcode or "unknown",
-            "duration_min": None,
-            "thumb": None,
-            "source": "instagram",
-            "original_url": link,
+            "title":        title,
+            "link":         webpage_url,
+            "vidid":        shortcode,          # used as track_id in queue
+            "duration_min": duration_min,
+            "duration_sec": duration_sec,
+            "thumb":        thumbnail,
+            "uploader":     uploader,
+            "platform":     "instagram",
         }
-        return track_details, shortcode or "unknown"
+        return track_details, shortcode
 
-    async def download(self, link: str, video: bool = True) -> Optional[str]:
-        """Download Instagram media (only video supported now)."""
-        return await download_instagram_reel(link)
+    # ── download() — mirrors YouTube.download() signature ─────
+    async def download(
+        self,
+        shortcode_or_url: str,
+        mystic=None,
+        video: Union[bool, str] = None,
+        videoid: Union[bool, str] = None,
+    ) -> tuple:
+        """
+        Downloads the Instagram video/reel.
 
-    async def url(self, message: Message) -> Optional[str]:
-        """Extract Instagram URL from a Pyrogram message."""
-        if message.entities:
-            for entity in message.entities:
-                if entity.type == MessageEntityType.URL:
-                    text = message.text or message.caption
-                    url = text[entity.offset: entity.offset + entity.length]
-                    if await self.valid(url):
-                        return url
-        if message.reply_to_message:
-            return await self.url(message.reply_to_message)
-        return None
+        Returns:
+            (file_path: str, direct: bool)
+            direct=True  → file_path is a local path ready to stream
+            direct=False → not used for Instagram (always True)
 
-# ========== STARTUP FUNCTION (to be called from main bot) ==========
-async def startup_instagram_login():
-    """Perform initial login to ensure cookies are fresh."""
-    logger.info("🚀 Performing initial Instagram login...")
-    success = await playwright_login()
-    if success:
-        logger.info("✅ Initial Instagram login successful.")
-    else:
-        logger.error("❌ Initial Instagram login failed. Downloads may fail until manual login.")
+        Mirrors YouTube.download() so it can be dropped into
+        the existing stream() call in play.py.
+        """
+        if videoid:
+            url = f"https://www.instagram.com/reel/{shortcode_or_url}/"
+        else:
+            url = shortcode_or_url
 
-# Initialize API instance (does NOT trigger login)
-instagram_api = InstagramAPI()
+        os.makedirs("cache", exist_ok=True)
+        timestamp   = int(time.time())
+        audio_only  = not video
+        ext         = "mp4" if video else "m4a"
+        output_path = f"cache/insta_{shortcode_or_url}_{timestamp}.%(ext)s"
+        final_path  = f"cache/insta_{shortcode_or_url}_{timestamp}.{ext}"
+
+        loop  = asyncio.get_event_loop()
+        opts  = self._ytdlp_opts(output_path, audio_only=audio_only)
+
+        def _download():
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+
+        try:
+            if mystic:
+                try:
+                    await mystic.edit_text(
+                        "⬇️ **ᴅᴏᴡɴʟᴏᴀᴅɪɴɢ ɪɴsᴛᴀɢʀᴀᴍ ᴠɪᴅᴇᴏ...**"
+                    )
+                except Exception:
+                    pass
+
+            await loop.run_in_executor(None, _download)
+
+            # yt-dlp may rename the file after postprocessing
+            if not os.path.exists(final_path):
+                # Search for any matching file in cache/
+                for f in os.listdir("cache"):
+                    if f.startswith(f"insta_{shortcode_or_url}_{timestamp}"):
+                        final_path = os.path.join("cache", f)
+                        break
+
+            if not os.path.exists(final_path):
+                raise FileNotFoundError(f"Downloaded file not found: {final_path}")
+
+            return final_path, True
+
+        except Exception as e:
+            # ── Fallback: instaloader ─────────────────────────
+            if INSTALOADER_AVAILABLE and video:
+                try:
+                    result = await self._instaloader_download(url, shortcode_or_url, timestamp)
+                    if result:
+                        return result, True
+                except Exception:
+                    pass
+            raise Exception(f"Instagram download failed: {e}")
+
+    # ── instaloader fallback ──────────────────────────────────
+    async def _instaloader_download(
+        self, url: str, shortcode: str, timestamp: int
+    ) -> Union[str, None]:
+        loop = asyncio.get_event_loop()
+
+        def _dl():
+            L  = instaloader.Instaloader(
+                download_videos=True,
+                download_video_thumbnails=False,
+                download_geotags=False,
+                download_comments=False,
+                save_metadata=False,
+                quiet=True,
+                dirname_pattern="cache",
+                filename_pattern=f"insta_{shortcode}_{timestamp}",
+            )
+            post = instaloader.Post.from_shortcode(L.context, shortcode)
+            L.download_post(post, target="cache")
+            # Find the mp4
+            for f in os.listdir("cache"):
+                if f.endswith(".mp4") and shortcode in f:
+                    return os.path.join("cache", f)
+            return None
+
+        return await loop.run_in_executor(None, _dl)
+
+    # ── exists() helper — mirrors YouTube.exists() ────────────
+    async def exists(self, url: str) -> bool:
+        return await self.valid(url)
+
+    # ── details() — for playlist/queue compatibility ──────────
+    async def details(self, url: str, fetch: bool = True) -> tuple:
+        """
+        Lightweight wrapper used by stream() playlist loop.
+        Returns: (title, duration_min, duration_sec, thumbnail, vidid)
+        """
+        track_details, vidid = await self.track(url)
+        return (
+            track_details["title"],
+            track_details["duration_min"],
+            track_details["duration_sec"],
+            track_details["thumb"],
+            vidid,
+        )
