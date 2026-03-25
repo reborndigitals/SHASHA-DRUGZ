@@ -88,7 +88,7 @@ def locks_keyboard(active: List[str]) -> InlineKeyboardMarkup:
 # -------------------- commands --------------------
 
 @Client.on_message(filters.command("locktypes") & filters.group)
-async def open_lock_panel(client: Client, message: Message):
+async def open_lock_panel(_, message: Message):
     if not await is_admin_from_message(message):
         return await message.reply_text("Admins only.")
     locks = await get_locks(message.chat.id)
@@ -96,7 +96,7 @@ async def open_lock_panel(client: Client, message: Message):
 
 
 @Client.on_message(filters.command("locks") & filters.group)
-async def show_locks(client: Client, message: Message):
+async def show_locks(_, message: Message):
     locks = await get_locks(message.chat.id)
     if not locks:
         return await message.reply_text("No active locks in this chat.")
@@ -218,7 +218,7 @@ def is_zalgo_text(text: str) -> bool:
 # -------------------- primary filter (auto-delete) --------------------
 
 @Client.on_message(filters.group, group=99)
-async def lock_enforcer(client: Client, message: Message):
+async def lock_enforcer(_, message: Message):
     # quick pass: if no locks or sender is sudoer -> allow
     locks = await get_locks(message.chat.id)
     if not locks:
@@ -244,12 +244,12 @@ async def lock_enforcer(client: Client, message: Message):
                 msg_type = "bot"
                 break
 
-    # 4) audio / voice / videonote / video / photo / document / sticker / gif
+    # 4) audio / voice / video_note / video / photo / document / sticker / gif
     elif message.audio:
         msg_type = "audio"
     elif message.voice:
         msg_type = "voice"
-    elif message.videonote:
+    elif message.video_note:          # ✅ fixed: correct attribute name
         msg_type = "videonote"
     elif message.video:
         msg_type = "video"
