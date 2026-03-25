@@ -633,7 +633,7 @@ async def _start_background_tasks(client):
     # FIX: use asyncio.create_task instead of client.create_task
     asyncio.create_task(reason_cleanup_task())
 
-__menu__ = "CMD_MANAGE"
+__menu__ = "CMD_PRO"
 __mod_name__ = "H_B_30"
 __help__ = """
 🔻 /joinreq ➠ ꜱᴇᴛ ᴊᴏɪɴ ʀᴇǫᴜᴇꜱᴛ ꜰᴏʀ ɢʀᴏᴜᴘ / ᴄʜᴀɴɴᴇʟ  
@@ -654,6 +654,6 @@ __help__ = """
 🔻 (ᴏᴡɴᴇʀ ᴍᴇɴᴜ) ➠ ᴀᴘᴘʀᴏᴠᴇꜱ ᴀʟʟ ᴘᴇɴᴅɪɴɢ ᴊᴏɪɴ ʀᴇǫᴜᴇꜱᴛꜱ ᴡɪᴛʜ ᴏɴᴇ ᴛᴀᴘ.
 """
 
-MOD_TYPE = "MANAGEMENT"
+MOD_TYPE = "PRO-BOTS"
 MOD_NAME = "Join-Req"
 MOD_PRICE = "100"
