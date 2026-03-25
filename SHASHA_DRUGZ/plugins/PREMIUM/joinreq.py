@@ -633,7 +633,7 @@ async def _start_background_tasks(client):
     client.create_task(reason_cleanup_task())
 
 
-__menu__ = "CMD_MANAGE"
+__menu__ = "CMD_PRO"
 __mod_name__ = "H_B_30"
 __help__ = """
 🔻 /joinreq ➠ ꜱᴇᴛ ᴊᴏɪɴ ʀᴇǫᴜᴇꜱᴛ ꜰᴏʀ ɢʀᴏᴜᴘ / ᴄʜᴀɴɴᴇʟ  
