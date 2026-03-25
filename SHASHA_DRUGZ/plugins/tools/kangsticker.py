@@ -34,7 +34,6 @@ from SHASHA_DRUGZ.utils.stickerset import (
     add_sticker_to_set,
 )
 
-print("[sticker_kang] st, packkang, stid, kang")
 
 # ------------------------------------------------------------------------------
 # Constants
