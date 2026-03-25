@@ -428,7 +428,7 @@ async def on_new_chat_member(client, message: Message):
     await load_settings(chat_id)
 
 
-__menu__ = "CMD_MANAGE"
+__menu__ = "CMD_PRO"
 __mod_name__ = "H_B_31"
 __help__ = """
 🔻 /nsfw ➠ ᴏᴘᴇɴꜱ ᴛʜᴇ ɴꜱꜰᴡ ꜱᴇᴛᴛɪɴɢꜱ ᴘᴀɴᴇʟ ᴡɪᴛʜ ɪɴʟɪɴᴇ ᴄᴏɴᴛʀᴏʟꜱ (ɢʀᴏᴜᴘ ᴏᴡɴᴇʀ ᴏɴʟʏ).
