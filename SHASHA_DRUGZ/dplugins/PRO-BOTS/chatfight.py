@@ -164,9 +164,23 @@ def _get_next_milestone(current: int) -> int:
 
 # ══════════════════════════════════════════════════════════════
 #  CORE MESSAGE HANDLER — XP + COINS + MILESTONE
+#  UPDATED: safe decorator and hard safety check
 # ══════════════════════════════════════════════════════════════
-@Client.on_message(filters.group & ~filters.service & ~filters.bot)
+@Client.on_message(
+    filters.group
+    & filters.text
+    & ~filters.service
+    & ~filters.bot
+    & ~filters.command([])               # ignore all slash commands
+    & ~filters.regex(r"^[!/\.]")         # ignore messages starting with /, !, .
+)
 async def on_message(client, message):
+    # Hard safety check
+    if not message.text:
+        return
+    if message.text.startswith(("/", "!", ".")):
+        return
+
     if not message.from_user:
         return
 
@@ -521,7 +535,6 @@ __help__ = """
 🥉 ʀᴀɴᴋ 4–10 → ᴛᴏᴘ ᴍᴇᴍʙᴇʀ
 💬 ʀᴀɴᴋ 11+ → ᴍᴇᴍʙᴇʀ
 """
-
 MOD_TYPE = "PRO-BOTS"
 MOD_NAME = "ChatFight"
 MOD_PRICE = "70"
