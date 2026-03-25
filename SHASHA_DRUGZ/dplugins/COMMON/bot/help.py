@@ -22,7 +22,6 @@ from SHASHA_DRUGZ.utils.bot_settings import (
     get_support_chat,
     get_support_channel,
 )
-
 def safe_lang(lang):
     if isinstance(lang, dict):
         return lang
@@ -30,15 +29,12 @@ def safe_lang(lang):
         return get_string(lang)
     except Exception:
         return get_string("en")
-
 # ── Per-client help cache so Bot A never sees Bot B's modules ─────────────────
 _HELP_CACHE: Dict[int, Dict] = {}
-
 def _get_menus(client_id: int) -> Dict:
     if client_id not in _HELP_CACHE:
         _HELP_CACHE[client_id] = defaultdict(lambda: defaultdict(list))
     return _HELP_CACHE[client_id]
-
 async def load_module_helps(client: Client):
     bot_id   = client.me.id
     menus    = _get_menus(bot_id)
@@ -62,7 +58,6 @@ async def load_module_helps(client: Client):
         if allowed_plugins is not None and plugin_path not in allowed_plugins:
             continue
         menus[menu][mod_name].append(help_text.strip())
-
 async def main_menu_kb(client: Client, lang_dict: dict) -> InlineKeyboardMarkup:
     menus     = _get_menus(client.me.id)
     menu_keys = sorted(menus.keys())
@@ -82,52 +77,54 @@ async def main_menu_kb(client: Client, lang_dict: dict) -> InlineKeyboardMarkup:
     if row:
         buttons.append(row)
     return InlineKeyboardMarkup(buttons)
-
 async def module_menu_kb(
     client: Client, menu_key: str, page: int, total_pages: int, lang_dict: dict
 ) -> InlineKeyboardMarkup:
-    """
-    Build the module list keyboard for a given menu category.
-
-    BUG FIX: the original code used `_` as both the language-dict parameter
-    AND as the for-loop variable (`for _ in range(length)`), which silently
-    shadowed the dict and made `_.get(mk, mk)` impossible. Fixed by:
-      1. Renaming the loop variable to `_i`
-      2. Using `lang_dict.get(mk, mk)` for human-readable button labels
-         (mod_name values like "H_B_2" are language-string keys, not display names)
-    """
     menus     = _get_menus(client.me.id)
     mod_keys  = sorted(menus[menu_key].keys())
     page_mods = mod_keys[page * 9:(page + 1) * 9]
-    buttons, idx = [], 0
-    for length in [3, 3, 2, 1]:
+
+    # Reference-style row layout: [3, 3, 2, 1]
+    row_lengths = [3, 3, 2, 1]
+    buttons = []
+    idx = 0
+    for length in row_lengths:
         if idx >= len(page_mods):
             break
         row_btns = []
-        for _i in range(length):  # FIX: was `for _ in range(length)` — shadowed lang dict
+        for j in range(length):
             if idx < len(page_mods):
                 mk = page_mods[idx]
                 row_btns.append(InlineKeyboardButton(
-                    # FIX: was `text=mk` — showed raw "H_B_2" instead of human name
-                    # Now looks up the language string; falls back to key if not found
                     text=lang_dict.get(mk, mk),
                     callback_data=f"help_mod {menu_key}|{mk}"
                 ))
                 idx += 1
+            else:
+                break
         if row_btns:
             buttons.append(row_btns)
 
+    # Navigation row
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("◀ Back", callback_data=f"help_menu {menu_key} {page-1}"))
+        nav.append(InlineKeyboardButton(
+            lang_dict.get("BACK_BUTTON", "◀ Back"),
+            callback_data=f"help_menu {menu_key} {page-1}"
+        ))
     else:
-        nav.append(InlineKeyboardButton("◀ Back", callback_data="settings_back_helper"))
+        nav.append(InlineKeyboardButton(
+            lang_dict.get("BACK_BUTTON", "◀ Back"),
+            callback_data="settings_back_helper"
+        ))
     if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("Next ▶", callback_data=f"help_menu {menu_key} {page+1}"))
+        nav.append(InlineKeyboardButton(
+            lang_dict.get("NEXT_BUTTON", "Next ▶"),
+            callback_data=f"help_menu {menu_key} {page+1}"
+        ))
     if nav:
         buttons.append(nav)
     return InlineKeyboardMarkup(buttons)
-
 async def _safe_edit(cq: CallbackQuery, text: str, reply_markup=None, **kwargs):
     try:
         await cq.message.edit_text(text, reply_markup=reply_markup, **kwargs)
@@ -136,7 +133,6 @@ async def _safe_edit(cq: CallbackQuery, text: str, reply_markup=None, **kwargs):
     except Exception as e:
         import logging
         logging.warning(f"[help.py] edit_text failed: {e}")
-
 @Client.on_message(filters.command(["help"]) & filters.private & ~BANNED_USERS)
 @Client.on_callback_query(filters.regex("settings_back_helper") & ~BANNED_USERS)
 async def helper_private(
@@ -144,7 +140,6 @@ async def helper_private(
 ):
     await load_module_helps(client)
     is_cb = isinstance(update, types.CallbackQuery)
-
     if is_cb:
         try:
             await update.answer()
@@ -163,20 +158,13 @@ async def helper_private(
             pass
         language  = await get_lang(update.chat.id)
         lang_dict = get_string(language)
-
-        # FIX: Read start image directly from per-bot DB instead of config proxy.
-        # The config proxy (_BotStr) needs the cache to be warmed via apply_to_config()
-        # in deploy.py. get_start_image() reads from the DB directly with its own
-        # fallback, so it always returns the correct stored value.
         bot_id    = client.me.id
         photo_url = await get_start_image(bot_id)
-
         await update.reply_photo(
             photo=photo_url,
             caption=lang_dict["dhelp_1"],
             reply_markup=await main_menu_kb(client, lang_dict),
         )
-
 @Client.on_message(filters.command(["help"]) & filters.group & ~BANNED_USERS)
 @LanguageStart
 async def help_group(client: Client, message: Message, _lang):
@@ -185,7 +173,6 @@ async def help_group(client: Client, message: Message, _lang):
         _lang["dhelp_1"],
         reply_markup=await main_menu_kb(client, _lang)
     )
-
 @Client.on_callback_query(filters.regex("^help_menu") & ~BANNED_USERS)
 @languageCB
 async def help_menu_cb(client: Client, cq: CallbackQuery, lang_dict):
@@ -207,7 +194,6 @@ async def help_menu_cb(client: Client, cq: CallbackQuery, lang_dict):
         await cq.answer()
     except Exception:
         pass
-
 @Client.on_callback_query(filters.regex("^help_mod") & ~BANNED_USERS)
 @languageCB
 async def help_module_cb(client: Client, cq: CallbackQuery, lang_dict):
@@ -216,23 +202,15 @@ async def help_module_cb(client: Client, cq: CallbackQuery, lang_dict):
         menu_key, mod_key = data.split("|", 1)
     except ValueError:
         return await cq.answer("Invalid data", show_alert=True)
-
     menus = _get_menus(client.me.id)
     helps = menus.get(menu_key, {}).get(mod_key)
     if not helps:
         return await cq.answer("No help found", show_alert=True)
-
-    # Resolve language dict — @languageCB passes the lang code or dict
     resolved = safe_lang(lang_dict)
-
-    # Read per-bot support links from DB (falls back to config defaults)
     bot_id      = client.me.id
     sup_channel = await get_support_channel(bot_id)
     sup_chat    = await get_support_chat(bot_id)
-
-    # Use human-readable display name from language dict; fall back to raw key
     display_name = resolved.get(mod_key, mod_key)
-
     text = f"<blockquote><b>{display_name}</b></blockquote>\n<blockquote>"
     for h in helps:
         text += f"{h}\n"
