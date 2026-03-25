@@ -40,7 +40,6 @@ import re
 import asyncio
 import logging
 from datetime import datetime, timedelta
-
 from pyrogram import filters
 from pyrogram.types import (
     Message,
@@ -50,25 +49,46 @@ from pyrogram.types import (
 )
 from pyrogram.errors import ChatAdminRequired, PeerIdInvalid, ChannelPrivate
 
-from SHASHA_DRUGZ import app, mongo
+# ── FIX: Import mongo_client (the actual AsyncIOMotorClient instance),
+#         not the mongo module. Adjust the name below to match whatever
+#         your SHASHA_DRUGZ __init__.py exports as the Motor client.
+#
+#   Common patterns — use whichever matches your project:
+#
+#     from SHASHA_DRUGZ import app, mongo_client          # if exported as mongo_client
+#     from SHASHA_DRUGZ import app, mongodb               # if exported as mongodb
+#     from SHASHA_DRUGZ import app, db_client             # if exported as db_client
+#     from SHASHA_DRUGZ.database import app, mongo_client # if in a sub-module
+#
+#   If your __init__.py has something like:
+#       import motor.motor_asyncio as mongo               ← THIS causes the bug
+#       mongo = motor.motor_asyncio.AsyncIOMotorClient(URI)  ← this is correct
+#
+#   Make sure the variable is the CLIENT, not the module.
+# ─────────────────────────────────────────────────────────────
+from SHASHA_DRUGZ import app, mongo_client          # ← CHANGE 'mongo_client' to match yours
 
 logger = logging.getLogger("QualityButton")
 
 # ── MongoDB ───────────────────────────────────────────────────────────────────
-_db       = mongo["POST_SYSTEM"]
-_posts    = _db["post_data"]        # saved posts
-_schedules = _db["post_schedules"]  # active schedules
+# mongo_client  →  AsyncIOMotorClient instance  (subscriptable with ["DB_NAME"])
+_db        = mongo_client["POST_SYSTEM"]
+_posts     = _db["post_data"]        # saved posts
+_schedules = _db["post_schedules"]   # active schedules
 
 # ── Conversation state (in-memory, per user) ──────────────────────────────────
 # Key: user_id  →  dict with pending action info
 _pending: dict = {}
 
+
 # ══════════════════════════════════════════════════════════════
 #  HELPERS
 # ══════════════════════════════════════════════════════════════
+
 async def _next_id() -> int:
     last = await _posts.find_one(sort=[("post_id", -1)])
     return (last["post_id"] + 1) if last else 1
+
 
 def _parse_buttons(text: str):
     """
@@ -79,7 +99,6 @@ def _parse_buttons(text: str):
         [Btn1](url) [Btn2](url)
         [Btn3](url)
         [Btn4](url) [Btn5](url) [Btn6](url)
-
     → Row 1: Btn1, Btn2
     → Row 2: Btn3
     → Row 3: Btn4, Btn5, Btn6
@@ -94,7 +113,6 @@ def _parse_buttons(text: str):
         matches = re.findall(btn_pattern, line)
         if matches:
             rows.append([InlineKeyboardButton(name, url=url) for name, url in matches])
-            # Remove button syntax from this line; if nothing left, skip it
             leftover = re.sub(btn_pattern, "", line).strip()
             if leftover:
                 clean_lines.append(leftover)
@@ -103,6 +121,7 @@ def _parse_buttons(text: str):
 
     clean = "\n".join(clean_lines).strip()
     return clean, rows
+
 
 def _build_markup(raw_buttons: list) -> InlineKeyboardMarkup | None:
     """Rebuild InlineKeyboardMarkup from stored list-of-lists-of-dicts."""
@@ -114,12 +133,14 @@ def _build_markup(raw_buttons: list) -> InlineKeyboardMarkup | None:
     ]
     return InlineKeyboardMarkup(rows) if rows else None
 
+
 def _serialize_buttons(button_rows: list) -> list:
     """Convert list[list[InlineKeyboardButton]] → list[list[dict]] for DB."""
     return [
         [{"text": b.text, "url": b.url} for b in row]
         for row in button_rows
     ]
+
 
 def _extract_media(msg: Message) -> tuple[str, str | None]:
     """Return (media_type, file_id) from a Pyrogram message."""
@@ -133,19 +154,22 @@ def _extract_media(msg: Message) -> tuple[str, str | None]:
         return "document", msg.document.file_id
     return "text", None
 
+
 async def _send_post(client, chat_id, data: dict, protect: bool = False):
     """Send a post dict to any chat_id. Raises on failure."""
-    text    = data.get("text", "")
-    markup  = _build_markup(data.get("buttons", []))
-    pmode   = data.get("parse_mode", "html")
-    fid     = data.get("file_id")
-    ptype   = data.get("type", "text")
-    kwargs  = dict(
+    text   = data.get("text", "")
+    markup = _build_markup(data.get("buttons", []))
+    pmode  = data.get("parse_mode", "html")
+    fid    = data.get("file_id")
+    ptype  = data.get("type", "text")
+
+    kwargs = dict(
         caption=text,
         reply_markup=markup,
         parse_mode=pmode,
         protect_content=protect,
     )
+
     if ptype == "photo":
         await client.send_photo(chat_id, fid, **kwargs)
     elif ptype == "animation":
@@ -163,21 +187,28 @@ async def _send_post(client, chat_id, data: dict, protect: bool = False):
             protect_content=protect,
         )
 
+
 # ══════════════════════════════════════════════════════════════
 #  /createpost — save a post from replied message
 # ══════════════════════════════════════════════════════════════
-@app.on_message(filters.command("createpost") & filters.private | filters.command("createpost") & filters.group)
+
+@app.on_message(
+    (filters.command("createpost") & filters.private) |
+    (filters.command("createpost") & filters.group)
+)
 async def cmd_createpost(_, message: Message):
     if not message.reply_to_message:
         return await message.reply_text(
-            "<blockquote>❌ **ᴜsᴀɢᴇ:** Reply to a message and use `/createpost`.</blockquote>"
+            "<blockquote>❌ <b>ᴜsᴀɢᴇ:</b> Reply to a message and use <code>/createpost</code>.</blockquote>"
         )
 
     msg  = message.reply_to_message
     text = msg.text or msg.caption or ""
 
     if msg.sticker:
-        return await message.reply_text("<blockquote>❌ Stickers are not supported.</blockquote>")
+        return await message.reply_text(
+            "<blockquote>❌ Stickers are not supported.</blockquote>"
+        )
 
     clean_text, buttons = _parse_buttons(text)
     ptype, fid          = _extract_media(msg)
@@ -197,32 +228,35 @@ async def cmd_createpost(_, message: Message):
     await _posts.insert_one(doc)
 
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("📤 sᴇɴᴅ ɴᴏᴡ",     callback_data=f"qb_sendnow_{post_id}"),
-        InlineKeyboardButton("🗓 sᴄʜᴇᴅᴜʟᴇ",      callback_data=f"qb_schedule_{post_id}"),
+        InlineKeyboardButton("📤 sᴇɴᴅ ɴᴏᴡ",    callback_data=f"qb_sendnow_{post_id}"),
+        InlineKeyboardButton("🗓 sᴄʜᴇᴅᴜʟᴇ",     callback_data=f"qb_schedule_{post_id}"),
     ], [
-        InlineKeyboardButton("🗑 ᴅᴇʟᴇᴛᴇ ᴘᴏsᴛ",  callback_data=f"qb_del_{post_id}"),
-        InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻",       callback_data="qb_close"),
+        InlineKeyboardButton("🗑 ᴅᴇʟᴇᴛᴇ ᴘᴏsᴛ", callback_data=f"qb_del_{post_id}"),
+        InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻",      callback_data="qb_close"),
     ]])
+
     await message.reply_text(
-        f"<blockquote>✅ **ᴘᴏsᴛ sᴀᴠᴇᴅ!**\n\n"
-        f"🆔 **ᴘᴏsᴛ ID:** `{post_id}`\n"
-        f"📁 **ᴛʏᴘᴇ:** `{ptype}`\n"
-        f"🔘 **ʙᴜᴛᴛᴏɴs:** `{sum(len(r) for r in buttons)}`\n\n"
-        f"ᴜsᴇ `/post {post_id}` ᴛᴏ sᴇɴᴅ ɪᴛ.</blockquote>",
+        f"<blockquote>✅ <b>ᴘᴏsᴛ sᴀᴠᴇᴅ!</b>\n\n"
+        f"🆔 <b>ᴘᴏsᴛ ID:</b> <code>{post_id}</code>\n"
+        f"📁 <b>ᴛʏᴘᴇ:</b> <code>{ptype}</code>\n"
+        f"🔘 <b>ʙᴜᴛᴛᴏɴs:</b> <code>{sum(len(r) for r in buttons)}</code>\n\n"
+        f"ᴜsᴇ <code>/post {post_id}</code> ᴛᴏ sᴇɴᴅ ɪᴛ.</blockquote>",
         reply_markup=kb,
     )
+
 
 # ══════════════════════════════════════════════════════════════
 #  /post <id> [chat_id] — send post here or to another chat
 # ══════════════════════════════════════════════════════════════
+
 @app.on_message(filters.command("post"))
 async def cmd_post(client, message: Message):
     args = message.command
     if len(args) < 2:
         return await message.reply_text(
-            "<blockquote>**ᴜsᴀɢᴇ:**\n"
-            "`/post <id>` — send here\n"
-            "`/post <id> -100xxxxxxxxxx` — send to channel/group</blockquote>"
+            "<blockquote><b>ᴜsᴀɢᴇ:</b>\n"
+            "<code>/post &lt;id&gt;</code> — send here\n"
+            "<code>/post &lt;id&gt; -100xxxxxxxxxx</code> — send to channel/group</blockquote>"
         )
 
     try:
@@ -234,40 +268,46 @@ async def cmd_post(client, message: Message):
     if not data:
         return await message.reply_text("<blockquote>❌ Post not found.</blockquote>")
 
-    # Target chat: argument or current chat
     if len(args) >= 3:
         raw = args[2]
         try:
             target_chat = int(raw) if raw.lstrip("-").isdigit() else raw
         except Exception:
-            return await message.reply_text("<blockquote>❌ Invalid chat ID / username.</blockquote>")
+            return await message.reply_text(
+                "<blockquote>❌ Invalid chat ID / username.</blockquote>"
+            )
     else:
         target_chat = message.chat.id
 
     protect = data.get("protected", False)
-
     try:
         await _send_post(client, target_chat, data, protect=protect)
         if target_chat != message.chat.id:
             await message.reply_text(
-                f"<blockquote>✅ **ᴘᴏsᴛ `{post_id}` sᴇɴᴛ** ᴛᴏ `{target_chat}`!</blockquote>"
+                f"<blockquote>✅ <b>ᴘᴏsᴛ <code>{post_id}</code> sᴇɴᴛ</b> ᴛᴏ <code>{target_chat}</code>!</blockquote>"
             )
     except ChatAdminRequired:
-        await message.reply_text("<blockquote>❌ I'm not an admin in that chat.</blockquote>")
+        await message.reply_text(
+            "<blockquote>❌ I'm not an admin in that chat.</blockquote>"
+        )
     except (PeerIdInvalid, ChannelPrivate):
-        await message.reply_text("<blockquote>❌ Chat not found or I'm not a member.</blockquote>")
+        await message.reply_text(
+            "<blockquote>❌ Chat not found or I'm not a member.</blockquote>"
+        )
     except Exception as e:
-        await message.reply_text(f"<blockquote>❌ Failed: `{e}`</blockquote>")
+        await message.reply_text(f"<blockquote>❌ Failed: <code>{e}</code></blockquote>")
+
 
 # ══════════════════════════════════════════════════════════════
 #  /editpost <id> — reply to new content to replace post
 # ══════════════════════════════════════════════════════════════
+
 @app.on_message(filters.command("editpost"))
 async def cmd_editpost(_, message: Message):
     args = message.command
     if len(args) < 2:
         return await message.reply_text(
-            "<blockquote>**ᴜsᴀɢᴇ:** Reply to new content + `/editpost <id>`</blockquote>"
+            "<blockquote><b>ᴜsᴀɢᴇ:</b> Reply to new content + <code>/editpost &lt;id&gt;</code></blockquote>"
         )
 
     try:
@@ -281,14 +321,16 @@ async def cmd_editpost(_, message: Message):
 
     if not message.reply_to_message:
         return await message.reply_text(
-            "<blockquote>❌ Reply to the **new content** you want to replace this post with.</blockquote>"
+            "<blockquote>❌ Reply to the <b>new content</b> you want to replace this post with.</blockquote>"
         )
 
     msg  = message.reply_to_message
     text = msg.text or msg.caption or ""
 
     if msg.sticker:
-        return await message.reply_text("<blockquote>❌ Stickers are not supported.</blockquote>")
+        return await message.reply_text(
+            "<blockquote>❌ Stickers are not supported.</blockquote>"
+        )
 
     clean_text, buttons = _parse_buttons(text)
     ptype, fid          = _extract_media(msg)
@@ -303,41 +345,46 @@ async def cmd_editpost(_, message: Message):
             "updated_at": datetime.utcnow(),
         }}
     )
+
     await message.reply_text(
-        f"<blockquote>✅ **ᴘᴏsᴛ `{post_id}` ᴜᴘᴅᴀᴛᴇᴅ!**\n\n"
-        f"📁 **ɴᴇᴡ ᴛʏᴘᴇ:** `{ptype}`\n"
-        f"🔘 **ʙᴜᴛᴛᴏɴs:** `{sum(len(r) for r in buttons)}`</blockquote>"
+        f"<blockquote>✅ <b>ᴘᴏsᴛ <code>{post_id}</code> ᴜᴘᴅᴀᴛᴇᴅ!</b>\n\n"
+        f"📁 <b>ɴᴇᴡ ᴛʏᴘᴇ:</b> <code>{ptype}</code>\n"
+        f"🔘 <b>ʙᴜᴛᴛᴏɴs:</b> <code>{sum(len(r) for r in buttons)}</code></blockquote>"
     )
+
 
 # ══════════════════════════════════════════════════════════════
 #  /delpost <id> — delete a saved post
 # ══════════════════════════════════════════════════════════════
+
 @app.on_message(filters.command("delpost"))
 async def cmd_delpost(_, message: Message):
     args = message.command
     if len(args) < 2:
         return await message.reply_text(
-            "<blockquote>**ᴜsᴀɢᴇ:** `/delpost <id>`</blockquote>"
+            "<blockquote><b>ᴜsᴀɢᴇ:</b> <code>/delpost &lt;id&gt;</code></blockquote>"
         )
+
     try:
         post_id = int(args[1])
     except ValueError:
         return await message.reply_text("<blockquote>❌ Invalid post ID.</blockquote>")
 
     result = await _posts.delete_one({"post_id": post_id})
-    # also remove any schedules for this post
     await _schedules.delete_many({"post_id": post_id})
 
     if result.deleted_count:
         await message.reply_text(
-            f"<blockquote>🗑 **ᴘᴏsᴛ `{post_id}` ᴅᴇʟᴇᴛᴇᴅ.**</blockquote>"
+            f"<blockquote>🗑 <b>ᴘᴏsᴛ <code>{post_id}</code> ᴅᴇʟᴇᴛᴇᴅ.</b></blockquote>"
         )
     else:
         await message.reply_text("<blockquote>❌ Post not found.</blockquote>")
 
+
 # ══════════════════════════════════════════════════════════════
 #  /mypost — list all saved posts
 # ══════════════════════════════════════════════════════════════
+
 @app.on_message(filters.command("mypost"))
 async def cmd_mypost(_, message: Message):
     cursor = _posts.find().sort("post_id", 1)
@@ -348,13 +395,13 @@ async def cmd_mypost(_, message: Message):
             "<blockquote>⚠️ ɴᴏ ᴘᴏsᴛs sᴀᴠᴇᴅ ʏᴇᴛ.</blockquote>"
         )
 
-    lines = ["<blockquote>📋 **sᴀᴠᴇᴅ ᴘᴏsᴛs:**\n"]
+    lines = ["<blockquote>📋 <b>sᴀᴠᴇᴅ ᴘᴏsᴛs:</b>\n"]
     for doc in posts:
-        pid      = doc["post_id"]
-        ptype    = doc.get("type", "text")
-        buttons  = sum(len(r) for r in doc.get("buttons", []))
+        pid       = doc["post_id"]
+        ptype     = doc.get("type", "text")
+        buttons   = sum(len(r) for r in doc.get("buttons", []))
         protected = "🔒" if doc.get("protected") else "🔓"
-        lines.append(f"• `{pid}` — `{ptype}` {protected} — {buttons} ʙᴛɴ(s)")
+        lines.append(f"• <code>{pid}</code> — <code>{ptype}</code> {protected} — {buttons} ʙᴛɴ(s)")
     lines.append("</blockquote>")
 
     kb = InlineKeyboardMarkup([[
@@ -362,19 +409,21 @@ async def cmd_mypost(_, message: Message):
     ]])
     await message.reply_text("\n".join(lines), reply_markup=kb)
 
+
 # ══════════════════════════════════════════════════════════════
 #  /schedulepost <id> — interactive scheduler
 #  Step 1: ask target chat
 #  Step 2: ask interval (hours)
-#  Step 3: ask protected yes/no
 # ══════════════════════════════════════════════════════════════
+
 @app.on_message(filters.command("schedulepost"))
 async def cmd_schedulepost(_, message: Message):
     args = message.command
     if len(args) < 2:
         return await message.reply_text(
-            "<blockquote>**ᴜsᴀɢᴇ:** `/schedulepost <id>`</blockquote>"
+            "<blockquote><b>ᴜsᴀɢᴇ:</b> <code>/schedulepost &lt;id&gt;</code></blockquote>"
         )
+
     try:
         post_id = int(args[1])
     except ValueError:
@@ -386,34 +435,38 @@ async def cmd_schedulepost(_, message: Message):
 
     user_id = message.from_user.id
     _pending[user_id] = {
-        "step":        "ask_chat",
-        "post_id":     post_id,
-        "chat_id":     message.chat.id,
-        "protected":   data.get("protected", False),
+        "step":      "ask_chat",
+        "post_id":   post_id,
+        "chat_id":   message.chat.id,
+        "protected": data.get("protected", False),
     }
-    # Only YES button — tapping it moves to hours step
+
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("📍 ᴛʜɪs ᴄʜᴀᴛ",      callback_data=f"qb_sc_thischat_{post_id}"),
-        InlineKeyboardButton("✍️ ᴇɴᴛᴇʀ ᴄʜᴀᴛ ID",   callback_data=f"qb_sc_enterchat_{post_id}"),
+        InlineKeyboardButton("📍 ᴛʜɪs ᴄʜᴀᴛ",    callback_data=f"qb_sc_thischat_{post_id}"),
+        InlineKeyboardButton("✍️ ᴇɴᴛᴇʀ ᴄʜᴀᴛ ID", callback_data=f"qb_sc_enterchat_{post_id}"),
     ], [
-        InlineKeyboardButton("🔻 ᴄᴀɴᴄᴇʟ 🔻",        callback_data="qb_close"),
+        InlineKeyboardButton("🔻 ᴄᴀɴᴄᴇʟ 🔻",      callback_data="qb_close"),
     ]])
+
     await message.reply_text(
-        f"<blockquote>🗓 **sᴄʜᴇᴅᴜʟᴇ ᴘᴏsᴛ `{post_id}`**\n\n"
-        f"**sᴛᴇᴘ 1/2:** Where should this post be sent?</blockquote>",
+        f"<blockquote>🗓 <b>sᴄʜᴇᴅᴜʟᴇ ᴘᴏsᴛ <code>{post_id}</code></b>\n\n"
+        f"<b>sᴛᴇᴘ 1/2:</b> Where should this post be sent?</blockquote>",
         reply_markup=kb,
     )
+
 
 # ══════════════════════════════════════════════════════════════
 #  /cancelschedule <id> — cancel an active schedule
 # ══════════════════════════════════════════════════════════════
+
 @app.on_message(filters.command("cancelschedule"))
 async def cmd_cancelschedule(_, message: Message):
     args = message.command
     if len(args) < 2:
         return await message.reply_text(
-            "<blockquote>**ᴜsᴀɢᴇ:** `/cancelschedule <id>`</blockquote>"
+            "<blockquote><b>ᴜsᴀɢᴇ:</b> <code>/cancelschedule &lt;id&gt;</code></blockquote>"
         )
+
     try:
         post_id = int(args[1])
     except ValueError:
@@ -422,17 +475,19 @@ async def cmd_cancelschedule(_, message: Message):
     result = await _schedules.delete_many({"post_id": post_id})
     if result.deleted_count:
         await message.reply_text(
-            f"<blockquote>✅ **sᴄʜᴇᴅᴜʟᴇ ғᴏʀ ᴘᴏsᴛ `{post_id}` ᴄᴀɴᴄᴇʟʟᴇᴅ.**</blockquote>"
+            f"<blockquote>✅ <b>sᴄʜᴇᴅᴜʟᴇ ғᴏʀ ᴘᴏsᴛ <code>{post_id}</code> ᴄᴀɴᴄᴇʟʟᴇᴅ.</b></blockquote>"
         )
     else:
         await message.reply_text(
-            f"<blockquote>⚠️ ɴᴏ ᴀᴄᴛɪᴠᴇ sᴄʜᴇᴅᴜʟᴇ ғᴏʀ ᴘᴏsᴛ `{post_id}`.</blockquote>"
+            f"<blockquote>⚠️ ɴᴏ ᴀᴄᴛɪᴠᴇ sᴄʜᴇᴅᴜʟᴇ ғᴏʀ ᴘᴏsᴛ <code>{post_id}</code>.</blockquote>"
         )
+
 
 # ══════════════════════════════════════════════════════════════
 #  CONVERSATION HANDLER — captures plain-text replies for
 #  scheduler steps (chat ID entry, hours entry)
 # ══════════════════════════════════════════════════════════════
+
 @app.on_message(filters.text & ~filters.command(None) & (filters.private | filters.group))
 async def conversation_handler(_, message: Message):
     user_id = message.from_user.id if message.from_user else None
@@ -449,15 +504,15 @@ async def conversation_handler(_, message: Message):
             target = int(raw) if raw.lstrip("-").isdigit() else raw
         except Exception:
             return await message.reply_text(
-                "<blockquote>❌ Invalid chat ID. Try again or /cancelschedule.</blockquote>"
+                "<blockquote>❌ Invalid chat ID. Try again or use /cancelschedule.</blockquote>"
             )
         state["target_chat"] = target
         state["step"]        = "ask_hours"
         _pending[user_id]    = state
         await message.reply_text(
-            "<blockquote>🗓 **sᴄʜᴇᴅᴜʟᴇ ᴘᴏsᴛ**\n\n"
-            "**sᴛᴇᴘ 2/2:** How many **hours** between each send?\n"
-            "_(e.g. `1`, `6`, `24`)_</blockquote>",
+            "<blockquote>🗓 <b>sᴄʜᴇᴅᴜʟᴇ ᴘᴏsᴛ</b>\n\n"
+            "<b>sᴛᴇᴘ 2/2:</b> How many <b>hours</b> between each send?\n"
+            "<i>(e.g. 1, 6, 24)</i></blockquote>",
             reply_markup=ForceReply(selective=True),
         )
         return
@@ -493,12 +548,12 @@ async def conversation_handler(_, message: Message):
             InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="qb_close")
         ]])
         await message.reply_text(
-            f"<blockquote>✅ **ᴘᴏsᴛ `{post_id}` sᴄʜᴇᴅᴜʟᴇᴅ!**\n\n"
-            f"📍 **ᴛᴀʀɢᴇᴛ:** `{target_chat}`\n"
-            f"⏱ **ɪɴᴛᴇʀᴠᴀʟ:** every `{hours}h`\n"
-            f"🔐 **ᴘʀᴏᴛᴇᴄᴛɪᴏɴ:** {prot_str}\n"
-            f"🕐 **ɴᴇxᴛ sᴇɴᴅ:** `{next_send.strftime('%Y-%m-%d %H:%M')} UTC`\n\n"
-            f"ᴜsᴇ `/cancelschedule {post_id}` ᴛᴏ sᴛᴏᴘ.</blockquote>",
+            f"<blockquote>✅ <b>ᴘᴏsᴛ <code>{post_id}</code> sᴄʜᴇᴅᴜʟᴇᴅ!</b>\n\n"
+            f"📍 <b>ᴛᴀʀɢᴇᴛ:</b> <code>{target_chat}</code>\n"
+            f"⏱ <b>ɪɴᴛᴇʀᴠᴀʟ:</b> every <code>{hours}h</code>\n"
+            f"🔐 <b>ᴘʀᴏᴛᴇᴄᴛɪᴏɴ:</b> {prot_str}\n"
+            f"🕐 <b>ɴᴇxᴛ sᴇɴᴅ:</b> <code>{next_send.strftime('%Y-%m-%d %H:%M')} UTC</code>\n\n"
+            f"ᴜsᴇ <code>/cancelschedule {post_id}</code> ᴛᴏ sᴛᴏᴘ.</blockquote>",
             reply_markup=kb,
         )
         return
@@ -507,6 +562,7 @@ async def conversation_handler(_, message: Message):
 # ══════════════════════════════════════════════════════════════
 #  CALLBACK QUERY HANDLER
 # ══════════════════════════════════════════════════════════════
+
 @app.on_callback_query(filters.regex(r"^qb_"))
 async def qb_callbacks(client, cq):
     data    = cq.data
@@ -535,6 +591,34 @@ async def qb_callbacks(client, cq):
             await cq.answer(f"❌ {e}", show_alert=True)
         return
 
+    # ── Schedule shortcut (from createpost menu) ──────────────
+    if data.startswith("qb_schedule_"):
+        post_id = int(data.split("_")[2])
+        db_data = await _posts.find_one({"post_id": post_id})
+        if not db_data:
+            return await cq.answer("❌ Post not found.", show_alert=True)
+
+        _pending[user_id] = {
+            "step":      "ask_chat",
+            "post_id":   post_id,
+            "chat_id":   chat_id,
+            "protected": db_data.get("protected", False),
+        }
+
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("📍 ᴛʜɪs ᴄʜᴀᴛ",    callback_data=f"qb_sc_thischat_{post_id}"),
+            InlineKeyboardButton("✍️ ᴇɴᴛᴇʀ ᴄʜᴀᴛ ID", callback_data=f"qb_sc_enterchat_{post_id}"),
+        ], [
+            InlineKeyboardButton("🔻 ᴄᴀɴᴄᴇʟ 🔻",      callback_data="qb_close"),
+        ]])
+        await cq.answer()
+        await cq.message.edit_text(
+            f"<blockquote>🗓 <b>sᴄʜᴇᴅᴜʟᴇ ᴘᴏsᴛ <code>{post_id}</code></b>\n\n"
+            f"<b>sᴛᴇᴘ 1/2:</b> Where should this post be sent?</blockquote>",
+            reply_markup=kb,
+        )
+        return
+
     # ── Delete post (from createpost menu) ────────────────────
     if data.startswith("qb_del_"):
         post_id = int(data.split("_")[2])
@@ -557,41 +641,42 @@ async def qb_callbacks(client, cq):
         _pending[user_id]    = state
         await cq.answer()
         await cq.message.edit_text(
-            "<blockquote>🗓 **sᴄʜᴇᴅᴜʟᴇ ᴘᴏsᴛ**\n\n"
-            "**sᴛᴇᴘ 2/2:** How many **hours** between each send?\n"
-            "_(e.g. `1`, `6`, `24`)_</blockquote>",
+            "<blockquote>🗓 <b>sᴄʜᴇᴅᴜʟᴇ ᴘᴏsᴛ</b>\n\n"
+            "<b>sᴛᴇᴘ 2/2:</b> How many <b>hours</b> between each send?\n"
+            "<i>(e.g. 1, 6, 24)</i></blockquote>",
         )
         return
 
-    # ── Schedule: enter custom chat ID ───────────────────────
+    # ── Schedule: enter custom chat ID ────────────────────────
     if data.startswith("qb_sc_enterchat_"):
         post_id = int(data.split("_")[3])
         state   = _pending.get(user_id, {"post_id": post_id, "chat_id": chat_id})
-        state["step"]    = "enter_chat"
-        state["post_id"] = post_id
+        state["step"]     = "enter_chat"
+        state["post_id"]  = post_id
         _pending[user_id] = state
         await cq.answer()
         await cq.message.edit_text(
-            "<blockquote>🗓 **sᴄʜᴇᴅᴜʟᴇ ᴘᴏsᴛ**\n\n"
-            "**sᴛᴇᴘ 1/2:** Send me the **chat ID** or **@username** "
+            "<blockquote>🗓 <b>sᴄʜᴇᴅᴜʟᴇ ᴘᴏsᴛ</b>\n\n"
+            "<b>sᴛᴇᴘ 1/2:</b> Send me the <b>chat ID</b> or <b>@username</b> "
             "where this post should be scheduled.</blockquote>",
         )
         return
 
-
     await cq.answer()
+
 
 # ══════════════════════════════════════════════════════════════
 #  BACKGROUND SCHEDULER LOOP
 #  Checks every 60 seconds for due schedules and fires them.
 # ══════════════════════════════════════════════════════════════
+
 async def _scheduler_loop():
     await asyncio.sleep(10)  # brief startup delay
     logger.info("QualityButton scheduler started.")
     while True:
         try:
-            now     = datetime.utcnow()
-            cursor  = _schedules.find({"active": True, "next_send": {"$lte": now}})
+            now    = datetime.utcnow()
+            cursor = _schedules.find({"active": True, "next_send": {"$lte": now}})
             async for sched in cursor:
                 post_id     = sched["post_id"]
                 target_chat = sched["target_chat"]
@@ -600,7 +685,6 @@ async def _scheduler_loop():
 
                 post_data = await _posts.find_one({"post_id": post_id})
                 if not post_data:
-                    # Post deleted — remove schedule
                     await _schedules.delete_one({"_id": sched["_id"]})
                     continue
 
@@ -610,7 +694,6 @@ async def _scheduler_loop():
                 except Exception as e:
                     logger.warning("Schedule send failed (post %s): %s", post_id, e)
 
-                # Update next send time
                 next_send = datetime.utcnow() + timedelta(hours=hours)
                 await _schedules.update_one(
                     {"_id": sched["_id"]},
@@ -621,33 +704,34 @@ async def _scheduler_loop():
 
         await asyncio.sleep(60)
 
-# Kick off scheduler as a background task when module loads
-asyncio.get_event_loop().create_task(_scheduler_loop())
+
+# ── FIX: Use asyncio.ensure_future instead of get_event_loop().create_task()
+#         to avoid "cannot schedule new futures after shutdown" RuntimeError.
+#         ensure_future works correctly with the running loop at import time.
+asyncio.ensure_future(_scheduler_loop())
+
 
 # ══════════════════════════════════════════════════════════════
 #  MODULE METADATA
 # ══════════════════════════════════════════════════════════════
+
 __menu__     = "CMD_PRO"
 __mod_name__ = "H_B_84"
 __help__ = """
-**ᴘᴏsᴛ sʏsᴛᴇᴍ**
-
-🔻 `/createpost` _(reply)_ ➠ sᴀᴠᴇ ᴀ ɴᴇᴡ ᴘᴏsᴛ
-🔻 `/post <id>` ➠ sᴇɴᴅ ᴘᴏsᴛ ʜᴇʀᴇ
-🔻 `/post <id> -100xxx` ➠ sᴇɴᴅ ᴛᴏ ᴄʜᴀɴɴᴇʟ / ɢʀᴏᴜᴘ
-🔻 `/editpost <id>` _(reply)_ ➠ ʀᴇᴘʟᴀᴄᴇ ᴘᴏsᴛ ᴄᴏɴᴛᴇɴᴛ
-🔻 `/delpost <id>` ➠ ᴅᴇʟᴇᴛᴇ ᴀ sᴀᴠᴇᴅ ᴘᴏsᴛ
-🔻 `/mypost` ➠ ʟɪsᴛ ᴀʟʟ sᴀᴠᴇᴅ ᴘᴏsᴛs
-
-**sᴄʜᴇᴅᴜʟᴇʀ:**
-🔻 `/schedulepost <id>` ➠ sᴄʜᴇᴅᴜʟᴇ ᴀ ᴘᴏsᴛ (ɪɴᴛᴇʀᴀᴄᴛɪᴠᴇ)
-🔻 `/cancelschedule <id>` ➠ sᴛᴏᴘ ᴀ sᴄʜᴇᴅᴜʟᴇᴅ ᴘᴏsᴛ
-
-**ʙᴜᴛᴛᴏɴ ғᴏʀᴍᴀᴛ _(ɪɴ ᴛᴇxᴛ/ᴄᴀᴘᴛɪᴏɴ)_:**
-`[Button1 Text](https://example.com)[Button2 Text](https://example.com)`
-`[Button3 Text](https://example.com)`
-
-**ɴᴏᴛᴇs:**
+<b>ᴘᴏsᴛ sʏsᴛᴇᴍ</b>
+🔻 <code>/createpost</code> <i>(reply)</i> ➠ sᴀᴠᴇ ᴀ ɴᴇᴡ ᴘᴏsᴛ
+🔻 <code>/post &lt;id&gt;</code> ➠ sᴇɴᴅ ᴘᴏsᴛ ʜᴇʀᴇ
+🔻 <code>/post &lt;id&gt; -100xxx</code> ➠ sᴇɴᴅ ᴛᴏ ᴄʜᴀɴɴᴇʟ / ɢʀᴏᴜᴘ
+🔻 <code>/editpost &lt;id&gt;</code> <i>(reply)</i> ➠ ʀᴇᴘʟᴀᴄᴇ ᴘᴏsᴛ ᴄᴏɴᴛᴇɴᴛ
+🔻 <code>/delpost &lt;id&gt;</code> ➠ ᴅᴇʟᴇᴛᴇ ᴀ sᴀᴠᴇᴅ ᴘᴏsᴛ
+🔻 <code>/mypost</code> ➠ ʟɪsᴛ ᴀʟʟ sᴀᴠᴇᴅ ᴘᴏsᴛs
+<b>sᴄʜᴇᴅᴜʟᴇʀ:</b>
+🔻 <code>/schedulepost &lt;id&gt;</code> ➠ sᴄʜᴇᴅᴜʟᴇ ᴀ ᴘᴏsᴛ (ɪɴᴛᴇʀᴀᴄᴛɪᴠᴇ)
+🔻 <code>/cancelschedule &lt;id&gt;</code> ➠ sᴛᴏᴘ ᴀ sᴄʜᴇᴅᴜʟᴇᴅ ᴘᴏsᴛ
+<b>ʙᴜᴛᴛᴏɴ ғᴏʀᴍᴀᴛ</b> <i>(ɪɴ ᴛᴇxᴛ/ᴄᴀᴘᴛɪᴏɴ)</i>:
+<code>[Button1 Text](https://example.com)[Button2 Text](https://example.com)</code>
+<code>[Button3 Text](https://example.com)</code>
+<b>ɴᴏᴛᴇs:</b>
 • Protected posts = no forward / no save
 • Scheduler runs every 60 seconds
 • Supports: text, photo, video, GIF, document
