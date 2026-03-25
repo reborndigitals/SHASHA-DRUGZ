@@ -548,26 +548,36 @@ async def cmd_cancelschedule(_, message: Message):
 # ══════════════════════════════════════════════════════════════
 #  CONVERSATION HANDLER
 #  Only fires for users who have an active _pending state.
-#  Explicit command exclusion prevents any collision with other modules.
+#  Strict command exclusion prevents any collision with other modules.
+#  Uses low priority (group=10) to let other command handlers run first.
 # ══════════════════════════════════════════════════════════════
 
 @app.on_message(
     filters.text
-    & ~filters.command([
-        "createpost", "post", "editpost", "delpost",
-        "mypost", "schedulepost", "cancelschedule",
-    ])
-    & (filters.private | filters.group)
+    & ~filters.service
+    & ~filters.bot
+    & ~filters.regex(r"^[!/\.]")          # block ALL command prefixes
+    & (filters.private | filters.group),
+    group=10                              # low priority
 )
 async def conversation_handler(_, message: Message):
     _pending_cleanup()   # TTL sweep on every incoming text
 
-    user_id = message.from_user.id if message.from_user else None
-    if not user_id or user_id not in _pending:
+    # Safety checks
+    if not message.text:
+        return
+    if message.text.startswith(("/", "!", ".")):
         return
 
-    state = _pending[user_id]
-    step  = state.get("step")
+    user_id = message.from_user.id if message.from_user else None
+    if not user_id:
+        return
+
+    state = _pending.get(user_id)
+    if not state:
+        return
+
+    step = state.get("step")
 
     # ── Step: waiting for custom chat ID ─────────────────────
     if step == "enter_chat":
