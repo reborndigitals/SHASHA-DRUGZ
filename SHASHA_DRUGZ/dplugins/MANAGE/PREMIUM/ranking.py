@@ -616,7 +616,7 @@ except Exception as e:
     print(f"[ranking] Scheduler start error: {e}")
 
 
-__menu__ = "CMD_MANAGE"
+__menu__ = "CMD_PRO"
 __mod_name__ = "H_B_43"
 __help__ = """
 🔻 /ranking ➠ ꜱʜᴏᴡꜱ ɢʟᴏʙᴀʟ ʀᴀɴᴋɪɴɢ ʙᴀꜱᴇᴅ ᴏɴ ᴛᴏᴛᴀʟ ᴍᴇꜱꜱᴀɢᴇꜱ.
@@ -634,6 +634,6 @@ __help__ = """
 🔻 (ᴀᴜᴛᴏ) ➠ ᴘᴏꜱᴛꜱ ᴡᴇᴇᴋʟʏ & ᴍᴏɴᴛʜʟʏ ᴡɪɴɴᴇʀꜱ ᴀᴛ ᴄᴏɴꜰɪɢᴜʀᴇᴅ ᴛɪᴍᴇ.
 """
 
-MOD_TYPE = "MANAGEMENT"
+MOD_TYPE = "PRO-BOTS"
 MOD_NAME = "Ranking"
 MOD_PRICE = "100"
