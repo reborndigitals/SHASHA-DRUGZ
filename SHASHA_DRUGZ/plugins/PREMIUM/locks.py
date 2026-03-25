@@ -244,12 +244,12 @@ async def lock_enforcer(_, message: Message):
                 msg_type = "bot"
                 break
 
-    # 4) audio / voice / videonote / video / photo / document / sticker / gif
+    # 4) audio / voice / video_note / video / photo / document / sticker / gif
     elif message.audio:
         msg_type = "audio"
     elif message.voice:
         msg_type = "voice"
-    elif message.videonote:
+    elif message.video_note:          # ✅ fixed: correct attribute name
         msg_type = "videonote"
     elif message.video:
         msg_type = "video"
