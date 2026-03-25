@@ -2,8 +2,8 @@
 # ══════════════════════════════════════════════════════════════
 #  File Filter Bot — SHASHA_DRUGZ Premium Plugin  [FULLY FIXED]
 #
-#  FIXES APPLIED (all 20 critical bugs):
-#    ✅ FIX 1  — Command blocking: uses ~filters.regex(r"^[/!.]")
+#  FIXES APPLIED:
+#    ✅ FIX 1  — Removed /start handler entirely
 #    ✅ FIX 2  — Multi-DB: consistent per-user shard (user_id % len)
 #    ✅ FIX 3  — Force Subscribe: background verify + callback re-check + join-request hook
 #    ✅ FIX 4  — Auto-delete: delete_time stored in DB; rescheduled on startup
@@ -23,6 +23,8 @@
 #    ✅ FIX 18 — Performance: MongoDB indexes created on startup
 #    ✅ FIX 19 — Memory leak: _pending TTL cleanup task
 #    ✅ FIX 20 — Error handling: try/except + FloodWait everywhere
+#    ✅ NEW   — /filefilter enable/disable toggle with inline buttons (default: DISABLED)
+#    ✅ NEW   — Module blocks all bot PM and group commands when disabled
 #
 #  FEATURES:
 #    • Multiple MongoDB support (consistent shard per user_id)
@@ -40,10 +42,9 @@
 #    • Custom Tutorial Button
 #    • In-memory settings cache (TTL 60 s)
 #    • All features independently toggleable
+#    • Per-group enable/disable toggle (default: DISABLED)
 #
-#  COMMANDS: (unchanged — see __help__ at bottom)
 # ══════════════════════════════════════════════════════════════
-
 import asyncio
 import hashlib
 import hmac
@@ -79,8 +80,6 @@ logger = logging.getLogger("FileFilterBot")
 
 # ══════════════════════════════════════════════════════════════
 #  FIX 2 — CONSISTENT MULTI-DB SHARD
-#  Each user always maps to the same DB index → no "file in DB1,
-#  search in DB2" mismatch.
 # ══════════════════════════════════════════════════════════════
 MONGO_DB_URI = [
     "mongodb+srv://zewdatabase:ijoXgdmQ0NCyg9DO@zewgame.urb3i.mongodb.net/ontap?retryWrites=true&w=majority",
@@ -88,32 +87,23 @@ MONGO_DB_URI = [
     "mongodb+srv://iamnobita1:nobitamusic1@cluster0.k08op.mongodb.net/?retryWrites=true&w=majority",
 ]
 
-# One persistent client per URI — avoids reconnecting on every request
 _mongo_clients = [AsyncIOMotorClient(uri) for uri in MONGO_DB_URI]
 
 def _get_db(user_id: int):
-    """Return the DB shard that always corresponds to this user_id."""
     idx = user_id % len(_mongo_clients)
     return _mongo_clients[idx]["FileFilterBot"]
 
-# Shared (non-user-specific) DB — always shard 0
-_shared_db = _mongo_clients[0]["FileFilterBot"]
-
-# Collections that do NOT depend on user shard
+_shared_db    = _mongo_clients[0]["FileFilterBot"]
 col_groups    = _shared_db["ff_groups"]
 col_gfilters  = _shared_db["ff_gfilters"]
 col_batch     = _shared_db["ff_batch"]
 col_templates = _shared_db["ff_templates"]
 
-# Per-user collections obtained at call time via _get_db(user_id)
-# col_files, col_filters, col_users, col_requests, col_rename
-# accessed as:  _get_db(user_id)["ff_files"]  etc.
-
 # ══════════════════════════════════════════════════════════════
 #  FIX 8 — STREAM TOKEN SECURITY
 # ══════════════════════════════════════════════════════════════
-STREAM_BASE   = "https://stream.shahsadrug.me"
-STREAM_SECRET = os.environ.get("STREAM_SECRET", "change_this_secret_key_12345")
+STREAM_BASE         = "https://stream.shahsadrug.me"
+STREAM_SECRET       = os.environ.get("STREAM_SECRET", "change_this_secret_key_12345")
 STREAM_TOKEN_EXPIRY = 3600  # seconds
 
 def _make_stream_token(file_id: str, user_id: int, expire: int) -> str:
@@ -133,10 +123,9 @@ def generate_download_link(file_id: str, user_id: int = 0, file_name: str = "") 
     return f"{STREAM_BASE}/download/{encoded}?uid={user_id}&exp={expire}&tok={token}"
 
 # ══════════════════════════════════════════════════════════════
-#  FIX 18 — DB INDEXES (created once on startup)
+#  FIX 18 — DB INDEXES
 # ══════════════════════════════════════════════════════════════
 async def ensure_indexes():
-    """Create necessary MongoDB indexes for performance."""
     try:
         for client in _mongo_clients:
             db = client["FileFilterBot"]
@@ -152,7 +141,6 @@ async def ensure_indexes():
 
 # ══════════════════════════════════════════════════════════════
 #  FIX 4 — AUTO-DELETE PERSISTENCE
-#  Store delete_time in DB so restarts can re-schedule.
 # ══════════════════════════════════════════════════════════════
 col_delqueue = _shared_db["ff_delqueue"]
 
@@ -164,7 +152,6 @@ async def _persist_delete(chat_id: int, message_id: int, delete_at: float):
     )
 
 async def schedule_delete(message: Message, delay_minutes: int = 60):
-    """Schedule a message for deletion, persisting the time to DB."""
     delete_at = time.time() + delay_minutes * 60
     await _persist_delete(message.chat.id, message.id, delete_at)
     await asyncio.sleep(delay_minutes * 60)
@@ -178,12 +165,10 @@ async def schedule_delete(message: Message, delay_minutes: int = 60):
         pass
 
 async def restore_delete_tasks(client):
-    """On startup: re-schedule any pending deletes from DB."""
     now = time.time()
     async for doc in col_delqueue.find({"delete_at": {"$gt": now}}):
         delay = max(0, doc["delete_at"] - now)
         asyncio.create_task(_delayed_delete(client, doc["chat_id"], doc["message_id"], delay))
-    # Clean up already-expired entries
     await col_delqueue.delete_many({"delete_at": {"$lte": now}})
 
 async def _delayed_delete(client, chat_id: int, message_id: int, delay: float):
@@ -200,8 +185,8 @@ async def _delayed_delete(client, chat_id: int, message_id: int, delay: float):
 # ══════════════════════════════════════════════════════════════
 #  FIX 14 — IN-MEMORY SETTINGS CACHE (TTL 60 s)
 # ══════════════════════════════════════════════════════════════
-_settings_cache: dict = {}   # {chat_id: (settings_dict, expire_timestamp)}
-_CACHE_TTL = 60              # seconds
+_settings_cache: dict = {}
+_CACHE_TTL = 60
 
 async def get_group_settings(chat_id: int) -> dict:
     now = time.time()
@@ -212,6 +197,7 @@ async def get_group_settings(chat_id: int) -> dict:
     if not doc:
         doc = {
             "_id":            chat_id,
+            "enabled":        False,   # NEW: default DISABLED
             "rename":         True,
             "stream":         True,
             "shortlink":      False,
@@ -232,14 +218,13 @@ async def get_group_settings(chat_id: int) -> dict:
 
 async def update_group_settings(chat_id: int, **fields):
     await col_groups.update_one({"_id": chat_id}, {"$set": fields}, upsert=True)
-    # Invalidate cache
     _settings_cache.pop(chat_id, None)
 
 # ══════════════════════════════════════════════════════════════
 #  FIX 19 — PENDING STATE with TTL cleanup
 # ══════════════════════════════════════════════════════════════
-_pending: dict = {}   # key → (data, expire_timestamp)
-_PENDING_TTL = 600    # 10 min
+_pending: dict = {}
+_PENDING_TTL   = 600
 
 def _set_pending(key: str, data: dict):
     _pending[key] = (data, time.time() + _PENDING_TTL)
@@ -255,10 +240,9 @@ def _get_pending(key: str) -> Optional[dict]:
     return data
 
 async def _pending_cleanup_loop():
-    """Background task: purge expired _pending entries every 5 minutes."""
     while True:
         await asyncio.sleep(300)
-        now = time.time()
+        now     = time.time()
         expired = [k for k, v in list(_pending.items()) if v[1] < now]
         for k in expired:
             _pending.pop(k, None)
@@ -292,9 +276,6 @@ async def upsert_user(user_id: int, name: str):
     except Exception:
         pass
 
-# ══════════════════════════════════════════════════════════════
-#  AUTO_DELETE minutes constant
-# ══════════════════════════════════════════════════════════════
 AUTO_DELETE_FILE = 60  # minutes
 
 # ══════════════════════════════════════════════════════════════
@@ -315,14 +296,9 @@ SHORTENER_APIS = {
 #  FIX 9 — URL SHORTENER with fallback + timeout + response guard
 # ══════════════════════════════════════════════════════════════
 async def shorten_url(long_url: str, site: str, api_key: str) -> str:
-    """
-    Try the configured shortener; on any failure return original URL.
-    Also validates that the returned value looks like a URL.
-    """
     template = SHORTENER_APIS.get(site.lower())
     if not template:
         return long_url
-
     api_url = template.format(api=api_key, url=urllib.parse.quote(long_url, safe=""))
     try:
         async with httpx.AsyncClient(timeout=8) as http:
@@ -330,7 +306,6 @@ async def shorten_url(long_url: str, site: str, api_key: str) -> str:
             if r.status_code != 200:
                 logger.warning("Shortener %s returned status %s", site, r.status_code)
                 return long_url
-            # Try JSON parse
             try:
                 data = r.json()
                 for key in ("shortenedUrl", "short_url", "url", "shortened_url"):
@@ -343,7 +318,6 @@ async def shorten_url(long_url: str, site: str, api_key: str) -> str:
                         return val
             except Exception:
                 pass
-            # Fallback: plain text
             text = r.text.strip()
             if text.startswith("http"):
                 return text
@@ -356,8 +330,7 @@ async def shorten_url(long_url: str, site: str, api_key: str) -> str:
         return long_url
 
 # ══════════════════════════════════════════════════════════════
-#  FIX 5 — AI SPELL CHECK (improved)
-#  Normalise → per-word typo map → partial fallback
+#  FIX 5 — AI SPELL CHECK
 # ══════════════════════════════════════════════════════════════
 COMMON_TYPOS = {
     "moive": "movie", "movei": "movie", "moovie": "movie",
@@ -372,32 +345,24 @@ COMMON_TYPOS = {
 }
 
 def _normalise(text: str) -> str:
-    """Lowercase, remove special chars except spaces and digits."""
     text = text.lower()
     text = re.sub(r"[^\w\s]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 def ai_spell_check(query: str) -> tuple:
-    """
-    Returns (corrected_query, was_corrected).
-    Steps: normalise → per-word typo fix → return.
-    """
     normalised = _normalise(query)
-    words   = normalised.split()
-    changed = False
-    result  = []
+    words      = normalised.split()
+    changed    = False
+    result     = []
     for w in words:
         if w in COMMON_TYPOS:
             result.append(COMMON_TYPOS[w])
             changed = True
         else:
             result.append(w)
-    corrected = " ".join(result)
-    return corrected, changed
+    return " ".join(result), changed
 
 def build_search_regex(query: str) -> re.Pattern:
-    """Build a regex that supports partial / split-word matching."""
-    # Allow any whitespace/separator between query words
     parts   = re.escape(query).split(r"\ ")
     pattern = r"[\s.\-_]*".join(parts)
     return re.compile(pattern, re.IGNORECASE)
@@ -414,7 +379,6 @@ def build_file_buttons(
 ) -> InlineKeyboardMarkup:
     rows = []
     if settings.get("stream"):
-        # FIX 8: user-bound token links
         s_link = generate_stream_link(file_id, user_id, file_name)
         d_link = generate_download_link(file_id, user_id, file_name)
         rows.append([
@@ -431,13 +395,11 @@ def quality_season_buttons(
     page: int = 0,
     query: str = "",
 ) -> InlineKeyboardMarkup:
-    """Filter buttons: Quality / Season / Language / Year / Episode + pagination."""
     qualities = sorted({r.get("quality", "") for r in results if r.get("quality")})
     seasons   = sorted({r.get("season", "")  for r in results if r.get("season")})
     languages = sorted({r.get("language", "") for r in results if r.get("language")})
     years     = sorted({r.get("year", "")    for r in results if r.get("year")})
     episodes  = sorted({r.get("episode", "") for r in results if r.get("episode")})
-
     rows = []
     if qualities:
         rows.append([InlineKeyboardButton(q, callback_data=f"ffq_{q}") for q in qualities[:4]])
@@ -449,12 +411,11 @@ def quality_season_buttons(
         rows.append([InlineKeyboardButton(y, callback_data=f"ffy_{y}") for y in years[:4]])
     if episodes:
         rows.append([InlineKeyboardButton(f"E{e}", callback_data=f"ffe_{e}") for e in episodes[:5]])
-    # FIX 15 — Pagination buttons
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️ ᴘʀᴇᴠ", callback_data=f"ffpage_{page-1}_{query[:30]}"))
     nav.append(InlineKeyboardButton(f"📄 {page+1}", callback_data="ff_noop"))
-    nav.append(InlineKeyboardButton("ɴᴇxᴛ ➡️",  callback_data=f"ffpage_{page+1}_{query[:30]}"))
+    nav.append(InlineKeyboardButton("ɴᴇxᴛ ➡️", callback_data=f"ffpage_{page+1}_{query[:30]}"))
     rows.append(nav)
     rows.append([InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="ff_close")])
     return InlineKeyboardMarkup(rows)
@@ -492,17 +453,60 @@ async def check_fsub(client, user_id: int, channel_id: int) -> bool:
     except UserNotParticipant:
         return False
     except Exception:
-        return True  # fail-open
+        return True
 
 # ══════════════════════════════════════════════════════════════
-#  FIX 1 — MESSAGE HANDLER (COMMAND BLOCKING FIXED)
-#  Uses ~filters.regex to block /, ! and . prefixed commands.
-#  FIX 7 — Manual filter is checked FIRST; returns before file search.
-#  FIX 12 — Groups only.
+#  NEW — /filefilter enable/disable COMMAND
+#  Default state is DISABLED. Admins can toggle via inline buttons.
 # ══════════════════════════════════════════════════════════════
-@app.on_message(filters.group & filters.text & ~filters.regex(r"^[/!.]"))
+@app.on_message(filters.command("filefiltertoggle") & (filters.group | filters.private))
+async def cmd_filefilter_toggle(client, message: Message):
+    if message.chat.type.value == "private":
+        return await message.reply_text("<blockquote>❌ ᴜsᴇ ɪɴ ᴀ ɢʀᴏᴜᴘ.</blockquote>")
+    if not await is_admin(client, message.chat.id, message.from_user.id):
+        return await message.reply_text("<blockquote>❌ ᴀᴅᴍɪɴs ᴏɴʟʏ.</blockquote>")
+    s       = await get_group_settings(message.chat.id)
+    enabled = s.get("enabled", False)
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "✅ ᴇɴᴀʙʟᴇ" if not enabled else "✅ ᴇɴᴀʙʟᴇᴅ ✔",
+                callback_data=f"ff_toggle_enable_{message.chat.id}",
+            ),
+            InlineKeyboardButton(
+                "❌ ᴅɪsᴀʙʟᴇ" if enabled else "❌ ᴅɪsᴀʙʟᴇᴅ ✔",
+                callback_data=f"ff_toggle_disable_{message.chat.id}",
+            ),
+        ],
+        [InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="ff_close")],
+    ])
+    status_text = "🟢 **ᴄᴜʀʀᴇɴᴛʟʏ: ᴇɴᴀʙʟᴇᴅ**" if enabled else "🔴 **ᴄᴜʀʀᴇɴᴛʟʏ: ᴅɪsᴀʙʟᴇᴅ**"
+    await message.reply_text(
+        f"<blockquote>⚙️ **ғɪʟᴇ ғɪʟᴛᴇʀ ᴍᴏᴅᴜʟᴇ**\n\n"
+        f"{status_text}\n\n"
+        f"ᴜsᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴs ʙᴇʟᴏᴡ ᴛᴏ ᴇɴᴀʙʟᴇ ᴏʀ ᴅɪsᴀʙʟᴇ.</blockquote>",
+        reply_markup=kb,
+    )
+
+# ══════════════════════════════════════════════════════════════
+#  FIX 1 + NEW — MAIN GROUP TEXT HANDLER
+#  • Removed /start handler
+#  • ~filters.command([]) — blocks ALL commands
+#  • ~filters.regex(r"^[!/\.]") — blocks /, !, . prefixed messages
+#  • Extra safety check at top of function
+#  • Checks "enabled" setting — returns if module is disabled
+# ══════════════════════════════════════════════════════════════
+@app.on_message(
+    filters.group
+    & filters.text
+    & ~filters.command([])
+    & ~filters.regex(r"^[!/\.]")
+)
 async def on_group_text(client, message: Message):
-    # FIX 12: ensure groups only (belt-and-suspenders)
+    # FIX: extra safety guard — block any command/prefix leaking through
+    if message.text and message.text.startswith(("/", "!", ".")):
+        return
+    # FIX 12: ensure groups only
     if message.chat.type.value == "private":
         return
     if not message.from_user:
@@ -511,11 +515,16 @@ async def on_group_text(client, message: Message):
     chat_id = message.chat.id
     user_id = message.from_user.id
     query   = (message.text or "").strip()
+
     if not query or len(query) < 2:
         return
 
-    await upsert_user(user_id, message.from_user.first_name or "")
+    # NEW: check if module is enabled — default is DISABLED
     settings = await get_group_settings(chat_id)
+    if not settings.get("enabled", False):
+        return
+
+    await upsert_user(user_id, message.from_user.first_name or "")
 
     # ── Force Subscribe check ─────────────────────────────────
     fsub_ch = settings.get("fsub_channel")
@@ -532,7 +541,6 @@ async def on_group_text(client, message: Message):
             btns = []
             if link:
                 btns.append([InlineKeyboardButton("📢 ᴊᴏɪɴ ᴄʜᴀɴɴᴇʟ", url=link)])
-            # FIX 3: store query so we can re-send after verification
             _set_pending(f"fsub_{user_id}_{chat_id}", {
                 "chat_id": chat_id, "user_id": user_id,
                 "query": query, "settings": settings,
@@ -562,7 +570,7 @@ async def on_group_text(client, message: Message):
             pass
         query = corrected
 
-    # ── FIX 7: Manual filter FIRST — return before file search ─
+    # ── FIX 7: Manual filter FIRST ────────────────────────────
     col_filters_local = _get_db(user_id)["ff_filters"]
     manual = await col_filters_local.find_one({
         "chat_id": chat_id,
@@ -578,26 +586,24 @@ async def on_group_text(client, message: Message):
         kb = None
         if btn_raw:
             rows = [[InlineKeyboardButton(b["text"], url=b["url"]) for b in row] for row in btn_raw]
-            kb = InlineKeyboardMarkup(rows)
+            kb   = InlineKeyboardMarkup(rows)
         try:
             sent = await message.reply_text(resp_text or "✅", reply_markup=kb)
             asyncio.create_task(schedule_delete(sent))
         except Exception as e:
             logger.warning("Manual filter reply error: %s", e)
-        return  # ← EXIT: do not fall through to file search
+        return  # EXIT — do not fall through to file search
 
-    # ── FIX 15: Search indexed files (partial match + sort) ───
-    regex  = build_search_regex(query)
+    # ── FIX 15: Search indexed files ─────────────────────────
+    regex           = build_search_regex(query)
     col_files_local = _get_db(user_id)["ff_files"]
-    cursor = col_files_local.find({"$or": [
+    cursor          = col_files_local.find({"$or": [
         {"file_name": {"$regex": regex}},
         {"caption":   {"$regex": regex}},
-    ]}).sort("_id", -1).limit(50)  # latest first
-
+    ]}).sort("_id", -1).limit(50)
     results = [doc async for doc in cursor]
 
     if not results:
-        # FIX 15: fallback — try plain substring on normalised name
         plain  = re.compile(re.escape(_normalise(query)), re.IGNORECASE)
         cursor = col_files_local.find({"file_name": {"$regex": plain}}).sort("_id", -1).limit(20)
         results = [doc async for doc in cursor]
@@ -612,9 +618,10 @@ async def on_group_text(client, message: Message):
             pass
         return
 
-    total = len(results)
+    total    = len(results)
     tmpl_doc = await col_templates.find_one({"chat_id": chat_id})
     tmpl     = (tmpl_doc or {}).get("template", "")
+
     shortlink_on   = settings.get("shortlink", False)
     shortlink_api  = settings.get("shortlink_api", "")
     shortlink_site = settings.get("shortlink_site", "")
@@ -632,20 +639,16 @@ async def on_group_text(client, message: Message):
     except Exception:
         pass
 
-    # ── Send first 10 files ───────────────────────────────────
     for doc in results[:10]:
         fid   = doc.get("file_id")
         fname = doc.get("file_name", "File")
         ftype = doc.get("file_type", "document")
         caption = f"<b>{fname}</b>"
-
         if shortlink_on and shortlink_api and shortlink_site:
-            # We still build the secure link and shorten it
-            s_raw = generate_stream_link(fid, user_id, fname)
-            d_raw = generate_download_link(fid, user_id, fname)
+            s_raw  = generate_stream_link(fid, user_id, fname)
+            d_raw  = generate_download_link(fid, user_id, fname)
             s_link = await shorten_url(s_raw, shortlink_site, shortlink_api)
             d_link = await shorten_url(d_raw, shortlink_site, shortlink_api)
-            # Rebuild buttons with shortened URLs
             rows = [[
                 InlineKeyboardButton("▶️ sᴛʀᴇᴀᴍ",   url=s_link),
                 InlineKeyboardButton("📥 ᴅᴏᴡɴʟᴏᴀᴅ", url=d_link),
@@ -656,7 +659,6 @@ async def on_group_text(client, message: Message):
             kb = InlineKeyboardMarkup(rows)
         else:
             kb = build_file_buttons(fid, fname, settings, tutorial_url, user_id)
-
         try:
             if ftype == "photo":
                 sent = await message.reply_photo(fid, caption=caption, reply_markup=kb)
@@ -672,7 +674,6 @@ async def on_group_text(client, message: Message):
         except Exception as e:
             logger.warning("Send file error: %s", e)
 
-    # ── Filter buttons (quality/season/etc.) ─────────────────
     if total > 1:
         filt_kb = quality_season_buttons(results, page=0, query=query)
         try:
@@ -684,7 +685,6 @@ async def on_group_text(client, message: Message):
         except Exception:
             pass
 
-    # ── FIX 11: Send All Button (rate-limited batch) ──────────
     if total > 10 and settings.get("send_all"):
         kb_all = InlineKeyboardMarkup([[
             InlineKeyboardButton(
@@ -702,7 +702,7 @@ async def on_group_text(client, message: Message):
             pass
 
 # ══════════════════════════════════════════════════════════════
-#  FIX 6 — /fileindex with FloodWait + skip-deleted + duplicate guard
+#  FIX 6 — /fileindex
 # ══════════════════════════════════════════════════════════════
 @app.on_message(filters.command("fileindex") & (filters.group | filters.private))
 async def cmd_fileindex(client, message: Message):
@@ -726,13 +726,9 @@ async def cmd_fileindex(client, message: Message):
     status_msg = await message.reply_text(
         "<blockquote>⏳ **ɪɴᴅᴇxɪɴɢ sᴛᴀʀᴛᴇᴅ...**</blockquote>"
     )
-    count   = 0
-    skipped = 0
-    errors  = 0
-
+    count = skipped = errors = 0
     try:
         async for msg in client.get_chat_history(ch_id):
-            # FIX 6: skip messages with no media
             fid, fname, ftype, caption = None, "", "document", msg.caption or ""
             if msg.document:
                 fid, fname, ftype = msg.document.file_id, msg.document.file_name or "", "document"
@@ -744,14 +740,11 @@ async def cmd_fileindex(client, message: Message):
                 fid, fname, ftype = msg.photo.file_id, "", "photo"
             if not fid:
                 continue
-
             if skip and skipped < skip:
                 skipped += 1
                 continue
-
             meta = parse_file_meta(fname)
             try:
-                # FIX 6: unique index on file_id prevents duplicates
                 await col_files_local.update_one(
                     {"file_id": fid},
                     {"$setOnInsert": {
@@ -768,7 +761,6 @@ async def cmd_fileindex(client, message: Message):
             except Exception as db_err:
                 errors += 1
                 logger.warning("Index DB error: %s", db_err)
-
             if count % 200 == 0:
                 try:
                     await status_msg.edit_text(
@@ -807,8 +799,8 @@ async def cmd_filesetskip(client, message: Message):
 @app.on_message(filters.command("filestats") & (filters.group | filters.private))
 async def cmd_filestats(client, message: Message):
     user_id = message.from_user.id
-    col_files_local    = _get_db(user_id)["ff_files"]
-    col_filters_local  = _get_db(user_id)["ff_filters"]
+    col_files_local   = _get_db(user_id)["ff_files"]
+    col_filters_local = _get_db(user_id)["ff_filters"]
     try:
         total    = await col_files_local.count_documents({})
         filters_ = await col_filters_local.count_documents({})
@@ -863,24 +855,29 @@ async def cmd_filtersettings(client, message: Message):
     def tog(key): return "✅" if s.get(key) else "❌"
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(f"{tog('rename')} ʀᴇɴᴀᴍᴇ",           callback_data=f"ffs_rename_{chat_id}"),
-            InlineKeyboardButton(f"{tog('stream')} sᴛʀᴇᴀᴍ",            callback_data=f"ffs_stream_{chat_id}"),
+            InlineKeyboardButton(f"{tog('enabled')} ᴍᴏᴅᴜʟᴇ",            callback_data=f"ffs_enabled_{chat_id}"),
         ],
         [
-            InlineKeyboardButton(f"{tog('shortlink')} sʜᴏʀᴛʟɪɴᴋ",      callback_data=f"ffs_shortlink_{chat_id}"),
-            InlineKeyboardButton(f"{tog('auto_approve')} ᴀᴜᴛᴏ ᴀᴘᴘʀᴏᴠᴇ", callback_data=f"ffs_autoapprove_{chat_id}"),
+            InlineKeyboardButton(f"{tog('rename')} ʀᴇɴᴀᴍᴇ",              callback_data=f"ffs_rename_{chat_id}"),
+            InlineKeyboardButton(f"{tog('stream')} sᴛʀᴇᴀᴍ",               callback_data=f"ffs_stream_{chat_id}"),
         ],
         [
-            InlineKeyboardButton(f"{tog('send_all')} sᴇɴᴅ ᴀʟʟ",        callback_data=f"ffs_sendall_{chat_id}"),
-            InlineKeyboardButton(f"{tog('tutorial_btn')} ᴛᴜᴛᴏʀɪᴀʟ",     callback_data=f"ffs_tutorial_{chat_id}"),
+            InlineKeyboardButton(f"{tog('shortlink')} sʜᴏʀᴛʟɪɴᴋ",         callback_data=f"ffs_shortlink_{chat_id}"),
+            InlineKeyboardButton(f"{tog('auto_approve')} ᴀᴜᴛᴏ ᴀᴘᴘʀᴏᴠᴇ",   callback_data=f"ffs_autoapprove_{chat_id}"),
         ],
         [
-            InlineKeyboardButton(f"{tog('auto_delete')} ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ",  callback_data=f"ffs_autodel_{chat_id}"),
+            InlineKeyboardButton(f"{tog('send_all')} sᴇɴᴅ ᴀʟʟ",           callback_data=f"ffs_sendall_{chat_id}"),
+            InlineKeyboardButton(f"{tog('tutorial_btn')} ᴛᴜᴛᴏʀɪᴀʟ",        callback_data=f"ffs_tutorial_{chat_id}"),
+        ],
+        [
+            InlineKeyboardButton(f"{tog('auto_delete')} ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ",     callback_data=f"ffs_autodel_{chat_id}"),
         ],
         [InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="ff_close")],
     ])
     await message.reply_text(
-        f"<blockquote>⚙️ **sᴇᴛᴛɪɴɢs** ғᴏʀ {message.chat.title}\n\nᴛᴀᴘ ᴛᴏ ᴛᴏɢɢʟᴇ.</blockquote>",
+        f"<blockquote>⚙️ **sᴇᴛᴛɪɴɢs** ғᴏʀ {message.chat.title}\n\n"
+        f"ᴍᴏᴅᴜʟᴇ ɪs {'🟢 **ᴇɴᴀʙʟᴇᴅ**' if s.get('enabled') else '🔴 **ᴅɪsᴀʙʟᴇᴅ**'}\n\n"
+        f"ᴛᴀᴘ ᴛᴏ ᴛᴏɢɢʟᴇ.</blockquote>",
         reply_markup=kb,
     )
 
@@ -912,7 +909,11 @@ async def cmd_filefilters(client, message: Message):
     filters_list = [doc async for doc in col.find({"chat_id": message.chat.id})]
     if not filters_list:
         return await message.reply_text("<blockquote>⚠️ ɴᴏ ғɪʟᴛᴇʀs sᴇᴛ.</blockquote>")
-    lines = ["<blockquote>🔑 **ᴍᴀɴᴜᴀʟ ғɪʟᴛᴇʀs:**\n"] + [f"• `{f['keyword']}`" for f in filters_list] + ["</blockquote>"]
+    lines = (
+        ["<blockquote>🔑 **ᴍᴀɴᴜᴀʟ ғɪʟᴛᴇʀs:**\n"]
+        + [f"• `{f['keyword']}`" for f in filters_list]
+        + ["</blockquote>"]
+    )
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="ff_close")]])
     await message.reply_text("\n".join(lines), reply_markup=kb)
 
@@ -976,7 +977,7 @@ async def cmd_filedelete(client, message: Message):
         await message.reply_text("<blockquote>❌ ɴᴏ ᴍᴀᴛᴄʜɪɴɢ ғɪʟᴇ.</blockquote>")
 
 # ══════════════════════════════════════════════════════════════
-#  /filesearch — with pagination
+#  /filesearch
 # ══════════════════════════════════════════════════════════════
 @app.on_message(filters.command("filesearch") & (filters.group | filters.private))
 async def cmd_filesearch(client, message: Message):
@@ -1014,7 +1015,11 @@ async def cmd_filterusers(client, message: Message):
     users = [doc async for doc in col.find({}).sort("last_seen", -1).limit(30)]
     if not users:
         return await message.reply_text("<blockquote>⚠️ ɴᴏ ᴜsᴇʀs ʏᴇᴛ.</blockquote>")
-    lines = ["<blockquote>👤 **ᴜsᴇʀs:**\n"] + [f"• `{u['_id']}` — {u.get('name','N/A')}" for u in users] + ["</blockquote>"]
+    lines = (
+        ["<blockquote>👤 **ᴜsᴇʀs:**\n"]
+        + [f"• `{u['_id']}` — {u.get('name','N/A')}" for u in users]
+        + ["</blockquote>"]
+    )
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="ff_close")]])
     await message.reply_text("\n".join(lines), reply_markup=kb)
 
@@ -1043,7 +1048,7 @@ async def cmd_fconnected(client, message: Message):
     )
 
 # ══════════════════════════════════════════════════════════════
-#  /grp_broadcast (FIX 20: FloodWait everywhere)
+#  /grp_broadcast
 # ══════════════════════════════════════════════════════════════
 @app.on_message(filters.command("grp_broadcast") & (filters.group | filters.private))
 async def cmd_grp_broadcast(client, message: Message):
@@ -1052,9 +1057,9 @@ async def cmd_grp_broadcast(client, message: Message):
             "<blockquote>**ᴜsᴀɢᴇ:** Reply to a message + `/grp_broadcast`</blockquote>"
         )
     msg_to_send = message.reply_to_message
-    groups  = [doc async for doc in col_groups.find({})]
-    success, failed = 0, 0
-    status = await message.reply_text("<blockquote>📡 **ʙʀᴏᴀᴅᴄᴀsᴛɪɴɢ...**</blockquote>")
+    groups      = [doc async for doc in col_groups.find({})]
+    success = failed = 0
+    status  = await message.reply_text("<blockquote>📡 **ʙʀᴏᴀᴅᴄᴀsᴛɪɴɢ...**</blockquote>")
     for g in groups:
         try:
             await msg_to_send.copy(g["_id"])
@@ -1161,7 +1166,11 @@ async def cmd_gfilters(client, message: Message):
     gfs = [doc async for doc in col_gfilters.find({})]
     if not gfs:
         return await message.reply_text("<blockquote>⚠️ ɴᴏ ɢʟᴏʙᴀʟ ғɪʟᴛᴇʀs.</blockquote>")
-    lines = ["<blockquote>🌐 **ɢʟᴏʙᴀʟ ғɪʟᴛᴇʀs:**\n"] + [f"• `{g['keyword']}`" for g in gfs] + ["</blockquote>"]
+    lines = (
+        ["<blockquote>🌐 **ɢʟᴏʙᴀʟ ғɪʟᴛᴇʀs:**\n"]
+        + [f"• `{g['keyword']}`" for g in gfs]
+        + ["</blockquote>"]
+    )
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="ff_close")]])
     await message.reply_text("\n".join(lines), reply_markup=kb)
 
@@ -1243,13 +1252,12 @@ async def cmd_setshortlinkoff(client, message: Message):
 
 @app.on_message(filters.command("shortlink_info") & (filters.group | filters.private))
 async def cmd_shortlink_info(client, message: Message):
-    s = await get_group_settings(message.chat.id)
+    s       = await get_group_settings(message.chat.id)
     site    = s.get("shortlink_site", "ɴᴏɴᴇ")
     api_key = s.get("shortlink_api", "ɴᴏᴛ sᴇᴛ")
     enabled = "🟢 ᴏɴ" if s.get("shortlink") else "🔴 ᴏғғ"
     tut     = s.get("tutorial_url", "ɴᴏᴛ sᴇᴛ")
-    # FIX 17: don't expose full API key
-    masked = f"{api_key[:4]}***{api_key[-4:]}" if len(api_key) > 8 else "***"
+    masked  = f"{api_key[:4]}***{api_key[-4:]}" if len(api_key) > 8 else "***"
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="ff_close")]])
     await message.reply_text(
         f"<blockquote>🔗 **sʜᴏʀᴛʟɪɴᴋ ɪɴғᴏ**\n\n"
@@ -1267,8 +1275,7 @@ async def cmd_set_tutorial(client, message: Message):
     args = message.text.split(None, 1)
     if len(args) < 2:
         return await message.reply_text("<blockquote>**ᴜsᴀɢᴇ:** `/set_tutorial <url>`</blockquote>")
-    url = args[1].strip()
-    await update_group_settings(message.chat.id, tutorial_url=url)
+    await update_group_settings(message.chat.id, tutorial_url=args[1].strip())
     await message.reply_text(f"<blockquote>✅ **ᴛᴜᴛᴏʀɪᴀʟ ᴜʀʟ sᴇᴛ!**</blockquote>")
 
 @app.on_message(filters.command("remove_tutorial") & (filters.group | filters.private))
@@ -1295,9 +1302,7 @@ async def cmd_filterfsub(client, message: Message):
     except ValueError:
         return await message.reply_text("<blockquote>❌ ɪɴᴠᴀʟɪᴅ ɪᴅ.</blockquote>")
     await update_group_settings(message.chat.id, fsub_channel=ch_id)
-    await message.reply_text(
-        f"<blockquote>✅ **ғsᴜʙ sᴇᴛ ᴛᴏ:** `{ch_id}`</blockquote>"
-    )
+    await message.reply_text(f"<blockquote>✅ **ғsᴜʙ sᴇᴛ ᴛᴏ:** `{ch_id}`</blockquote>")
 
 @app.on_message(filters.command("filternofsub") & (filters.group | filters.private))
 async def cmd_filternofsub(client, message: Message):
@@ -1307,18 +1312,18 @@ async def cmd_filternofsub(client, message: Message):
     await message.reply_text("<blockquote>❌ **ғsᴜʙ ᴅɪsᴀʙʟᴇᴅ.**</blockquote>")
 
 # ══════════════════════════════════════════════════════════════
-#  FIX 10 — RENAME COMMANDS (size limit + temp cleanup)
+#  FIX 10 — RENAME COMMANDS
 # ══════════════════════════════════════════════════════════════
 MAX_RENAME_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
 
 @app.on_message(filters.command("rename") & (filters.group | filters.private))
 async def cmd_rename(client, message: Message):
-    # FIX 12: if in group, check setting
     if message.chat.type.value != "private":
         settings = await get_group_settings(message.chat.id)
+        if not settings.get("enabled", False):
+            return
         if not settings.get("rename", True):
             return await message.reply_text("<blockquote>❌ **ʀᴇɴᴀᴍᴇ ɪs ᴅɪsᴀʙʟᴇᴅ.**</blockquote>")
-
     if not message.reply_to_message:
         return await message.reply_text(
             "<blockquote>**ᴜsᴀɢᴇ:** Reply to a file + `/rename <new_name>`</blockquote>"
@@ -1326,26 +1331,22 @@ async def cmd_rename(client, message: Message):
     args = message.text.split(None, 1)
     if len(args) < 2:
         return await message.reply_text("<blockquote>❌ ᴘʀᴏᴠɪᴅᴇ ᴀ ɴᴇᴡ ɴᴀᴍᴇ.</blockquote>")
-
     new_name = args[1].strip()
-    msg  = message.reply_to_message
-    fid, ftype, fsize = None, None, 0
+    msg      = message.reply_to_message
+    fid = ftype = None
+    fsize = 0
     if msg.document:
         fid, ftype, fsize = msg.document.file_id, "document", msg.document.file_size or 0
     elif msg.video:
         fid, ftype, fsize = msg.video.file_id, "video", msg.video.file_size or 0
     elif msg.audio:
         fid, ftype, fsize = msg.audio.file_id, "audio", msg.audio.file_size or 0
-
     if not fid:
         return await message.reply_text("<blockquote>❌ ɴᴏ ᴠᴀʟɪᴅ ғɪʟᴇ.</blockquote>")
-    # FIX 10: size check
     if fsize > MAX_RENAME_SIZE:
         return await message.reply_text(
-            f"<blockquote>❌ **ғɪʟᴇ ᴛᴏᴏ ʟᴀʀɢᴇ!**\n"
-            f"ᴍᴀx: `{MAX_RENAME_SIZE // (1024**3)} GB`</blockquote>"
+            f"<blockquote>❌ **ғɪʟᴇ ᴛᴏᴏ ʟᴀʀɢᴇ!**\nᴍᴀx: `{MAX_RENAME_SIZE // (1024**3)} GB`</blockquote>"
         )
-
     user_data = await get_rename_data(message.from_user.id)
     caption   = user_data.get("caption", "")
     thumb     = user_data.get("thumb")
@@ -1353,8 +1354,8 @@ async def cmd_rename(client, message: Message):
     tmp_path  = f"/tmp/rename_{message.from_user.id}_{int(time.time())}_{new_name}"
     tmp_thumb = f"/tmp/thumb_{message.from_user.id}_{int(time.time())}.jpg"
     try:
-        path = await client.download_media(fid, file_name=tmp_path)
-        send_kwargs: dict = {
+        path        = await client.download_media(fid, file_name=tmp_path)
+        send_kwargs = {
             "caption":   caption or f"<b>{new_name}</b>",
             "file_name": new_name,
         }
@@ -1378,7 +1379,6 @@ async def cmd_rename(client, message: Message):
     except Exception as e:
         await status.edit_text(f"<blockquote>❌ **ʀᴇɴᴀᴍᴇ ғᴀɪʟᴇᴅ:** `{e}`</blockquote>")
     finally:
-        # FIX 10: cleanup temp files
         for p in (tmp_path, tmp_thumb):
             try:
                 if os.path.exists(p):
@@ -1397,7 +1397,7 @@ async def cmd_set_caption(client, message: Message):
 
 @app.on_message(filters.command("see_caption") & (filters.group | filters.private))
 async def cmd_see_caption(client, message: Message):
-    d = await get_rename_data(message.from_user.id)
+    d   = await get_rename_data(message.from_user.id)
     cap = d.get("caption", "")
     await message.reply_text(
         f"<blockquote>📝 **ᴄᴀᴘᴛɪᴏɴ:**\n{cap}</blockquote>" if cap
@@ -1441,20 +1441,20 @@ async def cmd_del_thumb(client, message: Message):
 # ══════════════════════════════════════════════════════════════
 @app.on_message(filters.command("stream") & (filters.group | filters.private))
 async def cmd_stream(client, message: Message):
-    # FIX 12
     if message.chat.type.value != "private":
         settings = await get_group_settings(message.chat.id)
+        if not settings.get("enabled", False):
+            return
         if not settings.get("stream", True):
             return await message.reply_text("<blockquote>❌ **sᴛʀᴇᴀᴍ ᴅɪsᴀʙʟᴇᴅ.**</blockquote>")
     else:
         settings = {"stream": True, "shortlink": False, "tutorial_url": ""}
-
     if not message.reply_to_message:
         return await message.reply_text(
             "<blockquote>**ᴜsᴀɢᴇ:** Reply to media + `/stream`</blockquote>"
         )
-    msg  = message.reply_to_message
-    fid, fname = None, ""
+    msg       = message.reply_to_message
+    fid = fname = None
     if msg.document:
         fid, fname = msg.document.file_id, msg.document.file_name or "file"
     elif msg.video:
@@ -1463,18 +1463,15 @@ async def cmd_stream(client, message: Message):
         fid, fname = msg.audio.file_id, msg.audio.file_name or "audio.mp3"
     if not fid:
         return await message.reply_text("<blockquote>❌ ɴᴏ ᴠᴀʟɪᴅ ᴍᴇᴅɪᴀ.</blockquote>")
-
     user_id = message.from_user.id
     s_link  = generate_stream_link(fid, user_id, fname)
     d_link  = generate_download_link(fid, user_id, fname)
-
     shortlink_on   = settings.get("shortlink", False)
     shortlink_api  = settings.get("shortlink_api", "")
     shortlink_site = settings.get("shortlink_site", "")
     if shortlink_on and shortlink_api and shortlink_site:
         s_link = await shorten_url(s_link, shortlink_site, shortlink_api)
         d_link = await shorten_url(d_link, shortlink_site, shortlink_api)
-
     kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("▶️ VLC",       url=f"vlc://{s_link}"),
@@ -1517,15 +1514,13 @@ async def cmd_totalrequests(client, message: Message):
     )
 
 # ══════════════════════════════════════════════════════════════
-#  FIX 13 — AUTO-APPROVE (with spam/bot filter)
-#  FIX 3  — Send pending file after approve
+#  FIX 13 — AUTO-APPROVE + FIX 3 — SEND PENDING AFTER APPROVE
 # ══════════════════════════════════════════════════════════════
 @app.on_chat_join_request()
 async def on_join_request(client, request: ChatJoinRequest):
     chat_id = request.chat.id
     user    = request.from_user
     user_id = user.id
-
     col = _shared_db["ff_requests"]
     try:
         await col.update_one(
@@ -1538,15 +1533,11 @@ async def on_join_request(client, request: ChatJoinRequest):
         )
     except Exception:
         pass
-
     settings = await get_group_settings(chat_id)
     if not settings.get("auto_approve"):
         return
-
-    # FIX 13: basic spam filter — skip bots and accounts with no username
     if user.is_bot:
         return
-
     try:
         await client.approve_chat_join_request(chat_id, user_id)
     except FloodWait as fw:
@@ -1559,8 +1550,6 @@ async def on_join_request(client, request: ChatJoinRequest):
     except Exception as e:
         logger.warning("Auto-approve failed: %s", e)
         return
-
-    # FIX 3: send pending file if any
     key     = f"fsub_{user_id}_{chat_id}"
     pending = _get_pending(key)
     if pending:
@@ -1581,7 +1570,7 @@ async def _send_pending_result(client, data: dict):
         {"file_name": {"$regex": regex}},
         {"caption":   {"$regex": regex}},
     ]}).sort("_id", -1).limit(5)
-    results = [doc async for doc in cursor]
+    results      = [doc async for doc in cursor]
     tutorial_url = settings.get("tutorial_url", "")
     for doc in results:
         fid   = doc.get("file_id")
@@ -1599,52 +1588,7 @@ async def _send_pending_result(client, data: dict):
             logger.warning("Pending result send error: %s", e)
 
 # ══════════════════════════════════════════════════════════════
-#  /start — deep links (batch / file)
-# ══════════════════════════════════════════════════════════════
-@app.on_message(filters.command("start") & filters.private)
-async def cmd_start(client, message: Message):
-    args = message.command
-    if len(args) < 2:
-        return await message.reply_text(
-            "<blockquote>👋 **ʜᴇʟʟᴏ!** I am a File Filter Bot.\n"
-            "Add me to your group to start.</blockquote>"
-        )
-    payload = args[1]
-
-    if payload.startswith("batch_"):
-        batch_id = payload[6:]
-        doc = await col_batch.find_one({"batch_id": batch_id})
-        if not doc:
-            return await message.reply_text("<blockquote>❌ ʙᴀᴛᴄʜ ʟɪɴᴋ ɪɴᴠᴀʟɪᴅ.</blockquote>")
-        ch_id, from_id, to_id = doc["channel"], doc["from"], doc["to"]
-        await message.reply_text("<blockquote>⏳ **sᴇɴᴅɪɴɢ ʙᴀᴛᴄʜ ғɪʟᴇs...**</blockquote>")
-        for msg_id in range(from_id, to_id + 1):
-            try:
-                await client.copy_message(message.from_user.id, ch_id, msg_id)
-                await asyncio.sleep(0.3)
-            except FloodWait as fw:
-                await asyncio.sleep(fw.value + 1)
-            except Exception:
-                pass
-        return
-
-    if payload.startswith("file_"):
-        parts = payload[5:].split("_")
-        if len(parts) < 2:
-            return
-        try:
-            ch_id, msg_id = int(parts[0]), int(parts[1])
-        except ValueError:
-            return
-        try:
-            await client.copy_message(message.from_user.id, ch_id, msg_id)
-        except FloodWait as fw:
-            await asyncio.sleep(fw.value + 1)
-        except Exception as e:
-            await message.reply_text(f"<blockquote>❌ ғᴀɪʟᴇᴅ: `{e}`</blockquote>")
-
-# ══════════════════════════════════════════════════════════════
-#  FIX 17 — CALLBACK QUERY HANDLER (user validation on every action)
+#  FIX 17 — CALLBACK QUERY HANDLER
 # ══════════════════════════════════════════════════════════════
 @app.on_callback_query(filters.regex(r"^ff_"))
 async def ff_callbacks(client, cq: CallbackQuery):
@@ -1660,21 +1604,56 @@ async def ff_callbacks(client, cq: CallbackQuery):
             pass
         return await cq.answer()
 
-    # ── No-op (pagination page indicator) ────────────────────
+    # ── No-op ─────────────────────────────────────────────────
     if data == "ff_noop":
         return await cq.answer()
 
-    # ── FIX 3: FSub re-check after user claims to have joined ─
-    if data.startswith("ff_fsubcheck_"):
-        parts = data.split("_")
-        # format: ff_fsubcheck_<uid>_<chatid>_<query>
+    # ── NEW: Enable/Disable module toggle from /filefiltertoggle ──
+    if data.startswith("ff_toggle_enable_") or data.startswith("ff_toggle_disable_"):
         try:
-            uid     = int(parts[3])
-            g_id    = int(parts[4])
-            query   = "_".join(parts[5:]) if len(parts) > 5 else ""
+            g_id = int(data.split("_")[-1])
         except (IndexError, ValueError):
             return await cq.answer("❌ ɪɴᴠᴀʟɪᴅ.", show_alert=True)
-        # FIX 17: only the addressed user can press this button
+        if not await is_admin(client, g_id, user_id):
+            return await cq.answer("❌ ᴀᴅᴍɪɴs ᴏɴʟʏ.", show_alert=True)
+        new_val = data.startswith("ff_toggle_enable_")
+        await update_group_settings(g_id, enabled=new_val)
+        icon = "🟢 ᴇɴᴀʙʟᴇᴅ" if new_val else "🔴 ᴅɪsᴀʙʟᴇᴅ"
+        await cq.answer(f"{icon}", show_alert=False)
+        # Refresh the toggle message
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "✅ ᴇɴᴀʙʟᴇᴅ ✔" if new_val else "✅ ᴇɴᴀʙʟᴇ",
+                    callback_data=f"ff_toggle_enable_{g_id}",
+                ),
+                InlineKeyboardButton(
+                    "❌ ᴅɪsᴀʙʟᴇᴅ ✔" if not new_val else "❌ ᴅɪsᴀʙʟᴇ",
+                    callback_data=f"ff_toggle_disable_{g_id}",
+                ),
+            ],
+            [InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="ff_close")],
+        ])
+        try:
+            await cq.message.edit_text(
+                f"<blockquote>⚙️ **ғɪʟᴇ ғɪʟᴛᴇʀ ᴍᴏᴅᴜʟᴇ**\n\n"
+                f"{'🟢 **ᴄᴜʀʀᴇɴᴛʟʏ: ᴇɴᴀʙʟᴇᴅ**' if new_val else '🔴 **ᴄᴜʀʀᴇɴᴛʟʏ: ᴅɪsᴀʙʟᴇᴅ**'}\n\n"
+                f"ᴜsᴇ ᴛʜᴇ ʙᴜᴛᴛᴏɴs ʙᴇʟᴏᴡ ᴛᴏ ᴇɴᴀʙʟᴇ ᴏʀ ᴅɪsᴀʙʟᴇ.</blockquote>",
+                reply_markup=kb,
+            )
+        except Exception:
+            pass
+        return
+
+    # ── FIX 3: FSub re-check ──────────────────────────────────
+    if data.startswith("ff_fsubcheck_"):
+        parts = data.split("_")
+        try:
+            uid   = int(parts[3])
+            g_id  = int(parts[4])
+            query = "_".join(parts[5:]) if len(parts) > 5 else ""
+        except (IndexError, ValueError):
+            return await cq.answer("❌ ɪɴᴠᴀʟɪᴅ.", show_alert=True)
         if user_id != uid:
             return await cq.answer("❌ ɴᴏᴛ ғᴏʀ ʏᴏᴜ.", show_alert=True)
         settings = await get_group_settings(g_id)
@@ -1694,7 +1673,7 @@ async def ff_callbacks(client, cq: CallbackQuery):
                 asyncio.create_task(_send_pending_result(client, pending))
         return
 
-    # ── FIX 11: Send All (rate-limited) ──────────────────────
+    # ── FIX 11: Send All ──────────────────────────────────────
     if data.startswith("ff_sendall_"):
         parts  = data.split("_", 4)
         c_id   = int(parts[3])
@@ -1706,8 +1685,8 @@ async def ff_callbacks(client, cq: CallbackQuery):
             {"file_name": {"$regex": regex}},
             {"caption":   {"$regex": regex}},
         ]}).sort("_id", -1).skip(10).limit(100)
-        results  = [doc async for doc in cursor]
-        settings = await get_group_settings(c_id)
+        results     = [doc async for doc in cursor]
+        settings    = await get_group_settings(c_id)
         batch_count = 0
         for doc in results:
             fid   = doc.get("file_id")
@@ -1717,7 +1696,6 @@ async def ff_callbacks(client, cq: CallbackQuery):
                 sent = await client.send_document(c_id, fid, caption=f"<b>{fname}</b>", reply_markup=kb)
                 asyncio.create_task(schedule_delete(sent, AUTO_DELETE_FILE))
                 batch_count += 1
-                # FIX 11: rate limit — 1 msg per 0.5 s; pause every 20
                 await asyncio.sleep(0.5)
                 if batch_count % 20 == 0:
                     await asyncio.sleep(3)
@@ -1749,8 +1727,7 @@ async def ff_callbacks(client, cq: CallbackQuery):
         for doc in results:
             fid   = doc.get("file_id")
             fname = doc.get("file_name", "File")
-            ftype = doc.get("file_type", "document")
-            kb    = build_file_buttons(fid, fname, settings, settings.get("tutorial_url",""), user_id)
+            kb    = build_file_buttons(fid, fname, settings, settings.get("tutorial_url", ""), user_id)
             try:
                 sent = await client.send_document(chat_id, fid, caption=f"<b>{fname}</b>", reply_markup=kb)
                 asyncio.create_task(schedule_delete(sent, AUTO_DELETE_FILE))
@@ -1782,7 +1759,6 @@ async def ff_callbacks(client, cq: CallbackQuery):
             req_uid = int(data.split("_")[4])
         except (IndexError, ValueError):
             return await cq.answer("❌", show_alert=True)
-        # FIX 17: only the requester can confirm
         if user_id != req_uid:
             return await cq.answer("❌ ɴᴏᴛ ғᴏʀ ʏᴏᴜ.", show_alert=True)
         if not await is_admin(client, chat_id, user_id):
@@ -1832,6 +1808,7 @@ async def ff_callbacks(client, cq: CallbackQuery):
             return await cq.answer("❌ ᴀᴅᴍɪɴs ᴏɴʟʏ.", show_alert=True)
         s = await get_group_settings(g_id)
         mapping = {
+            "enabled":     "enabled",
             "rename":      "rename",
             "stream":      "stream",
             "shortlink":   "shortlink",
@@ -1842,7 +1819,7 @@ async def ff_callbacks(client, cq: CallbackQuery):
         }
         key = mapping.get(feature)
         if key:
-            new_val = not s.get(key, True)
+            new_val = not s.get(key, True if key != "enabled" else False)
             await update_group_settings(g_id, **{key: new_val})
             icon = "✅" if new_val else "❌"
             await cq.answer(f"{icon} {key.replace('_',' ').upper()} {'ON' if new_val else 'OFF'}")
@@ -1850,19 +1827,22 @@ async def ff_callbacks(client, cq: CallbackQuery):
         def tog(k): return "✅" if s.get(k) else "❌"
         kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(f"{tog('rename')} ʀᴇɴᴀᴍᴇ",           callback_data=f"ffs_rename_{g_id}"),
-                InlineKeyboardButton(f"{tog('stream')} sᴛʀᴇᴀᴍ",            callback_data=f"ffs_stream_{g_id}"),
+                InlineKeyboardButton(f"{tog('enabled')} ᴍᴏᴅᴜʟᴇ",            callback_data=f"ffs_enabled_{g_id}"),
             ],
             [
-                InlineKeyboardButton(f"{tog('shortlink')} sʜᴏʀᴛʟɪɴᴋ",      callback_data=f"ffs_shortlink_{g_id}"),
-                InlineKeyboardButton(f"{tog('auto_approve')} ᴀᴜᴛᴏ ᴀᴘᴘʀᴏᴠᴇ", callback_data=f"ffs_autoapprove_{g_id}"),
+                InlineKeyboardButton(f"{tog('rename')} ʀᴇɴᴀᴍᴇ",              callback_data=f"ffs_rename_{g_id}"),
+                InlineKeyboardButton(f"{tog('stream')} sᴛʀᴇᴀᴍ",               callback_data=f"ffs_stream_{g_id}"),
             ],
             [
-                InlineKeyboardButton(f"{tog('send_all')} sᴇɴᴅ ᴀʟʟ",        callback_data=f"ffs_sendall_{g_id}"),
-                InlineKeyboardButton(f"{tog('tutorial_btn')} ᴛᴜᴛᴏʀɪᴀʟ",     callback_data=f"ffs_tutorial_{g_id}"),
+                InlineKeyboardButton(f"{tog('shortlink')} sʜᴏʀᴛʟɪɴᴋ",         callback_data=f"ffs_shortlink_{g_id}"),
+                InlineKeyboardButton(f"{tog('auto_approve')} ᴀᴜᴛᴏ ᴀᴘᴘʀᴏᴠᴇ",   callback_data=f"ffs_autoapprove_{g_id}"),
             ],
             [
-                InlineKeyboardButton(f"{tog('auto_delete')} ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ",  callback_data=f"ffs_autodel_{g_id}"),
+                InlineKeyboardButton(f"{tog('send_all')} sᴇɴᴅ ᴀʟʟ",           callback_data=f"ffs_sendall_{g_id}"),
+                InlineKeyboardButton(f"{tog('tutorial_btn')} ᴛᴜᴛᴏʀɪᴀʟ",        callback_data=f"ffs_tutorial_{g_id}"),
+            ],
+            [
+                InlineKeyboardButton(f"{tog('auto_delete')} ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ",     callback_data=f"ffs_autodel_{g_id}"),
             ],
             [InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="ff_close")],
         ])
@@ -1872,9 +1852,11 @@ async def ff_callbacks(client, cq: CallbackQuery):
             pass
         return
 
-    # ── Quality / Season / Language / Year / Episode filter ───
-    # FIX 7: these only show info — actual filter would re-query
-    for prefix, field in [("ffq_","quality"),("ffseason_","season"),("ffl_","language"),("ffy_","year"),("ffe_","episode")]:
+    # ── Quality / Season / Language / Year / Episode ──────────
+    for prefix, field in [
+        ("ffq_", "quality"), ("ffseason_", "season"),
+        ("ffl_", "language"), ("ffy_", "year"), ("ffe_", "episode"),
+    ]:
         if data.startswith(prefix):
             value = data[len(prefix):]
             await cq.answer(f"🔎 ғɪʟᴛᴇʀ: {field} = {value}", show_alert=False)
@@ -1883,7 +1865,7 @@ async def ff_callbacks(client, cq: CallbackQuery):
     await cq.answer()
 
 # ══════════════════════════════════════════════════════════════
-#  FIX 12 — Register new group + run startup tasks
+#  Register new group
 # ══════════════════════════════════════════════════════════════
 @app.on_message(filters.new_chat_members)
 async def on_new_member(client, message: Message):
@@ -1898,10 +1880,9 @@ async def on_new_member(client, message: Message):
         logger.warning("on_new_member error: %s", e)
 
 # ══════════════════════════════════════════════════════════════
-#  STARTUP — indexes + delete restore + pending cleanup
+#  STARTUP
 # ══════════════════════════════════════════════════════════════
 async def filefilterbot_startup(client):
-    """Call this from your app startup hook."""
     await ensure_indexes()
     await restore_delete_tasks(client)
     asyncio.create_task(_pending_cleanup_loop())
@@ -1913,6 +1894,8 @@ async def filefilterbot_startup(client):
 __menu__     = "CMD_PRO"
 __mod_name__ = "H_B_85"
 __help__ = """
+**ᴍᴏᴅᴜʟᴇ ᴛᴏɢɢʟᴇ:**
+🔻 `/filefiltertoggle` ➠ ᴇɴᴀʙʟᴇ/ᴅɪsᴀʙʟᴇ ᴍᴏᴅᴜʟᴇ (ᴅᴇғᴀᴜʟᴛ: ᴅɪsᴀʙʟᴇᴅ)
 **ɪɴᴅᴇx & sᴛᴀᴛs:**
 🔻 `/fileindex <ch_id>` ➠ ɪɴᴅᴇx ᴄʜᴀɴɴᴇʟ
 🔻 `/filesetskip <n>` ➠ sᴋɪᴘ ᴄᴏᴜɴᴛ
