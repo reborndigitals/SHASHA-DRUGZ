@@ -4,13 +4,19 @@
 #
 #  FEATURES:
 #    • Create posts from replied message (text/photo/video/animation/document)
-#    • Inline buttons via [Text](url) syntax
+#    • Inline buttons via [Text](url) syntax  (max 8 per row, Telegram-safe)
 #    • Edit saved post content + buttons (/editpost)
 #    • Delete saved post (/delpost)
 #    • Send post to current chat or any group/channel (/post <id> [chat_id])
 #    • Auto scheduler — asks interval (hours) before scheduling
-#    • Protected posts — no forward / no save (ask after scheduler prompt)
+#    • Protected posts — no forward / no save
 #    • All posts stored in MongoDB with full metadata
+#    • Owner-only restriction on sensitive commands
+#    • FloodWait handling in _send_post
+#    • Scheduler duplicate-send lock (running flag)
+#    • _pending memory-leak cleanup (5-min TTL)
+#    • DB indexes created at startup
+#    • Separate Motor client (own DB connection)
 #
 #  COMMANDS:
 #    /createpost          → reply to any message to save it as a post
@@ -18,28 +24,25 @@
 #    /editpost <id>       → reply to new content to replace saved post
 #    /delpost <id>        → delete saved post from DB
 #    /mypost              → list all saved post IDs
-#    /schedulepost <id>   → interactive scheduler (asks hours + protection)
+#    /schedulepost <id>   → interactive scheduler (asks target + hours)
 #    /cancelschedule <id> → cancel a pending scheduled post
 #
 #  BUTTON FORMAT  (inside post text/caption):
-#    [Button Text](https://example.com)
-#    Two buttons per row — third wraps to next row automatically.
-#
-#  SCHEDULER:
-#    Bot asks: "How many hours between sends?" → then asks protected yes/no.
-#    Stores schedule in DB; background loop fires every minute.
-#
-#  PROTECTED MODE:
-#    Sends post with protect_content=True (Telegram no-forward flag).
+#    [Button1](url) [Button2](url)      ← one line = one row (max 8 buttons)
+#    [Button3](url)
 #
 #  COLLECTIONS:
 #    post_data       — saved posts
 #    post_schedules  — active schedules
 # ══════════════════════════════════════════════════════════════
+
 import re
 import asyncio
 import logging
+import random as _random
 from datetime import datetime, timedelta
+
+from motor.motor_asyncio import AsyncIOMotorClient
 from pyrogram import filters
 from pyrogram.types import (
     Message,
@@ -47,43 +50,69 @@ from pyrogram.types import (
     InlineKeyboardButton,
     ForceReply,
 )
-from pyrogram.errors import ChatAdminRequired, PeerIdInvalid, ChannelPrivate
+from pyrogram.errors import (
+    ChatAdminRequired,
+    PeerIdInvalid,
+    ChannelPrivate,
+    FloodWait,
+)
 
-# ── FIX: Import mongo_client (the actual AsyncIOMotorClient instance),
-#         not the mongo module. Adjust the name below to match whatever
-#         your SHASHA_DRUGZ __init__.py exports as the Motor client.
-#
-#   Common patterns — use whichever matches your project:
-#
-#     from SHASHA_DRUGZ import app, mongo_client          # if exported as mongo_client
-#     from SHASHA_DRUGZ import app, mongodb               # if exported as mongodb
-#     from SHASHA_DRUGZ import app, db_client             # if exported as db_client
-#     from SHASHA_DRUGZ.database import app, mongo_client # if in a sub-module
-#
-#   If your __init__.py has something like:
-#       import motor.motor_asyncio as mongo               ← THIS causes the bug
-#       mongo = motor.motor_asyncio.AsyncIOMotorClient(URI)  ← this is correct
-#
-#   Make sure the variable is the CLIENT, not the module.
-# ─────────────────────────────────────────────────────────────
-from SHASHA_DRUGZ import app, mongo_client          # ← CHANGE 'mongo_client' to match yours
+# ── App client ────────────────────────────────────────────────────────────────
+from SHASHA_DRUGZ import app
+
+# ── Config ────────────────────────────────────────────────────────────────────
+# OWNER_ID  : int  OR  list[int]
+# MONGO_DB_URI : str  OR  list[str]  (random pick if list)
+from config import MONGO_DB_URI, OWNER_ID
+
+_OWNERS: set[int] = (
+    set(OWNER_ID)
+    if isinstance(OWNER_ID, (list, tuple, set))
+    else {int(OWNER_ID)}
+)
 
 logger = logging.getLogger("QualityButton")
 
-# ── MongoDB ───────────────────────────────────────────────────────────────────
-# mongo_client  →  AsyncIOMotorClient instance  (subscriptable with ["DB_NAME"])
-_db        = mongo_client["POST_SYSTEM"]
+# ══════════════════════════════════════════════════════════════
+#  SEPARATE MOTOR CLIENT  (own DB connection for this module)
+# ══════════════════════════════════════════════════════════════
+_mongo_uri = (
+    _random.choice(MONGO_DB_URI)
+    if isinstance(MONGO_DB_URI, (list, tuple))
+    else MONGO_DB_URI
+)
+_motor_client = AsyncIOMotorClient(_mongo_uri)
+
+# ── Collections ───────────────────────────────────────────────────────────────
+_db        = _motor_client["POST_SYSTEM"]
 _posts     = _db["post_data"]        # saved posts
 _schedules = _db["post_schedules"]   # active schedules
 
-# ── Conversation state (in-memory, per user) ──────────────────────────────────
-# Key: user_id  →  dict with pending action info
+# ── In-memory conversation state (per user) ───────────────────────────────────
 _pending: dict = {}
+_PENDING_TTL   = 300   # seconds before stale entry is cleared
+
+
+# ══════════════════════════════════════════════════════════════
+#  STARTUP — DB indexes
+# ══════════════════════════════════════════════════════════════
+
+async def _create_indexes():
+    try:
+        await _posts.create_index("post_id", unique=True)
+        await _schedules.create_index("next_send")
+        logger.info("QualityButton: DB indexes ensured.")
+    except Exception as e:
+        logger.warning("QualityButton: index creation warning: %s", e)
 
 
 # ══════════════════════════════════════════════════════════════
 #  HELPERS
 # ══════════════════════════════════════════════════════════════
+
+def _is_owner(user_id: int) -> bool:
+    return user_id in _OWNERS
+
 
 async def _next_id() -> int:
     last = await _posts.find_one(sort=[("post_id", -1)])
@@ -92,26 +121,18 @@ async def _next_id() -> int:
 
 def _parse_buttons(text: str):
     """
-    Parse buttons from text where each LINE becomes one ROW.
-    Any number of [Label](url) on one line = that many buttons in that row.
-
-    Example input (in post caption):
-        [Btn1](url) [Btn2](url)
-        [Btn3](url)
-        [Btn4](url) [Btn5](url) [Btn6](url)
-    → Row 1: Btn1, Btn2
-    → Row 2: Btn3
-    → Row 3: Btn4, Btn5, Btn6
-
-    Lines with no buttons are kept as text content.
+    Parse [Label](url) pairs from text.
+    Each line = one button row. Max 8 buttons per row (Telegram limit).
+    Lines with no buttons are preserved as plain text.
     """
     btn_pattern = r"\[(.*?)\]\((https?://\S+?)\)"
-    rows = []
+    rows        = []
     clean_lines = []
 
     for line in text.splitlines():
         matches = re.findall(btn_pattern, line)
         if matches:
+            matches = matches[:8]   # enforce Telegram per-row limit
             rows.append([InlineKeyboardButton(name, url=url) for name, url in matches])
             leftover = re.sub(btn_pattern, "", line).strip()
             if leftover:
@@ -119,12 +140,10 @@ def _parse_buttons(text: str):
         else:
             clean_lines.append(line)
 
-    clean = "\n".join(clean_lines).strip()
-    return clean, rows
+    return "\n".join(clean_lines).strip(), rows
 
 
 def _build_markup(raw_buttons: list) -> InlineKeyboardMarkup | None:
-    """Rebuild InlineKeyboardMarkup from stored list-of-lists-of-dicts."""
     if not raw_buttons:
         return None
     rows = [
@@ -135,7 +154,6 @@ def _build_markup(raw_buttons: list) -> InlineKeyboardMarkup | None:
 
 
 def _serialize_buttons(button_rows: list) -> list:
-    """Convert list[list[InlineKeyboardButton]] → list[list[dict]] for DB."""
     return [
         [{"text": b.text, "url": b.url} for b in row]
         for row in button_rows
@@ -143,53 +161,75 @@ def _serialize_buttons(button_rows: list) -> list:
 
 
 def _extract_media(msg: Message) -> tuple[str, str | None]:
-    """Return (media_type, file_id) from a Pyrogram message."""
-    if msg.photo:
-        return "photo", msg.photo.file_id
-    if msg.animation:
-        return "animation", msg.animation.file_id
-    if msg.video:
-        return "video", msg.video.file_id
-    if msg.document:
-        return "document", msg.document.file_id
+    if msg.photo:      return "photo",     msg.photo.file_id
+    if msg.animation:  return "animation", msg.animation.file_id
+    if msg.video:      return "video",     msg.video.file_id
+    if msg.document:   return "document",  msg.document.file_id
     return "text", None
 
 
+def _pending_set(user_id: int, data: dict):
+    """Store pending state and stamp it with current time (for TTL)."""
+    data["time"]      = datetime.utcnow()
+    _pending[user_id] = data
+
+
+def _pending_cleanup():
+    """Drop any _pending entries older than _PENDING_TTL seconds."""
+    now = datetime.utcnow()
+    for uid in list(_pending.keys()):
+        ts = _pending[uid].get("time")
+        if ts and (now - ts).total_seconds() > _PENDING_TTL:
+            _pending.pop(uid, None)
+
+
 async def _send_post(client, chat_id, data: dict, protect: bool = False):
-    """Send a post dict to any chat_id. Raises on failure."""
+    """
+    Send a saved post to chat_id.
+    Handles FloodWait automatically (waits + retries once).
+    All other exceptions propagate to the caller.
+    """
     text   = data.get("text", "")
     markup = _build_markup(data.get("buttons", []))
     pmode  = data.get("parse_mode", "html")
     fid    = data.get("file_id")
     ptype  = data.get("type", "text")
 
-    kwargs = dict(
+    media_kw = dict(
         caption=text,
         reply_markup=markup,
         parse_mode=pmode,
         protect_content=protect,
     )
 
-    if ptype == "photo":
-        await client.send_photo(chat_id, fid, **kwargs)
-    elif ptype == "animation":
-        await client.send_animation(chat_id, fid, **kwargs)
-    elif ptype == "video":
-        await client.send_video(chat_id, fid, **kwargs)
-    elif ptype == "document":
-        await client.send_document(chat_id, fid, **kwargs)
-    else:
-        await client.send_message(
-            chat_id, text,
-            reply_markup=markup,
-            parse_mode=pmode,
-            disable_web_page_preview=False,
-            protect_content=protect,
-        )
+    async def _do():
+        if ptype == "photo":
+            await client.send_photo(chat_id, fid, **media_kw)
+        elif ptype == "animation":
+            await client.send_animation(chat_id, fid, **media_kw)
+        elif ptype == "video":
+            await client.send_video(chat_id, fid, **media_kw)
+        elif ptype == "document":
+            await client.send_document(chat_id, fid, **media_kw)
+        else:
+            await client.send_message(
+                chat_id, text,
+                reply_markup=markup,
+                parse_mode=pmode,
+                disable_web_page_preview=False,
+                protect_content=protect,
+            )
+
+    try:
+        await _do()
+    except FloodWait as e:
+        logger.warning("FloodWait %ss — retrying after wait.", e.value)
+        await asyncio.sleep(e.value)
+        await _do()
 
 
 # ══════════════════════════════════════════════════════════════
-#  /createpost — save a post from replied message
+#  /createpost
 # ══════════════════════════════════════════════════════════════
 
 @app.on_message(
@@ -197,9 +237,14 @@ async def _send_post(client, chat_id, data: dict, protect: bool = False):
     (filters.command("createpost") & filters.group)
 )
 async def cmd_createpost(_, message: Message):
+    if not _is_owner(message.from_user.id):
+        return await message.reply_text(
+            "<blockquote>❌ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪsᴇᴅ.</blockquote>"
+        )
     if not message.reply_to_message:
         return await message.reply_text(
-            "<blockquote>❌ <b>ᴜsᴀɢᴇ:</b> Reply to a message and use <code>/createpost</code>.</blockquote>"
+            "<blockquote>❌ <b>ᴜsᴀɢᴇ:</b> Reply to a message and use "
+            "<code>/createpost</code>.</blockquote>"
         )
 
     msg  = message.reply_to_message
@@ -214,7 +259,7 @@ async def cmd_createpost(_, message: Message):
     ptype, fid          = _extract_media(msg)
     post_id             = await _next_id()
 
-    doc = {
+    await _posts.insert_one({
         "post_id":    post_id,
         "text":       clean_text,
         "buttons":    _serialize_buttons(buttons),
@@ -224,8 +269,7 @@ async def cmd_createpost(_, message: Message):
         "protected":  False,
         "created_by": message.from_user.id,
         "created_at": datetime.utcnow(),
-    }
-    await _posts.insert_one(doc)
+    })
 
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("📤 sᴇɴᴅ ɴᴏᴡ",    callback_data=f"qb_sendnow_{post_id}"),
@@ -246,11 +290,16 @@ async def cmd_createpost(_, message: Message):
 
 
 # ══════════════════════════════════════════════════════════════
-#  /post <id> [chat_id] — send post here or to another chat
+#  /post <id> [chat_id]
 # ══════════════════════════════════════════════════════════════
 
 @app.on_message(filters.command("post"))
 async def cmd_post(client, message: Message):
+    if not _is_owner(message.from_user.id):
+        return await message.reply_text(
+            "<blockquote>❌ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪsᴇᴅ.</blockquote>"
+        )
+
     args = message.command
     if len(args) < 2:
         return await message.reply_text(
@@ -270,44 +319,41 @@ async def cmd_post(client, message: Message):
 
     if len(args) >= 3:
         raw = args[2]
-        try:
-            target_chat = int(raw) if raw.lstrip("-").isdigit() else raw
-        except Exception:
-            return await message.reply_text(
-                "<blockquote>❌ Invalid chat ID / username.</blockquote>"
-            )
+        target_chat = int(raw) if raw.lstrip("-").isdigit() else raw
     else:
         target_chat = message.chat.id
 
-    protect = data.get("protected", False)
     try:
-        await _send_post(client, target_chat, data, protect=protect)
+        await _send_post(client, target_chat, data, protect=data.get("protected", False))
         if target_chat != message.chat.id:
             await message.reply_text(
-                f"<blockquote>✅ <b>ᴘᴏsᴛ <code>{post_id}</code> sᴇɴᴛ</b> ᴛᴏ <code>{target_chat}</code>!</blockquote>"
+                f"<blockquote>✅ <b>ᴘᴏsᴛ <code>{post_id}</code> sᴇɴᴛ</b> "
+                f"ᴛᴏ <code>{target_chat}</code>!</blockquote>"
             )
     except ChatAdminRequired:
-        await message.reply_text(
-            "<blockquote>❌ I'm not an admin in that chat.</blockquote>"
-        )
+        await message.reply_text("<blockquote>❌ I'm not an admin in that chat.</blockquote>")
     except (PeerIdInvalid, ChannelPrivate):
-        await message.reply_text(
-            "<blockquote>❌ Chat not found or I'm not a member.</blockquote>"
-        )
+        await message.reply_text("<blockquote>❌ Chat not found or I'm not a member.</blockquote>")
     except Exception as e:
         await message.reply_text(f"<blockquote>❌ Failed: <code>{e}</code></blockquote>")
 
 
 # ══════════════════════════════════════════════════════════════
-#  /editpost <id> — reply to new content to replace post
+#  /editpost <id>
 # ══════════════════════════════════════════════════════════════
 
 @app.on_message(filters.command("editpost"))
 async def cmd_editpost(_, message: Message):
+    if not _is_owner(message.from_user.id):
+        return await message.reply_text(
+            "<blockquote>❌ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪsᴇᴅ.</blockquote>"
+        )
+
     args = message.command
     if len(args) < 2:
         return await message.reply_text(
-            "<blockquote><b>ᴜsᴀɢᴇ:</b> Reply to new content + <code>/editpost &lt;id&gt;</code></blockquote>"
+            "<blockquote><b>ᴜsᴀɢᴇ:</b> Reply to new content + "
+            "<code>/editpost &lt;id&gt;</code></blockquote>"
         )
 
     try:
@@ -315,8 +361,7 @@ async def cmd_editpost(_, message: Message):
     except ValueError:
         return await message.reply_text("<blockquote>❌ Invalid post ID.</blockquote>")
 
-    data = await _posts.find_one({"post_id": post_id})
-    if not data:
+    if not await _posts.find_one({"post_id": post_id}):
         return await message.reply_text("<blockquote>❌ Post not found.</blockquote>")
 
     if not message.reply_to_message:
@@ -328,9 +373,7 @@ async def cmd_editpost(_, message: Message):
     text = msg.text or msg.caption or ""
 
     if msg.sticker:
-        return await message.reply_text(
-            "<blockquote>❌ Stickers are not supported.</blockquote>"
-        )
+        return await message.reply_text("<blockquote>❌ Stickers are not supported.</blockquote>")
 
     clean_text, buttons = _parse_buttons(text)
     ptype, fid          = _extract_media(msg)
@@ -354,11 +397,16 @@ async def cmd_editpost(_, message: Message):
 
 
 # ══════════════════════════════════════════════════════════════
-#  /delpost <id> — delete a saved post
+#  /delpost <id>
 # ══════════════════════════════════════════════════════════════
 
 @app.on_message(filters.command("delpost"))
 async def cmd_delpost(_, message: Message):
+    if not _is_owner(message.from_user.id):
+        return await message.reply_text(
+            "<blockquote>❌ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪsᴇᴅ.</blockquote>"
+        )
+
     args = message.command
     if len(args) < 2:
         return await message.reply_text(
@@ -382,13 +430,17 @@ async def cmd_delpost(_, message: Message):
 
 
 # ══════════════════════════════════════════════════════════════
-#  /mypost — list all saved posts
+#  /mypost
 # ══════════════════════════════════════════════════════════════
 
 @app.on_message(filters.command("mypost"))
 async def cmd_mypost(_, message: Message):
-    cursor = _posts.find().sort("post_id", 1)
-    posts  = [doc async for doc in cursor]
+    if not _is_owner(message.from_user.id):
+        return await message.reply_text(
+            "<blockquote>❌ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪsᴇᴅ.</blockquote>"
+        )
+
+    posts = [doc async for doc in _posts.find().sort("post_id", 1)]
 
     if not posts:
         return await message.reply_text(
@@ -399,25 +451,32 @@ async def cmd_mypost(_, message: Message):
     for doc in posts:
         pid       = doc["post_id"]
         ptype     = doc.get("type", "text")
-        buttons   = sum(len(r) for r in doc.get("buttons", []))
-        protected = "🔒" if doc.get("protected") else "🔓"
-        lines.append(f"• <code>{pid}</code> — <code>{ptype}</code> {protected} — {buttons} ʙᴛɴ(s)")
+        btn_count = sum(len(r) for r in doc.get("buttons", []))
+        lock      = "🔒" if doc.get("protected") else "🔓"
+        lines.append(
+            f"• <code>{pid}</code> — <code>{ptype}</code> {lock} — {btn_count} ʙᴛɴ(s)"
+        )
     lines.append("</blockquote>")
 
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="qb_close")
-    ]])
-    await message.reply_text("\n".join(lines), reply_markup=kb)
+    await message.reply_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="qb_close")
+        ]])
+    )
 
 
 # ══════════════════════════════════════════════════════════════
-#  /schedulepost <id> — interactive scheduler
-#  Step 1: ask target chat
-#  Step 2: ask interval (hours)
+#  /schedulepost <id>
 # ══════════════════════════════════════════════════════════════
 
 @app.on_message(filters.command("schedulepost"))
 async def cmd_schedulepost(_, message: Message):
+    if not _is_owner(message.from_user.id):
+        return await message.reply_text(
+            "<blockquote>❌ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪsᴇᴅ.</blockquote>"
+        )
+
     args = message.command
     if len(args) < 2:
         return await message.reply_text(
@@ -434,33 +493,36 @@ async def cmd_schedulepost(_, message: Message):
         return await message.reply_text("<blockquote>❌ Post not found.</blockquote>")
 
     user_id = message.from_user.id
-    _pending[user_id] = {
+    _pending_set(user_id, {
         "step":      "ask_chat",
         "post_id":   post_id,
         "chat_id":   message.chat.id,
         "protected": data.get("protected", False),
-    }
-
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("📍 ᴛʜɪs ᴄʜᴀᴛ",    callback_data=f"qb_sc_thischat_{post_id}"),
-        InlineKeyboardButton("✍️ ᴇɴᴛᴇʀ ᴄʜᴀᴛ ID", callback_data=f"qb_sc_enterchat_{post_id}"),
-    ], [
-        InlineKeyboardButton("🔻 ᴄᴀɴᴄᴇʟ 🔻",      callback_data="qb_close"),
-    ]])
+    })
 
     await message.reply_text(
         f"<blockquote>🗓 <b>sᴄʜᴇᴅᴜʟᴇ ᴘᴏsᴛ <code>{post_id}</code></b>\n\n"
         f"<b>sᴛᴇᴘ 1/2:</b> Where should this post be sent?</blockquote>",
-        reply_markup=kb,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📍 ᴛʜɪs ᴄʜᴀᴛ",    callback_data=f"qb_sc_thischat_{post_id}"),
+            InlineKeyboardButton("✍️ ᴇɴᴛᴇʀ ᴄʜᴀᴛ ID", callback_data=f"qb_sc_enterchat_{post_id}"),
+        ], [
+            InlineKeyboardButton("🔻 ᴄᴀɴᴄᴇʟ 🔻",      callback_data="qb_close"),
+        ]])
     )
 
 
 # ══════════════════════════════════════════════════════════════
-#  /cancelschedule <id> — cancel an active schedule
+#  /cancelschedule <id>
 # ══════════════════════════════════════════════════════════════
 
 @app.on_message(filters.command("cancelschedule"))
 async def cmd_cancelschedule(_, message: Message):
+    if not _is_owner(message.from_user.id):
+        return await message.reply_text(
+            "<blockquote>❌ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪsᴇᴅ.</blockquote>"
+        )
+
     args = message.command
     if len(args) < 2:
         return await message.reply_text(
@@ -484,12 +546,22 @@ async def cmd_cancelschedule(_, message: Message):
 
 
 # ══════════════════════════════════════════════════════════════
-#  CONVERSATION HANDLER — captures plain-text replies for
-#  scheduler steps (chat ID entry, hours entry)
+#  CONVERSATION HANDLER
+#  Only fires for users who have an active _pending state.
+#  Explicit command exclusion prevents any collision with other modules.
 # ══════════════════════════════════════════════════════════════
 
-@app.on_message(filters.text & ~filters.command(None) & (filters.private | filters.group))
+@app.on_message(
+    filters.text
+    & ~filters.command([
+        "createpost", "post", "editpost", "delpost",
+        "mypost", "schedulepost", "cancelschedule",
+    ])
+    & (filters.private | filters.group)
+)
 async def conversation_handler(_, message: Message):
+    _pending_cleanup()   # TTL sweep on every incoming text
+
     user_id = message.from_user.id if message.from_user else None
     if not user_id or user_id not in _pending:
         return
@@ -497,7 +569,7 @@ async def conversation_handler(_, message: Message):
     state = _pending[user_id]
     step  = state.get("step")
 
-    # ── Step: user entered a custom chat ID ──────────────────
+    # ── Step: waiting for custom chat ID ─────────────────────
     if step == "enter_chat":
         raw = message.text.strip()
         try:
@@ -508,7 +580,7 @@ async def conversation_handler(_, message: Message):
             )
         state["target_chat"] = target
         state["step"]        = "ask_hours"
-        _pending[user_id]    = state
+        _pending_set(user_id, state)
         await message.reply_text(
             "<blockquote>🗓 <b>sᴄʜᴇᴅᴜʟᴇ ᴘᴏsᴛ</b>\n\n"
             "<b>sᴛᴇᴘ 2/2:</b> How many <b>hours</b> between each send?\n"
@@ -517,7 +589,7 @@ async def conversation_handler(_, message: Message):
         )
         return
 
-    # ── Step: user entered hours → confirm & save schedule ───
+    # ── Step: waiting for interval in hours ──────────────────
     if step == "ask_hours":
         try:
             hours = float(message.text.strip())
@@ -541,12 +613,10 @@ async def conversation_handler(_, message: Message):
             "protected":   protected,
             "next_send":   next_send,
             "active":      True,
+            "running":     False,   # duplicate-send lock flag
         })
 
         prot_str = "🔒 Protected" if protected else "🔓 Not protected"
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="qb_close")
-        ]])
         await message.reply_text(
             f"<blockquote>✅ <b>ᴘᴏsᴛ <code>{post_id}</code> sᴄʜᴇᴅᴜʟᴇᴅ!</b>\n\n"
             f"📍 <b>ᴛᴀʀɢᴇᴛ:</b> <code>{target_chat}</code>\n"
@@ -554,7 +624,9 @@ async def conversation_handler(_, message: Message):
             f"🔐 <b>ᴘʀᴏᴛᴇᴄᴛɪᴏɴ:</b> {prot_str}\n"
             f"🕐 <b>ɴᴇxᴛ sᴇɴᴅ:</b> <code>{next_send.strftime('%Y-%m-%d %H:%M')} UTC</code>\n\n"
             f"ᴜsᴇ <code>/cancelschedule {post_id}</code> ᴛᴏ sᴛᴏᴘ.</blockquote>",
-            reply_markup=kb,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="qb_close")
+            ]])
         )
         return
 
@@ -578,8 +650,10 @@ async def qb_callbacks(client, cq):
             pass
         return await cq.answer()
 
-    # ── Send now (from createpost menu) ───────────────────────
+    # ── Send now ──────────────────────────────────────────────
     if data.startswith("qb_sendnow_"):
+        if not _is_owner(user_id):
+            return await cq.answer("❌ Not authorised.", show_alert=True)
         post_id = int(data.split("_")[2])
         db_data = await _posts.find_one({"post_id": post_id})
         if not db_data:
@@ -593,34 +667,36 @@ async def qb_callbacks(client, cq):
 
     # ── Schedule shortcut (from createpost menu) ──────────────
     if data.startswith("qb_schedule_"):
+        if not _is_owner(user_id):
+            return await cq.answer("❌ Not authorised.", show_alert=True)
         post_id = int(data.split("_")[2])
         db_data = await _posts.find_one({"post_id": post_id})
         if not db_data:
             return await cq.answer("❌ Post not found.", show_alert=True)
 
-        _pending[user_id] = {
+        _pending_set(user_id, {
             "step":      "ask_chat",
             "post_id":   post_id,
             "chat_id":   chat_id,
             "protected": db_data.get("protected", False),
-        }
-
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("📍 ᴛʜɪs ᴄʜᴀᴛ",    callback_data=f"qb_sc_thischat_{post_id}"),
-            InlineKeyboardButton("✍️ ᴇɴᴛᴇʀ ᴄʜᴀᴛ ID", callback_data=f"qb_sc_enterchat_{post_id}"),
-        ], [
-            InlineKeyboardButton("🔻 ᴄᴀɴᴄᴇʟ 🔻",      callback_data="qb_close"),
-        ]])
+        })
         await cq.answer()
         await cq.message.edit_text(
             f"<blockquote>🗓 <b>sᴄʜᴇᴅᴜʟᴇ ᴘᴏsᴛ <code>{post_id}</code></b>\n\n"
             f"<b>sᴛᴇᴘ 1/2:</b> Where should this post be sent?</blockquote>",
-            reply_markup=kb,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📍 ᴛʜɪs ᴄʜᴀᴛ",    callback_data=f"qb_sc_thischat_{post_id}"),
+                InlineKeyboardButton("✍️ ᴇɴᴛᴇʀ ᴄʜᴀᴛ ID", callback_data=f"qb_sc_enterchat_{post_id}"),
+            ], [
+                InlineKeyboardButton("🔻 ᴄᴀɴᴄᴇʟ 🔻",      callback_data="qb_close"),
+            ]])
         )
         return
 
-    # ── Delete post (from createpost menu) ────────────────────
+    # ── Delete post ───────────────────────────────────────────
     if data.startswith("qb_del_"):
+        if not _is_owner(user_id):
+            return await cq.answer("❌ Not authorised.", show_alert=True)
         post_id = int(data.split("_")[2])
         await _posts.delete_one({"post_id": post_id})
         await _schedules.delete_many({"post_id": post_id})
@@ -633,12 +709,12 @@ async def qb_callbacks(client, cq):
 
     # ── Schedule: this chat ───────────────────────────────────
     if data.startswith("qb_sc_thischat_"):
+        if not _is_owner(user_id):
+            return await cq.answer("❌ Not authorised.", show_alert=True)
         post_id = int(data.split("_")[3])
         state   = _pending.get(user_id, {})
-        state["target_chat"] = chat_id
-        state["step"]        = "ask_hours"
-        state["post_id"]     = post_id
-        _pending[user_id]    = state
+        state.update({"target_chat": chat_id, "step": "ask_hours", "post_id": post_id})
+        _pending_set(user_id, state)
         await cq.answer()
         await cq.message.edit_text(
             "<blockquote>🗓 <b>sᴄʜᴇᴅᴜʟᴇ ᴘᴏsᴛ</b>\n\n"
@@ -649,11 +725,12 @@ async def qb_callbacks(client, cq):
 
     # ── Schedule: enter custom chat ID ────────────────────────
     if data.startswith("qb_sc_enterchat_"):
+        if not _is_owner(user_id):
+            return await cq.answer("❌ Not authorised.", show_alert=True)
         post_id = int(data.split("_")[3])
         state   = _pending.get(user_id, {"post_id": post_id, "chat_id": chat_id})
-        state["step"]     = "enter_chat"
-        state["post_id"]  = post_id
-        _pending[user_id] = state
+        state.update({"step": "enter_chat", "post_id": post_id})
+        _pending_set(user_id, state)
         await cq.answer()
         await cq.message.edit_text(
             "<blockquote>🗓 <b>sᴄʜᴇᴅᴜʟᴇ ᴘᴏsᴛ</b>\n\n"
@@ -667,25 +744,46 @@ async def qb_callbacks(client, cq):
 
 # ══════════════════════════════════════════════════════════════
 #  BACKGROUND SCHEDULER LOOP
-#  Checks every 60 seconds for due schedules and fires them.
+#  • Ticks every 60 s
+#  • `running` flag prevents duplicate sends across restarts
+#  • Atomic check-and-set via update_one with filter {"running": False}
+#  • Clears stale _pending entries each tick
 # ══════════════════════════════════════════════════════════════
 
 async def _scheduler_loop():
-    await asyncio.sleep(10)  # brief startup delay
+    await _create_indexes()
+    await asyncio.sleep(10)
     logger.info("QualityButton scheduler started.")
+
     while True:
+        _pending_cleanup()
+
         try:
             now    = datetime.utcnow()
-            cursor = _schedules.find({"active": True, "next_send": {"$lte": now}})
+            cursor = _schedules.find({
+                "active":    True,
+                "running":   False,
+                "next_send": {"$lte": now},
+            })
+
             async for sched in cursor:
+                sched_id    = sched["_id"]
                 post_id     = sched["post_id"]
                 target_chat = sched["target_chat"]
                 protected   = sched.get("protected", False)
                 hours       = sched.get("hours", 24)
 
+                # Atomic lock acquisition — skip if another worker got it
+                lock = await _schedules.update_one(
+                    {"_id": sched_id, "running": False},
+                    {"$set": {"running": True}},
+                )
+                if lock.modified_count == 0:
+                    continue
+
                 post_data = await _posts.find_one({"post_id": post_id})
                 if not post_data:
-                    await _schedules.delete_one({"_id": sched["_id"]})
+                    await _schedules.delete_one({"_id": sched_id})
                     continue
 
                 try:
@@ -696,18 +794,17 @@ async def _scheduler_loop():
 
                 next_send = datetime.utcnow() + timedelta(hours=hours)
                 await _schedules.update_one(
-                    {"_id": sched["_id"]},
-                    {"$set": {"next_send": next_send}},
+                    {"_id": sched_id},
+                    {"$set": {"next_send": next_send, "running": False}},
                 )
+
         except Exception as e:
             logger.error("Scheduler loop error: %s", e)
 
         await asyncio.sleep(60)
 
 
-# ── FIX: Use asyncio.ensure_future instead of get_event_loop().create_task()
-#         to avoid "cannot schedule new futures after shutdown" RuntimeError.
-#         ensure_future works correctly with the running loop at import time.
+# Attach scheduler to the running event loop safely
 asyncio.ensure_future(_scheduler_loop())
 
 
@@ -729,10 +826,6 @@ __help__ = """
 🔻 <code>/schedulepost &lt;id&gt;</code> ➠ sᴄʜᴇᴅᴜʟᴇ ᴀ ᴘᴏsᴛ (ɪɴᴛᴇʀᴀᴄᴛɪᴠᴇ)
 🔻 <code>/cancelschedule &lt;id&gt;</code> ➠ sᴛᴏᴘ ᴀ sᴄʜᴇᴅᴜʟᴇᴅ ᴘᴏsᴛ
 <b>ʙᴜᴛᴛᴏɴ ғᴏʀᴍᴀᴛ</b> <i>(ɪɴ ᴛᴇxᴛ/ᴄᴀᴘᴛɪᴏɴ)</i>:
-<code>[Button1 Text](https://example.com)[Button2 Text](https://example.com)</code>
-<code>[Button3 Text](https://example.com)</code>
-<b>ɴᴏᴛᴇs:</b>
-• Protected posts = no forward / no save
-• Scheduler runs every 60 seconds
-• Supports: text, photo, video, GIF, document
+<code>[Button1](https://example.com) [Button2](https://example.com)</code>
+<code>[Button3](https://example.com)</code>
 """
