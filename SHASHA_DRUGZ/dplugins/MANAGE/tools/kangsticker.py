@@ -1,4 +1,6 @@
 import os
+import re
+import time
 import base64
 import imghdr
 import subprocess
@@ -42,27 +44,87 @@ STATIC_TYPES = ["jpeg", "png", "webp"]
 
 
 # ------------------------------------------------------------------------------
-# Helper functions (from kang.py)
+# Helper functions
 # ------------------------------------------------------------------------------
-async def make_video_sticker(client, file_path, emoji):
-    """Convert a video/gif to a video sticker format."""
-    out = "video_sticker.webm"
-    subprocess.run(
-        [
-            "ffmpeg", "-i", file_path,
-            "-vf", "scale=512:512:force_original_aspect_ratio=decrease",
-            "-t", "3",
-            "-an",
-            "-loop", "0",
-            out,
-        ],
-        check=True,
+async def make_video_sticker(client, file_path, emoji, msg):
+    """
+    Convert video/gif to Telegram video sticker with a progress bar.
+    """
+    out = f"sticker_{uuid4().hex}.webm"
+
+    # Get video duration (for progress calculation)
+    probe_cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        file_path
+    ]
+
+    try:
+        duration = float(subprocess.check_output(probe_cmd).decode().strip())
+    except Exception:
+        duration = 3  # fallback
+
+    cmd = [
+        "ffmpeg",
+        "-i", file_path,
+        "-vf", "scale=512:512:force_original_aspect_ratio=decrease,fps=30",
+        "-c:v", "libvpx-vp9",
+        "-b:v", "256K",
+        "-an",
+        "-t", "3",
+        "-y",
+        out
+    ]
+
+    process = subprocess.Popen(
+        cmd,
+        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        universal_newlines=True
     )
-    return await create_sticker(
+
+    last_update = time.time()
+
+    while True:
+        line = process.stderr.readline()
+        if not line:
+            break
+
+        # Extract time=XX:XX:XX.XX from ffmpeg output
+        match = re.search(r"time=(\d+:\d+:\d+\.\d+)", line)
+        if match:
+            time_str = match.group(1)
+            h, m, s = time_str.split(":")
+            current_time = float(h) * 3600 + float(m) * 60 + float(s)
+
+            percent = min((current_time / duration) * 100, 100)
+
+            # Update progress every ~1 second to avoid spam
+            if time.time() - last_update > 1:
+                bar = "█" * int(percent // 10) + "░" * (10 - int(percent // 10))
+                try:
+                    await msg.edit(
+                        f"🎬 **Converting to sticker...**\n\n"
+                        f"[{bar}] {percent:.1f}%"
+                    )
+                except Exception:
+                    pass
+                last_update = time.time()
+
+    process.wait()  # wait for conversion to finish
+
+    # Final upload stage
+    await msg.edit("📤 Uploading sticker...")
+
+    sticker = await create_sticker(
         await upload_document(client, out, None),
         emoji,
         is_video=True,
     )
+
+    os.remove(out)
+    return sticker
 
 
 # ------------------------------------------------------------------------------
@@ -194,7 +256,12 @@ async def kang(client, message: Message):
                 r.sticker.emoji or emoji,
                 is_video=True,
             )
-        # Image / document
+        # Video / GIF
+        elif r.video or r.animation:
+            file = await app.download_media(r)
+            sticker = await make_video_sticker(client, file, emoji, msg)
+            os.remove(file)
+        # Photo or document
         elif r.photo or r.document:
             file = await app.download_media(r)
             ftype = imghdr.what(file)
@@ -204,8 +271,8 @@ async def kang(client, message: Message):
                     await upload_document(client, file, message.chat.id),
                     emoji,
                 )
-            else:  # GIF / Video
-                sticker = await make_video_sticker(client, file, emoji)
+            else:  # Probably a GIF disguised as document
+                sticker = await make_video_sticker(client, file, emoji, msg)
             os.remove(file)
         else:
             return await msg.edit("Unsupported media type.")
