@@ -1,17 +1,14 @@
-# SHASHA_DRUGZ/plugins/tools/vclogger.py
-
 import asyncio
 from logging import getLogger
 from typing import Dict, Set
 import random
-
 from pyrogram import filters
 from pyrogram.types import Message
 from pyrogram.raw import functions
-
 from SHASHA_DRUGZ import app
 from SHASHA_DRUGZ.utils.database import get_assistant
 from SHASHA_DRUGZ.core.mongo import mongodb
+from config import ADMINS_ID
 
 LOGGER = getLogger(__name__)
 
@@ -27,7 +24,6 @@ vcloggerdb = mongodb.vclogger
 PREFIXES = ["/", "!", "%", ",", "", ".", "@", "#"]
 
 # --- Database Functions ---
-
 async def load_vc_logger_status():
     try:
         cursor = vcloggerdb.find({})
@@ -38,13 +34,14 @@ async def load_vc_logger_status():
             vc_logging_status[chat_id] = status
             if status:
                 enabled_chats.append(chat_id)
-        
+
         for chat_id in enabled_chats:
             asyncio.create_task(check_and_monitor_vc(chat_id))
-        
+
         LOGGER.info(f"VC Logger: Loaded {len(enabled_chats)} chats.")
     except Exception as e:
         LOGGER.error(f"VC Logger Load Error: {e}")
+
 
 async def save_vc_logger_status(chat_id: int, status: bool):
     try:
@@ -56,10 +53,11 @@ async def save_vc_logger_status(chat_id: int, status: bool):
     except Exception as e:
         LOGGER.error(f"VC Logger Save Error: {e}")
 
+
 async def get_vc_logger_status(chat_id: int) -> bool:
     if chat_id in vc_logging_status:
         return vc_logging_status[chat_id]
-    
+
     try:
         doc = await vcloggerdb.find_one({"chat_id": chat_id})
         if doc:
@@ -68,11 +66,11 @@ async def get_vc_logger_status(chat_id: int) -> bool:
             return status
     except Exception as e:
         LOGGER.error(f"Error getting VC status: {e}")
-    
+
     return False
 
-# --- Helper Functions ---
 
+# --- Helper Functions ---
 def to_small_caps(text):
     mapping = {
         "a":"ᴀ","b":"ʙ","c":"ᴄ","d":"ᴅ","e":"ᴇ","f":"ꜰ","g":"ɢ","h":"ʜ","i":"ɪ","j":"ᴊ",
@@ -82,7 +80,8 @@ def to_small_caps(text):
         "K":"ᴋ","L":"ʟ","M":"ᴍ","N":"ɴ","O":"ᴏ","P":"ᴘ","Q":"ǫ","R":"ʀ","S":"s","T":"ᴛ",
         "U":"ᴜ","V":"ᴠ","W":"ᴡ","X":"x","Y":"ʏ","Z":"ᴢ"
     }
-    return "".join(mapping.get(c,c) for c in text)
+    return "".join(mapping.get(c, c) for c in text)
+
 
 async def delete_after_delay(message, delay):
     try:
@@ -91,8 +90,8 @@ async def delete_after_delay(message, delay):
     except:
         pass
 
-# --- Core Logic ---
 
+# --- Core Logic ---
 async def get_group_call_participants(userbot, peer):
     try:
         full_chat = await userbot.invoke(functions.channels.GetFullChannel(channel=peer))
@@ -104,85 +103,67 @@ async def get_group_call_participants(userbot, peer):
         ))
         return participants.participants
     except Exception as e:
-        # Handle FloodWait or Errors
         error_msg = str(e).upper()
-        if "420" in error_msg: # FloodWait
+        if "420" in error_msg:
             return []
         if any(x in error_msg for x in ["GROUPCALL_NOT_FOUND", "CALL_NOT_FOUND", "NO_GROUPCALL"]):
             return []
         return []
 
-# 🔥 FIXED monitor_vc_chat (WORKING VERSION)
+
 async def monitor_vc_chat(chat_id):
     userbot = await get_assistant(chat_id)
     if not userbot:
-        LOGGER.warning(f"No assistant for chat {chat_id}")
         return
-
-    peer = await userbot.resolve_peer(chat_id)
-
-    # Initial load
-    vc_active_users[chat_id] = set()
 
     while chat_id in active_vc_chats and await get_vc_logger_status(chat_id):
         try:
+            peer = await userbot.resolve_peer(chat_id)
             participants_list = await get_group_call_participants(userbot, peer)
+            new_users = set()
 
-            new_users = {
-                p.peer.user_id
-                for p in participants_list
-                if hasattr(p, "peer") and hasattr(p.peer, "user_id")
-            }
+            for p in participants_list:
+                if hasattr(p, 'peer') and hasattr(p.peer, 'user_id'):
+                    new_users.add(p.peer.user_id)
 
-            old_users = vc_active_users.get(chat_id, set())
+            current_users = vc_active_users.get(chat_id, set())
+            joined = new_users - current_users
+            left = current_users - new_users
 
-            # 🔥 Detect changes ONLY if real difference
-            joined = new_users - old_users
-            left = old_users - new_users
+            if joined or left:
+                tasks = []
+                for user_id in joined:
+                    tasks.append(handle_user_join(chat_id, user_id, userbot))
+                for user_id in left:
+                    tasks.append(handle_user_leave(chat_id, user_id, userbot))
 
-            # 🔥 Prevent false triggers (VERY IMPORTANT)
-            if not old_users:
-                vc_active_users[chat_id] = new_users
-                await asyncio.sleep(3)
-                continue
-
-            # 🔥 Handle joins
-            for user_id in joined:
-                asyncio.create_task(handle_user_join(chat_id, user_id, userbot))
-
-            # 🔥 Handle leaves
-            for user_id in left:
-                asyncio.create_task(handle_user_leave(chat_id, user_id, userbot))
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
 
             vc_active_users[chat_id] = new_users
+        except Exception:
+            pass  # Silent to prevent log spam
 
-        except Exception as e:
-            LOGGER.error(f"VC Monitor error: {e}")
+        await asyncio.sleep(5)
 
-        await asyncio.sleep(3)  # stable timing
 
 async def check_and_monitor_vc(chat_id):
     if not await get_vc_logger_status(chat_id):
         return
+
+    userbot = await get_assistant(chat_id)
+    if not userbot:
+        return
+
     try:
-        userbot = await get_assistant(chat_id)
-        if not userbot:
-            LOGGER.warning(f"No assistant available for chat {chat_id}, disabling VC logger to avoid repeated failures.")
-            # Automatically disable to prevent endless error loops
-            vc_logging_status[chat_id] = False
-            await save_vc_logger_status(chat_id, False)
-            return
         if chat_id not in active_vc_chats:
             active_vc_chats.add(chat_id)
             asyncio.create_task(monitor_vc_chat(chat_id))
     except Exception as e:
-        LOGGER.error(f"Error in VC Monitor setup for chat {chat_id}: {e}")
-        # If we can't get an assistant, don't keep retrying
-        if chat_id in active_vc_chats:
-            active_vc_chats.discard(chat_id)
+        LOGGER.error(f"Error in VC Monitor: {e}")
+
 
 # --- Event Handlers (Join/Leave) ---
-
 async def handle_user_join(chat_id, user_id, userbot):
     try:
         user = await userbot.get_users(user_id)
@@ -197,6 +178,7 @@ async def handle_user_join(chat_id, user_id, userbot):
         asyncio.create_task(delete_after_delay(sent_msg, 10))
     except:
         pass
+
 
 async def handle_user_leave(chat_id, user_id, userbot):
     try:
@@ -213,85 +195,54 @@ async def handle_user_leave(chat_id, user_id, userbot):
     except:
         pass
 
-# 🔥 CRITICAL FIX 2: Start monitor only when VC starts
-@app.on_message(filters.service & filters.video_chat_started, group=-10)
-async def vc_started_handler(client, message: Message):
-    chat_id = message.chat.id
-
-    if await get_vc_logger_status(chat_id):
-        if chat_id not in active_vc_chats:
-            active_vc_chats.add(chat_id)
-            asyncio.create_task(monitor_vc_chat(chat_id))
-
-# 🔥 CRITICAL FIX 3: Stop when VC ends
-@app.on_message(filters.service & filters.video_chat_ended, group=-10)
-async def vc_ended_handler(client, message: Message):
-    chat_id = message.chat.id
-
-    active_vc_chats.discard(chat_id)
-    vc_active_users.pop(chat_id, None)
 
 # --- Command Handler ---
-
 @app.on_message(filters.command("vclogger", prefixes=PREFIXES) & filters.group)
 async def vclogger_command(_, message: Message):
     chat_id = message.chat.id
     args = message.text.split()
-    current_status = await get_vc_logger_status(chat_id)
+    status = await get_vc_logger_status(chat_id)
+    prefix_ui = ", ".join([f"<b>{p}vclogger</b>" for p in ["/", "!"]])
+    current_state_ui = to_small_caps(str(status if status is not None else "Not Set"))
 
-    # No arguments -> default to enable
     if len(args) == 1:
-        # Enable by default
-        if current_status:
-            await message.reply("✅ **VC Logger is already enabled.**", disable_web_page_preview=True)
-        else:
-            vc_logging_status[chat_id] = True
-            await save_vc_logger_status(chat_id, True)
-            await message.reply("✅ **VC Logger Enabled** (default action)", disable_web_page_preview=True)
-            asyncio.create_task(check_and_monitor_vc(chat_id))
-        return
+        text = (
+            f"📌 <b>VC Logger Status:</b> <b>{current_state_ui}</b>\n\n"
+            f"Usage: {prefix_ui} <b>[on|off]</b>"
+        )
+        await message.reply(text, disable_web_page_preview=True)
 
-    # With argument
-    arg = args[1].lower()
-    if arg in ["on", "enable", "yes"]:
-        if current_status:
-            await message.reply("✅ **VC Logger is already enabled.**", disable_web_page_preview=True)
-        else:
+    elif len(args) == 2:
+        arg = args[1].lower()
+        if arg in ["on", "enable", "yes"]:
             vc_logging_status[chat_id] = True
             await save_vc_logger_status(chat_id, True)
-            await message.reply("✅ **VC Logger Enabled**", disable_web_page_preview=True)
+            await message.reply(
+                "✅ <b>VC Logging Enabled</b>",
+                disable_web_page_preview=True
+            )
             asyncio.create_task(check_and_monitor_vc(chat_id))
-    elif arg in ["off", "disable", "no"]:
-        if not current_status:
-            await message.reply("❌ **VC Logger is already disabled.**", disable_web_page_preview=True)
-        else:
+        elif arg in ["off", "disable", "no"]:
             vc_logging_status[chat_id] = False
             await save_vc_logger_status(chat_id, False)
-            await message.reply("🚫 **VC Logger Disabled**", disable_web_page_preview=True)
+            await message.reply(
+                "🚫 <b>VC Logging Disabled</b>",
+                disable_web_page_preview=True
+            )
             active_vc_chats.discard(chat_id)
             vc_active_users.pop(chat_id, None)
-    elif arg == "status":
-        status_text = "Enabled" if current_status else "Disabled"
-        await message.reply(f"📌 **VC Logger is currently:** `{status_text}`", disable_web_page_preview=True)
-    else:
-        await message.reply(
-            "❌ **Invalid option.**\n\n"
-            "Usage:\n"
-            "• `/vclogger` → Enable (default)\n"
-            "• `/vclogger on` → Enable\n"
-            "• `/vclogger off` → Disable\n"
-            "• `/vclogger status` → Check current status",
-            disable_web_page_preview=True
-        )
+        else:
+            await message.reply("❌ Invalid option. Use <b>on</b> or <b>off</b>.")
 
-# --- Auto Start ---
-# Ensure database is loaded when bot starts
-@app.on_message(filters.command("reload_vclog", prefixes=PREFIXES) & filters.user(1281282633)) # Placeholder for debug
-async def manual_reload(client, message):
+
+# --- Debug Reload Command (Admins Only) ---
+@app.on_message(filters.command("reload_vclog", prefixes=PREFIXES) & filters.user(ADMINS_ID))
+async def manual_reload(_, message: Message):
     await load_vc_logger_status()
-    await message.reply("Reloaded VC Log status.")
+    await message.reply("✅ Reloaded VC Logger status from database.")
 
-# Attempt to load immediately if event loop is running
+
+# --- Auto Start on Bot Boot ---
 loop = asyncio.get_event_loop()
 if loop.is_running():
     loop.create_task(load_vc_logger_status())
