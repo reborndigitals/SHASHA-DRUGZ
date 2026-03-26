@@ -1,3 +1,5 @@
+# SHASHA_DRUGZ/plugins/vclogger.py
+
 import asyncio
 from logging import getLogger
 from typing import Dict, Set
@@ -119,6 +121,10 @@ async def monitor_vc_chat(chat_id):
     while chat_id in active_vc_chats and await get_vc_logger_status(chat_id):
         try:
             peer = await userbot.resolve_peer(chat_id)
+            
+            # 🔥 FIX: Short delay to ensure participants list is updated
+            await asyncio.sleep(2)
+            
             participants_list = await get_group_call_participants(userbot, peer)
             new_users = set()
             
@@ -126,11 +132,21 @@ async def monitor_vc_chat(chat_id):
                 if hasattr(p, 'peer') and hasattr(p.peer, 'user_id'):
                     new_users.add(p.peer.user_id)
 
-            current_users = vc_active_users.get(chat_id, set())
-            joined = new_users - current_users
-            left = current_users - new_users
+            # First-time initialisation: store current state and skip detection
+            if chat_id not in vc_active_users:
+                vc_active_users[chat_id] = new_users
+                continue
 
-            if joined or left:
+            current_users = vc_active_users[chat_id]
+
+            # 🔥 DEBUG prints to see if users change
+            LOGGER.debug(f"VC Monitor: chat={chat_id} OLD={current_users} NEW={new_users}")
+
+            # 🔥 Use full set comparison for reliability
+            if new_users != current_users:
+                joined = new_users - current_users
+                left = current_users - new_users
+
                 tasks = []
                 for user_id in joined:
                     tasks.append(handle_user_join(chat_id, user_id, userbot))
@@ -140,13 +156,15 @@ async def monitor_vc_chat(chat_id):
                 if tasks:
                     await asyncio.gather(*tasks, return_exceptions=True)
 
-            vc_active_users[chat_id] = new_users
+                # Update stored state
+                vc_active_users[chat_id] = new_users
 
         except Exception as e:
             # Silent error to prevent log spam, but log once for debugging
             LOGGER.debug(f"monitor_vc_chat error in chat {chat_id}: {e}")
         
-        await asyncio.sleep(5) # Check every 5 seconds
+        # 🔥 Faster checking (every 2 seconds)
+        await asyncio.sleep(2)
 
 async def check_and_monitor_vc(chat_id):
     if not await get_vc_logger_status(chat_id):
@@ -274,4 +292,4 @@ __help__ = """
      • /vclogger status → sʜᴏᴡ ᴄᴜʀʀᴇɴᴛ ᴠᴄ ʟᴏɢɢɪɴɢ sᴛᴀᴛᴜs
 
 🔻 /reload_vclog ➠ ʀᴇʟᴏᴀᴅ ᴠᴄ ʟᴏɢɢᴇʀ sᴛᴀᴛᴜs ᴍᴀɴᴜᴀʟʟʏ (ᴏɴʟʏ ʙᴏᴛ ᴏᴡɴᴇʀ)
-"""
+"""```
