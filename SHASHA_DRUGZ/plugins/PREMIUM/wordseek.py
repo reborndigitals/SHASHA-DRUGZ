@@ -513,7 +513,7 @@ async def cmd_wordseek(client, message: Message):
             f"<blockquote>⚠️ <b>ᴀ ɢᴀᴍᴇ ɪs ᴀʟʀᴇᴀᴅʏ ʀᴜɴɴɪɴɢ!</b>\n"
             f"ʟᴇɴɢᴛʜ: <b>{len(w)} ʟᴇᴛᴛᴇʀs</b> | ᴀᴛᴛᴇᴍᴘᴛs: {att_str}\n\n"
             f"ᴜsᴇ /wordseekend ᴛᴏ sᴛᴏᴘ ɪᴛ ғɪʀsᴛ.</blockquote>",
-            parse_mode="html",
+            #parse_mode="html",
             quote=True,
         )
     buttons = InlineKeyboardMarkup([[
@@ -526,7 +526,7 @@ async def cmd_wordseek(client, message: Message):
         f"4️⃣  <b>4 ʟᴇᴛᴛᴇʀs</b> — {DIFFICULTY_EMO[4]}  ({BASE_POINTS[4]} ʙᴀsᴇ ᴘᴛs)\n"
         f"5️⃣  <b>5 ʟᴇᴛᴛᴇʀs</b> — {DIFFICULTY_EMO[5]}  ({BASE_POINTS[5]} ʙᴀsᴇ ᴘᴛs)\n"
         f"6️⃣  <b>6 ʟᴇᴛᴛᴇʀs</b> — {DIFFICULTY_EMO[6]}  ({BASE_POINTS[6]} ʙᴀsᴇ ᴘᴛs)</blockquote>",
-        parse_mode="html",
+        #parse_mode="html",
         reply_markup=buttons,
         quote=True,
     )
@@ -560,7 +560,7 @@ async def cb_choose_length(client, cq: CallbackQuery):
         f"2️⃣0️⃣ <b>20</b> — ᴄᴏᴍғᴏʀᴛᴀʙʟᴇ\n"
         f"3️⃣0️⃣ <b>30</b> — ʀᴇʟᴀxᴇᴅ\n"
         f"♾️  <b>ᴜɴʟɪᴍɪᴛᴇᴅ</b></blockquote>",
-        parse_mode="html",
+        ##parse_mode="html",
         reply_markup=buttons,
     )
     await cq.answer()
@@ -606,7 +606,7 @@ async def cb_start_game(client, cq: CallbackQuery):
         f"🟨 ᴡʀᴏɴɢ ᴘᴏsɪᴛɪᴏɴ\n"
         f"🟥 ɴᴏᴛ ɪɴ ᴡᴏʀᴅ\n\n"
         f"ᴛʏᴘᴇ ʏᴏᴜʀ <b>{length}-ʟᴇᴛᴛᴇʀ</b> ɢᴜᴇss ʙᴇʟᴏᴡ 👇</blockquote>",
-        parse_mode="html",
+        #parse_mode="html",
     )
     await cq.answer("🎯 ɢᴀᴍᴇ sᴛᴀʀᴛᴇᴅ!")
 
@@ -618,7 +618,7 @@ async def cmd_wordseekend(client, message: Message):
     if not game:
         return await message.reply(
             "<blockquote>❌ ɴᴏ ᴀᴄᴛɪᴠᴇ ɢᴀᴍᴇ.</blockquote>",
-            parse_mode="html",
+            #parse_mode="html",
             quote=True,
         )
     word = game["word"]
@@ -627,7 +627,7 @@ async def cmd_wordseekend(client, message: Message):
         f"<blockquote>🛑 <b>ɢᴀᴍᴇ ᴇɴᴅᴇᴅ!</b>\n"
         f"ᴛʜᴇ ᴡᴏʀᴅ ᴡᴀs: <b>{word.upper()}</b>\n"
         f"ʙᴇᴛᴛᴇʀ ʟᴜᴄᴋ ɴᴇxᴛ ᴛɪᴍᴇ! 💪</blockquote>",
-        parse_mode="html",
+        #parse_mode="html",
         quote=True,
     )
 
@@ -664,7 +664,7 @@ async def handle_guess(client, message: Message):
             return await message.reply(
                 f"<blockquote>❌ <b>{guess.upper()}</b> — ɴᴏᴛ ᴀɴ ᴇɴɢʟɪsʜ ᴡᴏʀᴅ!\n"
                 f"ᴋɴᴏᴡɴ {length}-ʟᴇᴛᴛᴇʀ ᴡᴏʀᴅ ᴍᴀᴛᴜᴍᴇ ᴇɴᴛᴇʀ ᴘᴀɴᴀᴠᴜᴍ.</blockquote>",
-                parse_mode="html",
+                #parse_mode="html",
                 quote=True,
             )
 
@@ -673,7 +673,7 @@ async def handle_guess(client, message: Message):
             return await message.reply(
                 f"<blockquote>⚠️ <b>{guess.upper()}</b> — ᴀʟʀᴇᴀᴅʏ ɢᴜᴇssᴇᴅ!\n"
                 f"ᴅɪғғᴇʀᴇɴᴛ ᴡᴏʀᴅ ᴛʀʏ ᴘᴀɴᴀᴠᴜᴍ.</blockquote>",
-                parse_mode="html",
+                #parse_mode="html",
                 quote=True,
             )
 
@@ -708,7 +708,7 @@ async def handle_guess(client, message: Message):
                 f"ᴀᴛᴛᴇᴍᴘᴛs: {att_str}\n\n"
                 f"⭐ <b>+{total} ᴘᴏɪɴᴛs</b>\n"
                 f"   └ ʙᴀsᴇ {base}  •  ᴛɪᴍᴇ +{tb}  •  ᴀᴛᴛᴇᴍᴘᴛ +{ab}</blockquote>",
-                parse_mode="html",
+                #parse_mode="html",
                 quote=True,
             )
 
@@ -719,7 +719,7 @@ async def handle_guess(client, message: Message):
                 f"<blockquote><pre>{board}</pre></blockquote>\n"
                 f"<blockquote>💀 <b>ɢᴀᴍᴇ ᴏᴠᴇʀ!</b> ɴᴏ ᴍᴏʀᴇ ᴀᴛᴛᴇᴍᴘᴛs.\n"
                 f"ᴛʜᴇ ᴡᴏʀᴅ ᴡᴀs: <b>{word.upper()}</b></blockquote>",
-                parse_mode="html",
+                #parse_mode="html",
                 quote=True,
             )
 
@@ -737,7 +737,7 @@ async def handle_guess(client, message: Message):
             f"<blockquote><pre>{board}</pre></blockquote>\n"
             f"<blockquote>ᴀᴛᴛᴇᴍᴘᴛs: {att_str}</blockquote>"
             f"{hint_text}",
-            parse_mode="html",
+            #parse_mode="html",
             quote=True,
         )
 
@@ -770,7 +770,7 @@ async def cmd_wordseektop(client, message: Message):
     ])
     await message.reply(
         "<b>📊 ᴡᴏʀᴅsᴇᴇᴋ ʟᴇᴀᴅᴇʀʙᴏᴀʀᴅ</b>\nᴄʜᴏᴏsᴇ ᴀ ᴄᴀᴛᴇɢᴏʀʏ:",
-        parse_mode="html",
+        #parse_mode="html",
         reply_markup=buttons,
         quote=True,
     )
@@ -830,7 +830,7 @@ async def cmd_wordseekrank(client, message: Message):
         f"  📅 ᴡᴇᴇᴋ: <code>{c.get('weekly_points',0)}</code>\n"
         f"  🗓 ᴍᴏɴᴛʜ: <code>{c.get('monthly_points',0)}</code>\n"
         f"  🔥 sᴛʀᴇᴀᴋ: {streak_bar(c.get('streak',0))} | ʙᴇsᴛ: <code>{c.get('max_streak',0)}</code></blockquote>",
-        parse_mode="html",
+        #parse_mode="html",
         quote=True,
     )
 
@@ -859,7 +859,7 @@ async def cmd_wordseekhelp(client, message: Message):
         f"<blockquote><b>ᴘᴏɪɴᴛs</b>\n"
         f"4️⃣ {BASE_POINTS[4]} ʙᴀsᴇ  5️⃣ {BASE_POINTS[5]} ʙᴀsᴇ  6️⃣ {BASE_POINTS[6]} ʙᴀsᴇ\n"
         f"⚡ ᴛɪᴍᴇ ʙᴏɴᴜs + 🎯 ᴀᴛᴛᴇᴍᴘᴛ ʙᴏɴᴜs</blockquote>",
-        parse_mode="html",
+        #parse_mode="html",
         quote=True,
     )
 
