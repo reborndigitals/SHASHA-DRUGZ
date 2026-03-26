@@ -1,6 +1,5 @@
 # SHASHA_DRUGZ/plugins/PREMIUM/qualitybutton.py
 # ══════════════════════════════════════════════════════════════
-#  Quality Button Post System — SHASHA_DRUGZ Plugin
 #
 #  FEATURES:
 #    • Create posts from replied message (text/photo/video/animation/document)
