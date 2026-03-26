@@ -11,24 +11,26 @@ import re
 
 
 # -------------------- VC STARTED -------------------- #
-@app.on_message(filters.service & filters.video_chat_started, group=0)
+@app.on_message(filters.service & filters.video_chat_started, group=-1)
 @language
 async def brah(client, msg: Message, lang):
+    print("🔥 VC START TRIGGERED")  # DEBUG: confirm handler runs
     await msg.reply(lang["VC_START"])
 
 
 # -------------------- VC ENDED -------------------- #
-@app.on_message(filters.service & filters.video_chat_ended, group=0)
+@app.on_message(filters.service & filters.video_chat_ended, group=-1)
 @language
 async def brah2(client, msg: Message, lang):
+    print("🔥 VC END TRIGGERED")    # DEBUG: confirm handler runs
     await msg.reply(lang["VC_END"])
 
 
 # -------------------- VC MEMBERS INVITED -------------------- #
-@app.on_message(filters.service & filters.video_chat_members_invited, group=0)
+@app.on_message(filters.service & filters.video_chat_members_invited, group=-1)
 @language
 async def brah3(client, message: Message, lang):
-    # Do NOT overwrite the imported app; use client directly
+    print("🔥 VC INVITE TRIGGERED")  # DEBUG: confirm handler runs
     text = (
         f"<blockquote>**нɛʏ, {message.from_user.mention}**</blockquote>"
         f"<blockquote>{lang['VC_INVITE']}</blockquote>\n"
@@ -52,7 +54,7 @@ async def brah3(client, message: Message, lang):
             ])
         )
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error in VC invite handler: {e}")
 
 
 # -------------------- MATH -------------------- #
