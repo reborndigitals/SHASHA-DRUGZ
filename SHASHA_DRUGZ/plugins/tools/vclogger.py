@@ -112,59 +112,54 @@ async def get_group_call_participants(userbot, peer):
             return []
         return []
 
+# 🔥 FIXED monitor_vc_chat (WORKING VERSION)
 async def monitor_vc_chat(chat_id):
     userbot = await get_assistant(chat_id)
     if not userbot:
-        LOGGER.warning(f"monitor_vc_chat: No assistant for chat {chat_id}, stopping monitor.")
+        LOGGER.warning(f"No assistant for chat {chat_id}")
         return
+
+    peer = await userbot.resolve_peer(chat_id)
+
+    # Initial load
+    vc_active_users[chat_id] = set()
 
     while chat_id in active_vc_chats and await get_vc_logger_status(chat_id):
         try:
-            peer = await userbot.resolve_peer(chat_id)
-            
-            # 🔥 FIX: Short delay to ensure participants list is updated
-            await asyncio.sleep(2)
-            
             participants_list = await get_group_call_participants(userbot, peer)
-            new_users = set()
-            
-            for p in participants_list:
-                if hasattr(p, 'peer') and hasattr(p.peer, 'user_id'):
-                    new_users.add(p.peer.user_id)
 
-            # First-time initialisation: store current state and skip detection
-            if chat_id not in vc_active_users:
+            new_users = {
+                p.peer.user_id
+                for p in participants_list
+                if hasattr(p, "peer") and hasattr(p.peer, "user_id")
+            }
+
+            old_users = vc_active_users.get(chat_id, set())
+
+            # 🔥 Detect changes ONLY if real difference
+            joined = new_users - old_users
+            left = old_users - new_users
+
+            # 🔥 Prevent false triggers (VERY IMPORTANT)
+            if not old_users:
                 vc_active_users[chat_id] = new_users
+                await asyncio.sleep(3)
                 continue
 
-            current_users = vc_active_users[chat_id]
+            # 🔥 Handle joins
+            for user_id in joined:
+                asyncio.create_task(handle_user_join(chat_id, user_id, userbot))
 
-            # 🔥 DEBUG prints to see if users change
-            LOGGER.debug(f"VC Monitor: chat={chat_id} OLD={current_users} NEW={new_users}")
+            # 🔥 Handle leaves
+            for user_id in left:
+                asyncio.create_task(handle_user_leave(chat_id, user_id, userbot))
 
-            # 🔥 Use full set comparison for reliability
-            if new_users != current_users:
-                joined = new_users - current_users
-                left = current_users - new_users
-
-                tasks = []
-                for user_id in joined:
-                    tasks.append(handle_user_join(chat_id, user_id, userbot))
-                for user_id in left:
-                    tasks.append(handle_user_leave(chat_id, user_id, userbot))
-                
-                if tasks:
-                    await asyncio.gather(*tasks, return_exceptions=True)
-
-                # Update stored state
-                vc_active_users[chat_id] = new_users
+            vc_active_users[chat_id] = new_users
 
         except Exception as e:
-            # Silent error to prevent log spam, but log once for debugging
-            LOGGER.debug(f"monitor_vc_chat error in chat {chat_id}: {e}")
-        
-        # 🔥 Faster checking (every 2 seconds)
-        await asyncio.sleep(2)
+            LOGGER.error(f"VC Monitor error: {e}")
+
+        await asyncio.sleep(3)  # stable timing
 
 async def check_and_monitor_vc(chat_id):
     if not await get_vc_logger_status(chat_id):
@@ -217,6 +212,24 @@ async def handle_user_leave(chat_id, user_id, userbot):
         asyncio.create_task(delete_after_delay(sent_msg, 10))
     except:
         pass
+
+# 🔥 CRITICAL FIX 2: Start monitor only when VC starts
+@app.on_message(filters.service & filters.video_chat_started, group=-2)
+async def vc_started_handler(client, message: Message):
+    chat_id = message.chat.id
+
+    if await get_vc_logger_status(chat_id):
+        if chat_id not in active_vc_chats:
+            active_vc_chats.add(chat_id)
+            asyncio.create_task(monitor_vc_chat(chat_id))
+
+# 🔥 CRITICAL FIX 3: Stop when VC ends
+@app.on_message(filters.service & filters.video_chat_ended, group=-2)
+async def vc_ended_handler(client, message: Message):
+    chat_id = message.chat.id
+
+    active_vc_chats.discard(chat_id)
+    vc_active_users.pop(chat_id, None)
 
 # --- Command Handler ---
 
