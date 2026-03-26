@@ -14,7 +14,7 @@ import re
 @app.on_message(filters.service & filters.video_chat_started, group=-1)
 @language
 async def brah(client, msg: Message, lang):
-    print("🔥 VC START TRIGGERED")  # DEBUG: confirm handler runs
+    #print("🔥 VC START TRIGGERED")  # DEBUG: confirm handler runs
     await msg.reply(lang["VC_START"])
 
 
@@ -22,7 +22,7 @@ async def brah(client, msg: Message, lang):
 @app.on_message(filters.service & filters.video_chat_ended, group=-1)
 @language
 async def brah2(client, msg: Message, lang):
-    print("🔥 VC END TRIGGERED")    # DEBUG: confirm handler runs
+    #print("🔥 VC END TRIGGERED")    # DEBUG: confirm handler runs
     await msg.reply(lang["VC_END"])
 
 
@@ -30,7 +30,7 @@ async def brah2(client, msg: Message, lang):
 @app.on_message(filters.service & filters.video_chat_members_invited, group=-1)
 @language
 async def brah3(client, message: Message, lang):
-    print("🔥 VC INVITE TRIGGERED")  # DEBUG: confirm handler runs
+    #print("🔥 VC INVITE TRIGGERED")  # DEBUG: confirm handler runs
     text = (
         f"<blockquote>**нɛʏ, {message.from_user.mention}**</blockquote>"
         f"<blockquote>{lang['VC_INVITE']}</blockquote>\n"
