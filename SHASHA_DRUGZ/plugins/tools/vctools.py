@@ -1,35 +1,34 @@
+# SHASHA_DRUGZ/plugins/vctools.py
+
 from SHASHA_DRUGZ.utils.decorators.language import language
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from SHASHA_DRUGZ import app
 from config import OWNER_ID
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import aiohttp
 import re
-from pyrogram.types import InlineKeyboardButton as Button
 
 
 # -------------------- VC STARTED -------------------- #
-@app.on_message(filters.video_chat_started)
+@app.on_message(filters.service & filters.video_chat_started, group=0)
 @language
 async def brah(client, msg: Message, lang):
     await msg.reply(lang["VC_START"])
 
 
 # -------------------- VC ENDED -------------------- #
-@app.on_message(filters.video_chat_ended)
+@app.on_message(filters.service & filters.video_chat_ended, group=0)
 @language
 async def brah2(client, msg: Message, lang):
     await msg.reply(lang["VC_END"])
 
 
 # -------------------- VC MEMBERS INVITED -------------------- #
-@app.on_message(filters.video_chat_members_invited)
+@app.on_message(filters.service & filters.video_chat_members_invited, group=0)
 @language
 async def brah3(client, message: Message, lang):
-    app = message._client
-
+    # Do NOT overwrite the imported app; use client directly
     text = (
         f"<blockquote>**нɛʏ, {message.from_user.mention}**</blockquote>"
         f"<blockquote>{lang['VC_INVITE']}</blockquote>\n"
@@ -42,11 +41,12 @@ async def brah3(client, message: Message, lang):
             pass
 
     try:
-        invite_link = await app.export_chat_invite_link(message.chat.id)
-        add_link = f"https://t.me/{app.username}?startgroup=true"
+        # Use the client parameter (which is the same as app) to get invite link
+        invite_link = await client.export_chat_invite_link(message.chat.id)
+        add_link = f"https://t.me/{client.me.username}?startgroup=true"
 
         await message.reply(
-            f"\n{text}",
+            text,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(text=lang["VC_BUTTON"], url=add_link)],
             ])
@@ -74,16 +74,20 @@ def calculate_math(client, message: Message):
 
 # -------------------- SEARCH -------------------- #
 @app.on_message(filters.command(["spg"], ["/", "!", "."]))
-async def search(event):
-    msg = await event.reply("Searching...")
+async def search(client, message: Message):
+    msg = await message.reply("Searching...")
 
     async with aiohttp.ClientSession() as session:
         start = 1
+        query = message.text.split()[1] if len(message.text.split()) > 1 else ""
+        if not query:
+            await msg.edit("Please provide a search query.")
+            return
 
         url = (
             "https://content-customsearch.googleapis.com/customsearch/v1"
             f"?cx=ec8db9e1f9e41e65e"
-            f"&q={event.text.split()[1]}"
+            f"&q={query}"
             f"&key=AIzaSyAa8yy0GdcGPHdtD083HiGGx_S0vMPScDM"
             f"&start={start}"
         )
@@ -97,7 +101,8 @@ async def search(event):
             result = ""
 
             if not response.get("items"):
-                return await msg.edit("No results found!")
+                await msg.edit("No results found!")
+                return
 
             for item in response["items"]:
                 title = item["title"]
@@ -117,15 +122,18 @@ async def search(event):
 
                 result += f"{title}\n{link}\n\n"
 
+            # Create inline buttons for pagination using Pyrogram syntax
             prev_and_next_btns = [
-                Button.inline(
-                    "▶️Next▶️",
-                    data=f"next {start+10} {event.text.split()[1]}"
-                )
+                [
+                    InlineKeyboardButton(
+                        "▶️ Next ▶️",
+                        callback_data=f"next {start+10} {query}"
+                    )
+                ]
             ]
 
             await msg.edit(
                 result,
-                link_preview=False,
-                buttons=prev_and_next_btns
+                disable_web_page_preview=True,
+                reply_markup=InlineKeyboardMarkup(prev_and_next_btns) if prev_and_next_btns else None
             )
