@@ -852,7 +852,7 @@ async def handle_guess(client, message: Message):
 
     await message.reply(
         f"<blockquote>{board}</blockquote>\n"
-        f"<blockquote>ᴀᴛᴛᴇᴍᴘᴛs: {att_str}{hint_text}\n\n",
+        f"<blockquote>ᴀᴛᴛᴇᴍᴘᴛs: {att_str}{hint_text}</blockquote>",
         #f"📝 ᴀʟᴘʜᴀʙᴇᴛ ᴛʀᴀᴄᴋᴇʀ:\n{tracker}</blockquote>",
         quote=True,
     )
