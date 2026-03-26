@@ -1,4 +1,4 @@
-# SHASHA_DRUGZ/plugins/vclogger.py
+# SHASHA_DRUGZ/plugins/tools/vclogger.py
 
 import asyncio
 from logging import getLogger
@@ -292,4 +292,4 @@ __help__ = """
      • /vclogger status → sʜᴏᴡ ᴄᴜʀʀᴇɴᴛ ᴠᴄ ʟᴏɢɢɪɴɢ sᴛᴀᴛᴜs
 
 🔻 /reload_vclog ➠ ʀᴇʟᴏᴀᴅ ᴠᴄ ʟᴏɢɢᴇʀ sᴛᴀᴛᴜs ᴍᴀɴᴜᴀʟʟʏ (ᴏɴʟʏ ʙᴏᴛ ᴏᴡɴᴇʀ)
-"""```
+"""
