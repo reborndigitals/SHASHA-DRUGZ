@@ -214,7 +214,7 @@ async def handle_user_leave(chat_id, user_id, userbot):
         pass
 
 # 🔥 CRITICAL FIX 2: Start monitor only when VC starts
-@app.on_message(filters.service & filters.video_chat_started, group=-2)
+@app.on_message(filters.service & filters.video_chat_started, group=-10)
 async def vc_started_handler(client, message: Message):
     chat_id = message.chat.id
 
@@ -224,7 +224,7 @@ async def vc_started_handler(client, message: Message):
             asyncio.create_task(monitor_vc_chat(chat_id))
 
 # 🔥 CRITICAL FIX 3: Stop when VC ends
-@app.on_message(filters.service & filters.video_chat_ended, group=-2)
+@app.on_message(filters.service & filters.video_chat_ended, group=-10)
 async def vc_ended_handler(client, message: Message):
     chat_id = message.chat.id
 
