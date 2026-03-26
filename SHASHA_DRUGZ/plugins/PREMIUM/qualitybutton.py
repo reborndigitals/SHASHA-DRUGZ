@@ -549,11 +549,12 @@ async def cmd_cancelschedule(_, message: Message):
 #  CONVERSATION HANDLER
 #  Only fires for users who have an active _pending state.
 #  Strict command exclusion prevents any collision with other modules.
-#  Uses low priority (group=10) to let other command handlers run first.
+#  Uses low priority (group=10) and only on replied messages.
 # ══════════════════════════════════════════════════════════════
 
 @app.on_message(
     filters.text
+    & filters.reply                     # ✅ ONLY reply messages (to bot's prompts)
     & ~filters.service
     & ~filters.bot
     & ~filters.command([
