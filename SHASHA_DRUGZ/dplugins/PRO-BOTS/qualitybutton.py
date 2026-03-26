@@ -549,13 +549,18 @@ async def cmd_cancelschedule(_, message: Message):
 #  CONVERSATION HANDLER
 #  Only fires for users who have an active _pending state.
 #  Strict command exclusion prevents any collision with other modules.
-#  Uses low priority (group=10) to let other command handlers run first.
+#  Uses low priority (group=10) and only on replied messages.
 # ══════════════════════════════════════════════════════════════
 
 @Client.on_message(
     filters.text
+    & filters.reply                     # ✅ ONLY reply messages (to bot's prompts)
     & ~filters.service
     & ~filters.bot
+    & ~filters.command([
+        "createpost", "post", "editpost", "delpost",
+        "mypost", "schedulepost", "cancelschedule"
+    ])
     & ~filters.regex(r"^[!/\.]")          # block ALL command prefixes
     & (filters.private | filters.group),
     group=10                              # low priority
@@ -564,15 +569,12 @@ async def conversation_handler(_, message: Message):
     _pending_cleanup()   # TTL sweep on every incoming text
 
     # Safety checks
-    if not message.text:
-        return
-    if message.text.startswith(("/", "!", ".")):
+    if not message.text or not message.from_user:
         return
 
-    user_id = message.from_user.id if message.from_user else None
-    if not user_id:
-        return
+    user_id = message.from_user.id
 
+    # 🔥 CRITICAL FIX: ONLY run if user is in conversation
     state = _pending.get(user_id)
     if not state:
         return
@@ -839,7 +841,3 @@ __help__ = """
 <code>[Button1](https://example.com) [Button2](https://example.com)</code>
 <code>[Button3](https://example.com)</code>
 """
-
-MOD_TYPE = "PRO-BOTS"
-MOD_NAME = "Quality-Button"
-MOD_PRICE = "50"
