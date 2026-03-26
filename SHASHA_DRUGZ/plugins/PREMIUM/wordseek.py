@@ -26,15 +26,14 @@
 # ║  ✅ Streak tracking with fire bar in /wordseekrank                           ║
 # ║  ✅ 6-view leaderboard: Global/Chat x All-Time/Weekly/Monthly                ║
 # ║  ✅ Board display: 🟥🟨🟩 squares LEFT, ALL CAPS word RIGHT (per screenshot) ║
-# ║  ✅ [FIXED] Guess cleaning: non‑alpha chars stripped BEFORE length check    ║
-# ║  ✅ [FIXED] Length mismatch now gives a clear reply, not silent ignore      ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
+
 import os
 import json
 import random
 import logging
-import re
 from datetime import datetime, timedelta
+
 from pyrogram import filters
 from pyrogram.types import (
     Message,
@@ -42,19 +41,24 @@ from pyrogram.types import (
     InlineKeyboardButton,
     CallbackQuery,
 )
+
 # ── SHASHA client import ──────────────────────────────────────────────────────
 from SHASHA_DRUGZ import app
+
 # ── Optional Redis ────────────────────────────────────────────────────────────
 from config import REDIS_URL
+
 try:
     import redis.asyncio as aioredis
     REDIS_AVAILABLE = True
 except ImportError:
     REDIS_AVAILABLE = False
+
 REDIS_URL = os.getenv(
     "REDIS_URL",
     "redis://default:LMXY37qj1iU91xEci0uaCcQa6kBEn4G3@redis-18407.crce286.ap-south-1-1.ec2.cloud.redislabs.com:18407",
 )
+
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -279,6 +283,7 @@ WORDS = {
         "within", "wonder", "wooden", "worker", "zealot", "zombie",
     ],
 }
+
 # ── Pre-build sets for O(1) lookup ────────────────────────────────────────────
 WORD_SETS: dict[int, set] = {length: set(words) for length, words in WORDS.items()}
 
@@ -287,9 +292,12 @@ WORD_SETS: dict[int, set] = {length: set(words) for length, words in WORDS.items
 # ═══════════════════════════════════════════════════════════════════════════════
 BASE_POINTS    = {4: 8,  5: 10, 6: 14}
 DIFFICULTY_EMO = {4: "🟢 Easy", 5: "🟡 Medium", 6: "🔴 Hard"}
+
 # Available guess limits; 0 = unlimited (♾️)
 GUESS_LIMITS   = [10, 15, 20, 30, 0]
+
 GAME_TTL       = 3600   # Redis TTL per active game (1 hour)
+
 # Commands excluded from the guess handler
 _WS_COMMANDS = [
     "wordseek", "wordseekend", "wordseektop",
@@ -302,6 +310,7 @@ _WS_COMMANDS = [
 _redis_client = None
 _mem_games: dict = {}    # chat_id -> game dict
 _mem_stats: dict = {}    # "scope:user_id" -> stats dict
+
 
 async def _get_redis():
     global _redis_client
@@ -333,6 +342,7 @@ async def _get_redis():
         _redis_client = None
         return None
 
+
 # ── Game helpers ──────────────────────────────────────────────────────────────
 async def set_game(chat_id: int, game: dict) -> None:
     r = await _get_redis()
@@ -344,6 +354,7 @@ async def set_game(chat_id: int, game: dict) -> None:
             logger.warning("[WordSeek] Redis set_game error: %s", exc)
     _mem_games[chat_id] = game
 
+
 async def get_game(chat_id: int) -> dict | None:
     r = await _get_redis()
     if r:
@@ -354,6 +365,7 @@ async def get_game(chat_id: int) -> dict | None:
             logger.warning("[WordSeek] Redis get_game error: %s", exc)
     return _mem_games.get(chat_id)
 
+
 async def del_game(chat_id: int) -> None:
     r = await _get_redis()
     if r:
@@ -363,6 +375,7 @@ async def del_game(chat_id: int) -> None:
         except Exception as exc:
             logger.warning("[WordSeek] Redis del_game error: %s", exc)
     _mem_games.pop(chat_id, None)
+
 
 # ── Stats helpers ─────────────────────────────────────────────────────────────
 def _blank_stats(username: str) -> dict:
@@ -379,12 +392,14 @@ def _blank_stats(username: str) -> dict:
         "month_start":    now,
     }
 
+
 def _safe_fromisoformat(s: str) -> datetime:
     try:
         clean = s.split("+")[0].rstrip("Z")
         return datetime.fromisoformat(clean)
     except Exception:
         return datetime.utcnow()
+
 
 def _apply_period_reset(data: dict) -> dict:
     now         = datetime.utcnow()
@@ -398,6 +413,7 @@ def _apply_period_reset(data: dict) -> dict:
         data["month_start"]    = now.isoformat()
     return data
 
+
 async def _load_stats(scope: str, user_id: int, username: str) -> dict:
     key = f"ws:stats:{scope}:{user_id}"
     r   = await _get_redis()
@@ -409,6 +425,7 @@ async def _load_stats(scope: str, user_id: int, username: str) -> dict:
             logger.warning("[WordSeek] Redis _load_stats error: %s", exc)
     return _mem_stats.get(f"{scope}:{user_id}", _blank_stats(username))
 
+
 async def _save_stats(scope: str, user_id: int, data: dict) -> None:
     key = f"ws:stats:{scope}:{user_id}"
     r   = await _get_redis()
@@ -419,6 +436,7 @@ async def _save_stats(scope: str, user_id: int, data: dict) -> None:
         except Exception as exc:
             logger.warning("[WordSeek] Redis _save_stats error: %s", exc)
     _mem_stats[f"{scope}:{user_id}"] = data
+
 
 async def update_stats(
     chat_id:  int,
@@ -442,6 +460,7 @@ async def update_stats(
         else:
             data["streak"] = 0
         await _save_stats(scope, user_id, data)
+
 
 async def get_leaderboard(scope: str, period: str = "all", limit: int = 10) -> list:
     pts_key = {
@@ -477,6 +496,7 @@ async def get_leaderboard(scope: str, period: str = "all", limit: int = 10) -> l
     results.sort(key=lambda x: x[2], reverse=True)
     return results[:limit]
 
+
 async def get_user_stats(chat_id: int, user_id: int, username: str) -> dict:
     g_data = await _load_stats("global",          user_id, username)
     c_data = await _load_stats(f"chat:{chat_id}", user_id, username)
@@ -485,12 +505,14 @@ async def get_user_stats(chat_id: int, user_id: int, username: str) -> dict:
         "chat":   _apply_period_reset(c_data),
     }
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  GAME LOGIC HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 _SQ_GREEN  = "🟩"
 _SQ_YELLOW = "🟨"
 _SQ_RED    = "🟥"
+
 
 def build_feedback(word: str, guess: str) -> list[str]:
     """
@@ -513,6 +535,7 @@ def build_feedback(word: str, guess: str) -> list[str]:
             word_pool[word_pool.index(ch)] = None
     return marks
 
+
 def build_board(word: str, guesses: list[str]) -> str:
     """
     Render all guesses as a board:
@@ -524,6 +547,7 @@ def build_board(word: str, guesses: list[str]) -> str:
         squares = "".join(build_feedback(word, g))
         lines.append(f"{squares}  {g.upper()}")
     return "\n".join(lines)
+
 
 def build_alphabet_tracker(word: str, guesses: list) -> str:
     """Live per-letter 🟩🟨🟥 grid, rendered in rows of 9."""
@@ -557,9 +581,11 @@ def build_alphabet_tracker(word: str, guesses: list) -> str:
         rows.append(" ".join(row))
     return "\n".join(rows)
 
+
 def _fmt_attempts(attempts: int, max_att) -> str:
     """Format attempt counter respecting unlimited (None) max."""
     return f"{attempts}/♾️" if max_att is None else f"{attempts}/{max_att}"
+
 
 def calc_points(length: int, attempts: int, elapsed_secs: float, max_att=None):
     """Returns (total, base, time_bonus, attempt_bonus)."""
@@ -568,6 +594,7 @@ def calc_points(length: int, attempts: int, elapsed_secs: float, max_att=None):
     attempt_bonus = max(0, ref_max - attempts)
     time_bonus    = max(0, int((300 - elapsed_secs) / 60))
     return base + attempt_bonus + time_bonus, base, time_bonus, attempt_bonus
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  COMMAND HANDLERS
@@ -605,16 +632,19 @@ async def cmd_wordseek(client, message: Message):
         quote=True,
     )
 
+
 # ── Step 1 callback: length chosen → show guess-limit buttons ─────────────────
 @app.on_callback_query(filters.regex(r"^ws_start_([456])$"))
 async def cb_choose_length(client, cq: CallbackQuery):
     """Length selected — ask for guess limit next."""
     chat_id  = cq.message.chat.id
     length   = int(cq.data[-1])
+
     # Guard: another game may have started while the user was deciding
     existing = await get_game(chat_id)
     if existing:
         return await cq.answer("❌ ᴀ ɢᴀᴍᴇ ɪs ᴀʟʀᴇᴀᴅʏ ʀᴜɴɴɪɴɢ!", show_alert=True)
+
     # Embed chat_id in callback_data so Group A's button never starts Group B's game
     buttons = InlineKeyboardMarkup([
         [
@@ -656,6 +686,7 @@ async def cb_choose_length(client, cq: CallbackQuery):
     )
     await cq.answer()
 
+
 # ── Step 2 callback: limit chosen → start game ────────────────────────────────
 @app.on_callback_query(filters.regex(r"^ws_limit_(-?\d+)_([456])_(\d+)$"))
 async def cb_start_game(client, cq: CallbackQuery):
@@ -666,14 +697,18 @@ async def cb_start_game(client, cq: CallbackQuery):
     length      = int(parts[3])
     limit_raw   = int(parts[4])
     chat_id     = cq.message.chat.id
+
     # Strict group isolation: only honour the button in the chat it was created for
     if chat_id != origin_chat:
         return await cq.answer("❌ ᴛʜɪs ʙᴜᴛᴛᴏɴ ɪs ɴᴏᴛ ғᴏʀ ʏᴏᴜʀ ɢʀᴏᴜᴘ!", show_alert=True)
+
     existing = await get_game(chat_id)
     if existing:
         return await cq.answer("❌ ᴀ ɢᴀᴍᴇ ɪs ᴀʟʀᴇᴀᴅʏ ʀᴜɴɴɪɴɢ!", show_alert=True)
+
     # limit_raw == 0  →  unlimited
     max_att = None if limit_raw == 0 else limit_raw
+
     word = random.choice(WORDS[length])
     game = {
         "word":         word,
@@ -685,7 +720,9 @@ async def cb_start_game(client, cq: CallbackQuery):
         "started_by":   cq.from_user.id,
     }
     await set_game(chat_id, game)
+
     att_display = "♾️ ᴜɴʟɪᴍɪᴛᴇᴅ" if max_att is None else f"{max_att} ɢᴜᴇssᴇs"
+
     await cq.message.edit_text(
         f"<blockquote>🎮 **ᴡᴏʀᴅsᴇᴇᴋ sᴛᴀʀᴛᴇᴅ!** {DIFFICULTY_EMO[length]}</blockquote>\n"
         f"<blockquote>ɢᴜᴇss ᴛʜᴇ **{length}-ʟᴇᴛᴛᴇʀ** ᴇɴɢʟɪsʜ ᴡᴏʀᴅ!\n"
@@ -696,6 +733,7 @@ async def cb_start_game(client, cq: CallbackQuery):
         f"ᴛʏᴘᴇ ʏᴏᴜʀ {length}-ʟᴇᴛᴛᴇʀ ɢᴜᴇss ʙᴇʟᴏᴡ 👇</blockquote>"
     )
     await cq.answer("🎯 ɢᴀᴍᴇ sᴛᴀʀᴛᴇᴅ! ɢᴏᴏᴅ ʟᴜᴄᴋ!")
+
 
 @app.on_message(filters.command("wordseekend"))
 async def cmd_wordseekend(client, message: Message):
@@ -713,6 +751,7 @@ async def cmd_wordseekend(client, message: Message):
         quote=True,
     )
 
+
 # ── Guess handler ─────────────────────────────────────────────────────────────
 @app.on_message(
     filters.text & ~filters.command(_WS_COMMANDS),
@@ -723,20 +762,17 @@ async def handle_guess(client, message: Message):
     game    = await get_game(chat_id)
     if not game:
         return
+
     user = message.from_user
     if not user:
         return
 
-    # ---------- 🔥 FIX: Clean guess first ----------
-    guess = re.sub(r"[^a-zA-Z]", "", message.text).lower()
+    guess  = message.text.strip().lower()
     length = game["length"]
 
-    # ---------- 🔥 FIX: Length mismatch -> explicit feedback ----------
-    if len(guess) != length:
-        return await message.reply(
-            f"❌ Send exactly {length} letter word.",
-            quote=True
-        )
+    # ── Silent skip: wrong length or non-alpha (not meant as a guess) ─────────
+    if len(guess) != length or not guess.isalpha():
+        return
 
     # ── Validate: must be a known English word ────────────────────────────────
     if guess not in WORD_SETS[length]:
@@ -756,6 +792,7 @@ async def handle_guess(client, message: Message):
 
     word    = game["word"]
     max_att = game["max_attempts"]   # None = unlimited
+
     game["attempts"] = game.get("attempts", 0) + 1
     game.setdefault("guesses", []).append(guess)
     await set_game(chat_id, game)
@@ -802,6 +839,7 @@ async def handle_guess(client, message: Message):
 
     # ── CONTINUE ──────────────────────────────────────────────────────────────
     tracker = build_alphabet_tracker(word, game["guesses"])
+
     # Warn only when a finite limit is set and 3 or fewer attempts remain
     if max_att is not None:
         remaining = max_att - attempts
@@ -811,12 +849,14 @@ async def handle_guess(client, message: Message):
         )
     else:
         hint_text = ""   # unlimited — no warning needed
+
     await message.reply(
         f"<blockquote>{board}</blockquote>\n"
         f"<blockquote>ᴀᴛᴛᴇᴍᴘᴛs: {att_str}{hint_text}\n\n",
         #f"📝 ᴀʟᴘʜᴀʙᴇᴛ ᴛʀᴀᴄᴋᴇʀ:\n{tracker}</blockquote>",
         quote=True,
     )
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  LEADERBOARD
@@ -846,6 +886,7 @@ async def cmd_wordseektop(client, message: Message):
         quote=True,
     )
 
+
 @app.on_callback_query(filters.regex(r"^ws_lb_"))
 async def cb_leaderboard(client, cq: CallbackQuery):
     parts     = cq.data.split("_", 3)
@@ -874,6 +915,7 @@ async def cb_leaderboard(client, cq: CallbackQuery):
     await cq.message.edit_text("\n".join(lines))
     await cq.answer()
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  PERSONAL RANK
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -884,10 +926,12 @@ async def cmd_wordseekrank(client, message: Message):
     all_s   = await get_user_stats(chat_id, user.id, user.username or user.first_name)
     g = all_s["global"]
     c = all_s["chat"]
+
     def streak_bar(n: int) -> str:
         if n == 0:
             return "—"
         return "🔥" * min(n, 10) + (f" x{n}" if n > 10 else "")
+
     await message.reply(
         f"<blockquote>📊 **{user.mention}'s ᴡᴏʀᴅsᴇᴇᴋ sᴛᴀᴛs**</blockquote>\n"
         f"<blockquote>**🌍 ɢʟᴏʙᴀʟ**\n"
@@ -904,6 +948,7 @@ async def cmd_wordseekrank(client, message: Message):
         f"  🔥 sᴛʀᴇᴀᴋ: {streak_bar(c.get('streak', 0))}  |  ʙᴇsᴛ: `{c.get('max_streak', 0)}`</blockquote>",
         quote=True,
     )
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  HELP
@@ -956,6 +1001,7 @@ async def cmd_wordseekhelp(client, message: Message):
         "ᴏᴛʜᴇʀᴡɪsᴇ ᴛʜᴇ ʙᴏᴛ ᴄᴀɴɴᴏᴛ ʀᴇᴀᴅ ɢʀᴏᴜᴘ ᴍᴇssᴀɢᴇs.</blockquote>",
         quote=True,
     )
+
 
 __menu__     = "CMD_GAMES"
 __mod_name__ = "H_B_79"
