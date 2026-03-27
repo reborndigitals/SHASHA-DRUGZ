@@ -46,13 +46,18 @@ IG_TOTP_SECRET       = os.getenv("IG_TOTP_SECRET", "3IGFI5H7SACGQQVP7W7VCTCX76O6
 
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
 COOKIES_DIR = os.path.join(os.getcwd(), "cookies")
 os.makedirs(COOKIES_DIR, exist_ok=True)
+
 COOKIE_FILE = os.path.join(COOKIES_DIR, "instagram_cookies.txt")
+
 IG_PROFILE_DIR = os.path.join(os.getcwd(), "ig_playwright_profile")
 os.makedirs(IG_PROFILE_DIR, exist_ok=True)
+
 IG_CACHE_DIR = os.path.join(os.getcwd(), "igcache")
 os.makedirs(IG_CACHE_DIR, exist_ok=True)
+
 SCREENSHOT_DIR = os.path.join(os.getcwd(), "ig_screenshots")
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
@@ -71,19 +76,19 @@ SHORTCODE_REGEX = re.compile(
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  USER-AGENT ROTATION  (realistic desktop Chrome UAs only)
+#  USER-AGENT ROTATION
 # ══════════════════════════════════════════════════════════════════════════════
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
 ]
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -242,38 +247,22 @@ def _write_netscape_cookies(cookies: list, filepath: str) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 #  HUMAN-LIKE TYPING
 # ══════════════════════════════════════════════════════════════════════════════
-async def _human_type(page, selector_or_locator, text: str) -> None:
-    """
-    Types text character-by-character with random delays to mimic human input.
-    Accepts either a CSS selector string or an already-resolved Locator.
-    """
+async def _human_type(page, locator, text: str) -> None:
     try:
-        if isinstance(selector_or_locator, str):
-            el = page.locator(selector_or_locator)
-        else:
-            el = selector_or_locator
-
-        await el.click()
-        await page.wait_for_timeout(random.randint(200, 500))
-
-        # Clear existing value first
-        await el.press("Control+a")
-        await page.wait_for_timeout(random.randint(100, 300))
-        await el.press("Delete")
-        await page.wait_for_timeout(random.randint(100, 300))
-
+        await locator.click()
+        await page.wait_for_timeout(random.randint(300, 600))
+        await locator.press("Control+a")
+        await page.wait_for_timeout(random.randint(100, 200))
+        await locator.press("Delete")
+        await page.wait_for_timeout(random.randint(200, 400))
         for char in text:
-            await el.press(char)
-            await page.wait_for_timeout(random.randint(60, 200))
-
+            await locator.press(char)
+            await page.wait_for_timeout(random.randint(80, 220))
         await page.wait_for_timeout(random.randint(400, 900))
     except Exception as e:
         logger.warning(f"_human_type fallback to fill(): {e}")
         try:
-            if isinstance(selector_or_locator, str):
-                await page.fill(selector_or_locator, text)
-            else:
-                await selector_or_locator.fill(text)
+            await locator.fill(text)
         except Exception as e2:
             logger.error(f"_human_type fill also failed: {e2}")
 
@@ -303,9 +292,6 @@ async def _log_page_state(page, label: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 async def _dismiss_popups(page) -> None:
     dismiss_targets = [
-        ("cookie consent",    "[data-testid='cookie-policy-manage-dialog-accept-button'], "
-                              "button:has-text('Allow all cookies'), "
-                              "button:has-text('Allow essential and optional cookies')"),
         ("save login info",   "button:has-text('Save info'), button:has-text('Save Info')"),
         ("not now (generic)", "button:has-text('Not now'), button:has-text('Not Now')"),
         ("notifications",     "button:has-text('Not Now'), button:has-text('Turn On')"),
@@ -330,11 +316,7 @@ async def _check_for_checkpoint(page) -> bool:
     ]
     current_url = page.url.lower()
     if any(sig in current_url for sig in checkpoint_signals):
-        logger.error(
-            f"🚨 Instagram CHECKPOINT detected! URL: {page.url}\n"
-            "Resolve the challenge manually in a real browser, export cookies,\n"
-            f"and place them at: {COOKIE_FILE}"
-        )
+        logger.error(f"🚨 Instagram CHECKPOINT detected! URL: {page.url}")
         return True
     try:
         body_text = (await page.inner_text("body")).lower()
@@ -379,20 +361,12 @@ async def _handle_2fa(page) -> bool:
     if fa_type == "none":
         return True
     if fa_type == "sms":
-        logger.error(
-            "🔒 Instagram requires SMS 2FA – cannot automate.\n"
-            "Disable SMS 2FA or switch to authenticator app + set IG_TOTP_SECRET."
-        )
-        await send_to_log_group(
-            text="🔒 **Instagram SMS 2FA Required – Cannot Automate**\n#2FA"
-        )
+        logger.error("🔒 Instagram requires SMS 2FA – cannot automate.")
+        await send_to_log_group(text="🔒 **Instagram SMS 2FA Required – Cannot Automate**\n#2FA")
         return False
     if fa_type == "totp":
         if not IG_TOTP_SECRET:
             logger.error("🔒 TOTP 2FA required but IG_TOTP_SECRET not set.")
-            await send_to_log_group(
-                text="🔒 **Instagram TOTP 2FA Required – IG_TOTP_SECRET Not Set**\n#2FA"
-            )
             return False
         try:
             import pyotp
@@ -444,192 +418,335 @@ async def _verify_login_success(context, page) -> bool:
             f"🔍 Login verification:\n"
             f"   URL           : {current_url}\n"
             f"   Title         : {current_title}\n"
-            f"   Cookies found : {cookie_names}\n"
+            f"   All cookies   : {cookie_names}\n"
             f"   Auth cookies  : {found_auth or 'NONE ← login failed'}"
         )
         if found_auth:
             logger.info(f"✅ Login verified via session cookies: {found_auth}")
             return True
+        # Also check URL – if we're past login page, probably logged in
+        if "instagram.com" in current_url and "login" not in current_url.lower() and "accounts" not in current_url.lower():
+            if "sessionid" in str(all_cookies).lower():
+                return True
         return False
     except Exception as e:
         logger.error(f"_verify_login_success error: {e}")
         return False
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  FIND INPUT FIELDS  (handles old + new Instagram login page layouts)
+#  STEALTH INIT SCRIPT  (enhanced)
 # ══════════════════════════════════════════════════════════════════════════════
-async def _find_username_input(page):
+STEALTH_SCRIPT = """
+    // Remove webdriver indicator
+    Object.defineProperty(navigator, 'webdriver', {
+        get: () => false,
+        configurable: true
+    });
+
+    // Spoof automation-related properties
+    delete navigator.__proto__.webdriver;
+
+    // Realistic plugins
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+            return {
+                length: 3,
+                0: {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
+                1: {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
+                2: {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''},
+                item: function(idx) { return this[idx]; },
+                namedItem: function(name) {
+                    for (let k in this) {
+                        if (this[k] && this[k].name === name) return this[k];
+                    }
+                    return null;
+                },
+                refresh: function() {}
+            };
+        }
+    });
+
+    // Languages
+    Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en'],
+        configurable: true
+    });
+
+    // Chrome object
+    window.chrome = {
+        app: {
+            isInstalled: false,
+            InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+            RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
+        },
+        runtime: {
+            OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
+            OnRestartRequiredReason: { APP_UPDATE: 'app_update', GC_PRESSURE: 'gc_pressure', OS_UPDATE: 'os_update' },
+            PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+            PlatformNaclArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+            PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
+            RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' }
+        }
+    };
+
+    // Permissions
+    const originalQuery = window.navigator.permissions && window.navigator.permissions.query;
+    if (originalQuery) {
+        window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications'
+                ? Promise.resolve({ state: Notification.permission })
+                : originalQuery(parameters)
+        );
+    }
+
+    // Hardware
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+    Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
+
+    // Realistic screen values
+    Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
+    Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
+
+    // Prevent iframe detection
+    try {
+        Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+            get: function() { return window; }
+        });
+    } catch(e) {}
+
+    // Canvas fingerprint randomization
+    const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function(type) {
+        return origToDataURL.apply(this, arguments);
+    };
+"""
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  LOGIN VIA /accounts/login/ CLASSIC PATH (most reliable)
+# ══════════════════════════════════════════════════════════════════════════════
+async def _try_classic_login(page, context) -> bool:
     """
-    Instagram redesigned their login page (?flo=true).
-    The username field may now use different attributes.
-    Try multiple selectors in order of specificity.
+    Uses the classic /accounts/login/ page with the traditional form.
+    This is more reliable than the new ?flo=true React layout.
     """
-    candidates = [
+    logger.info("🔐 Attempting classic login path: /accounts/login/")
+
+    try:
+        # Navigate directly with mobile-friendly headers to get simpler DOM
+        await page.goto(
+            "https://www.instagram.com/accounts/login/",
+            wait_until="networkidle",
+            timeout=60_000,
+        )
+        await page.wait_for_timeout(random.randint(3000, 5000))
+    except Exception as e:
+        logger.warning(f"Classic login navigation warning: {e}")
+        try:
+            await page.goto(
+                "https://www.instagram.com/accounts/login/",
+                wait_until="domcontentloaded",
+                timeout=45_000,
+            )
+            await page.wait_for_timeout(random.randint(4000, 6000))
+        except Exception as e2:
+            logger.error(f"Classic login navigation failed: {e2}")
+            return False
+
+    # Wait for username input with extended timeout
+    username_input = None
+    password_input = None
+
+    # Comprehensive selectors for classic page
+    username_selectors = [
         "input[name='username']",
-        "input[name='email']",
-        "input[aria-label='Mobile number, username or email']",
+        "input[aria-label='Phone number, username, or email']",
         "input[aria-label*='username']",
         "input[aria-label*='email']",
-        "input[autocomplete='username']",
         "input[type='text']",
-        "input[type='email']",
     ]
-    for sel in candidates:
+
+    for sel in username_selectors:
         try:
+            await page.wait_for_selector(sel, timeout=8000, state="visible")
             el = page.locator(sel)
-            count = await el.count()
-            if count > 0:
-                # Make sure it's visible
-                if await el.first.is_visible():
-                    logger.info(f"✅ Username field found via selector: {sel}")
-                    return el.first
+            if await el.count() > 0 and await el.first.is_visible():
+                username_input = el.first
+                logger.info(f"✅ Classic: username field found via {sel}")
+                break
         except Exception:
             continue
-    logger.error("❌ Username input not found with any known selector")
-    return None
 
-async def _find_password_input(page):
-    """
-    Find the password field with multiple fallback selectors.
-    """
-    candidates = [
+    if not username_input:
+        logger.error("❌ Classic login: username field not found")
+        return False
+
+    # Find password field
+    password_selectors = [
         "input[name='password']",
         "input[type='password']",
         "input[aria-label='Password']",
         "input[aria-label*='assword']",
-        "input[autocomplete='current-password']",
     ]
-    for sel in candidates:
+
+    for sel in password_selectors:
         try:
             el = page.locator(sel)
-            count = await el.count()
-            if count > 0:
-                if await el.first.is_visible():
-                    logger.info(f"✅ Password field found via selector: {sel}")
-                    return el.first
+            if await el.count() > 0 and await el.first.is_visible():
+                password_input = el.first
+                logger.info(f"✅ Classic: password field found via {sel}")
+                break
         except Exception:
             continue
-    logger.error("❌ Password input not found with any known selector")
-    return None
 
-async def _find_submit_button(page):
-    """
-    Find the login submit button with multiple fallback selectors.
-    The new Instagram page uses a blue 'Log in' button.
-    """
-    candidates = [
+    if not password_input:
+        logger.error("❌ Classic login: password field not found")
+        return False
+
+    # Type credentials
+    logger.info(f"✍️  Entering username: {IG_USERNAME}")
+    await _human_type(page, username_input, IG_USERNAME)
+    await page.wait_for_timeout(random.randint(500, 1000))
+
+    logger.info("✍️  Entering password")
+    await _human_type(page, password_input, IG_PASSWORD)
+    await page.wait_for_timeout(random.randint(700, 1200))
+
+    # Find and click submit
+    submit_selectors = [
         "button[type='submit']",
         "button:has-text('Log in')",
         "button:has-text('Log In')",
-        "button:has-text('Login')",
-        "div[role='button']:has-text('Log in')",
-        "div[role='button']:has-text('Login')",
-        "[data-testid='royal_login_button']",
     ]
-    for sel in candidates:
+
+    submit_btn = None
+    for sel in submit_selectors:
         try:
             el = page.locator(sel)
-            count = await el.count()
-            if count > 0:
-                if await el.first.is_visible():
-                    logger.info(f"✅ Submit button found via selector: {sel}")
-                    return el.first
+            if await el.count() > 0 and await el.first.is_visible():
+                submit_btn = el.first
+                logger.info(f"✅ Classic: submit button found via {sel}")
+                break
         except Exception:
             continue
-    logger.error("❌ Submit button not found with any known selector")
-    return None
+
+    if submit_btn:
+        await submit_btn.click()
+        logger.info("🖱️  Submit button clicked")
+    else:
+        await password_input.press("Enter")
+        logger.info("🖱️  Enter pressed on password field")
+
+    # Wait for navigation after login
+    try:
+        await page.wait_for_url(
+            lambda url: "login" not in url.lower() and "accounts" not in url.lower(),
+            timeout=15_000,
+        )
+        logger.info(f"✅ Navigated away from login page → {page.url}")
+    except Exception:
+        # Not necessarily an error – check cookies
+        await page.wait_for_timeout(8000)
+
+    return await _verify_login_success(context, page)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  DETECT WHICH LOGIN URL IS ACTIVE
+#  LOGIN VIA MOBILE API (most stealth-friendly)
 # ══════════════════════════════════════════════════════════════════════════════
-async def _navigate_to_login(page) -> bool:
+async def _try_mobile_login(page, context) -> bool:
     """
-    Instagram sometimes serves the new layout at /?flo=true instead of
-    /accounts/login/. Try both and wait for the username input to appear.
-    Returns True if login page loaded successfully.
+    Uses Instagram's mobile web login which has a simpler DOM and
+    is less likely to trigger bot detection.
     """
-    login_urls = [
-        "https://www.instagram.com/accounts/login/",
-        "https://www.instagram.com/?flo=true",
-        "https://www.instagram.com/",
-    ]
-    for url in login_urls:
+    logger.info("📱 Attempting mobile web login path")
+
+    try:
+        # Set mobile viewport first
+        await page.set_viewport_size({"width": 390, "height": 844})
+
+        await page.goto(
+            "https://www.instagram.com/accounts/login/?source=auth_switcher",
+            wait_until="domcontentloaded",
+            timeout=45_000,
+        )
+        await page.wait_for_timeout(random.randint(4000, 6500))
+
+        # Try to accept any cookie banner
         try:
-            logger.info(f"🔗 Trying login URL: {url}")
-            await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
-            # Give React time to mount
-            await page.wait_for_timeout(random.randint(2500, 4000))
+            cookie_btn = page.locator("button:has-text('Allow all cookies'), button:has-text('Accept All')")
+            if await cookie_btn.count() > 0:
+                await cookie_btn.first.click()
+                await page.wait_for_timeout(2000)
+        except Exception:
+            pass
 
-            # Try to wait for username field
-            try:
-                await page.wait_for_selector(
-                    "input[name='username'], "
-                    "input[name='email'], "
-                    "input[aria-label*='username'], "
-                    "input[aria-label*='Mobile number'], "
-                    "input[type='text']",
-                    timeout=12_000,
-                    state="visible",
-                )
-                logger.info(f"✅ Login form detected at: {url}")
-                return True
-            except Exception:
-                logger.warning(f"⚠️ Login form not detected at {url} – trying next ...")
-                continue
-        except Exception as e:
-            logger.warning(f"⚠️ Navigation to {url} failed: {e}")
-            continue
+        # Look for username input
+        try:
+            await page.wait_for_selector(
+                "input[name='username'], input[name='email'], input[aria-label*='username']",
+                timeout=12_000,
+                state="visible"
+            )
+        except Exception:
+            logger.warning("Mobile login: username field wait timed out")
+            return False
 
-    logger.error("❌ Could not load Instagram login page from any known URL")
-    return False
+        username_input = None
+        for sel in ["input[name='username']", "input[name='email']", "input[type='text']"]:
+            el = page.locator(sel)
+            if await el.count() > 0 and await el.first.is_visible():
+                username_input = el.first
+                break
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  STEALTH INIT SCRIPT
-# ══════════════════════════════════════════════════════════════════════════════
-STEALTH_SCRIPT = """
-    // Hide webdriver flag
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        if not username_input:
+            logger.error("Mobile login: username field not found")
+            return False
 
-    // Realistic language + plugin values
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-    Object.defineProperty(navigator, 'plugins', {
-        get: () => {
-            const p = { length: 3 };
-            p[0] = { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' };
-            p[1] = { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' };
-            p[2] = { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' };
-            return p;
-        }
-    });
+        password_input = None
+        for sel in ["input[name='password']", "input[type='password']"]:
+            el = page.locator(sel)
+            if await el.count() > 0 and await el.first.is_visible():
+                password_input = el.first
+                break
 
-    // Chrome runtime object
-    window.chrome = {
-        runtime: {},
-        loadTimes: function() {},
-        csi: function() {},
-        app: {}
-    };
+        if not password_input:
+            logger.error("Mobile login: password field not found")
+            return False
 
-    // Override permissions query to avoid detection
-    const originalQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) => (
-        parameters.name === 'notifications'
-            ? Promise.resolve({ state: Notification.permission })
-            : originalQuery(parameters)
-    );
+        await _human_type(page, username_input, IG_USERNAME)
+        await page.wait_for_timeout(random.randint(600, 1100))
+        await _human_type(page, password_input, IG_PASSWORD)
+        await page.wait_for_timeout(random.randint(700, 1300))
 
-    // Prevent iframe detection
-    Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
-        get: function() { return window; }
-    });
+        # Submit
+        submit_btn = None
+        for sel in ["button[type='submit']", "button:has-text('Log in')", "button:has-text('Log In')"]:
+            el = page.locator(sel)
+            if await el.count() > 0:
+                submit_btn = el.first
+                break
 
-    // Spoof hardware concurrency and memory
-    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+        if submit_btn:
+            await submit_btn.click()
+        else:
+            await password_input.press("Enter")
 
-    // Touch points (desktop)
-    Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
-"""
+        await page.wait_for_timeout(10000)
+
+        # Restore desktop viewport
+        await page.set_viewport_size({"width": 1920, "height": 1080})
+
+        return await _verify_login_success(context, page)
+
+    except Exception as e:
+        logger.error(f"Mobile login failed: {e}")
+        try:
+            await page.set_viewport_size({"width": 1920, "height": 1080})
+        except Exception:
+            pass
+        return False
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAIN PLAYWRIGHT COOKIE GENERATION
@@ -637,21 +754,42 @@ STEALTH_SCRIPT = """
 async def generate_cookies_via_playwright(
     reason: str = "Profile cookie generation",
 ) -> bool:
+    """
+    Generates authenticated Instagram cookies via Playwright.
+    ONLY writes cookies if login is successful.
+    Returns False if login fails.
+    """
+    if not IG_USERNAME or not IG_PASSWORD:
+        logger.error(
+            "❌ IG_USERNAME and IG_PASSWORD must be set.\n"
+            "   Cookies will NOT be generated without successful login."
+        )
+        await send_to_log_group(
+            text=(
+                "❌ **Instagram: IG_USERNAME/IG_PASSWORD not set**\n"
+                "Cannot generate cookies without credentials.\n#InstagramCookies"
+            )
+        )
+        return False
+
     logger.info(
         f"🌐 Launching Playwright to generate Instagram cookies [{reason}] ...\n"
-        f"   Credentials : {'✅ set' if IG_USERNAME and IG_PASSWORD else '❌ NOT SET – guest cookies only'}\n"
+        f"   Username    : {IG_USERNAME}\n"
         f"   TOTP secret : {'✅ set' if IG_TOTP_SECRET else '⚠️  not set'}"
     )
+
     await send_to_log_group(
         text=(
             f"🌐 **Instagram – Generating Cookies**\n\n"
-            f"📝 Reason      : {reason}\n"
-            f"🔐 Credentials : {'Set ✅' if IG_USERNAME and IG_PASSWORD else 'NOT SET ❌'}\n"
+            f"📝 Reason   : {reason}\n"
+            f"👤 Username : `{IG_USERNAME}`\n"
             f"⏳ Launching headless Chromium ...\n\n"
             f"#InstagramCookies"
         )
     )
+
     cleanup_playwright_profile()
+
     proxy      = choose_random_proxy(IG_PLAYWRIGHT_PROXY_POOL)
     user_agent = random.choice(USER_AGENTS)
     context    = None
@@ -659,7 +797,7 @@ async def generate_cookies_via_playwright(
 
     try:
         async with async_playwright() as p:
-            # ── Launch persistent context ─────────────────────────────────────
+            # ── Launch with persistent context ────────────────────────────────
             context = await p.chromium.launch_persistent_context(
                 IG_PROFILE_DIR,
                 headless=True,
@@ -674,7 +812,24 @@ async def generate_cookies_via_playwright(
                     "--disable-web-security",
                     "--window-size=1920,1080",
                     "--start-maximized",
-                    f"--user-agent={user_agent}",
+                    "--lang=en-US",
+                    "--accept-lang=en-US",
+                    # Disable automation flags
+                    "--disable-automation",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-default-apps",
+                    # Memory/performance
+                    "--disable-background-networking",
+                    "--disable-background-timer-throttling",
+                    "--disable-client-side-phishing-detection",
+                    "--disable-hang-monitor",
+                    "--disable-popup-blocking",
+                    "--disable-prompt-on-repost",
+                    "--disable-sync",
+                    "--disable-translate",
+                    "--metrics-recording-only",
+                    "--safebrowsing-disable-auto-update",
                 ],
                 proxy={"server": proxy} if proxy else None,
                 user_agent=user_agent,
@@ -683,6 +838,13 @@ async def generate_cookies_via_playwright(
                 timezone_id="America/New_York",
                 ignore_https_errors=True,
                 accept_downloads=False,
+                # Extra HTTP headers
+                extra_http_headers={
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+                    "sec-ch-ua-mobile": "?0",
+                    "sec-ch-ua-platform": '"Windows"',
+                },
             )
 
             page = await context.new_page()
@@ -690,223 +852,157 @@ async def generate_cookies_via_playwright(
             # Inject stealth scripts before any navigation
             await page.add_init_script(STEALTH_SCRIPT)
 
-            # ── Step 1 – Visit homepage to collect initial cookies ────────────
-            logger.info("🔗 Step 1/5 – Visiting instagram.com ...")
+            # ── Step 1 – Warm up: visit homepage ─────────────────────────────
+            logger.info("🔗 Step 1/4 – Warming up: visiting instagram.com ...")
             try:
                 await page.goto(
                     "https://www.instagram.com/",
                     wait_until="domcontentloaded",
-                    timeout=60_000,
+                    timeout=45_000,
                 )
-                await page.wait_for_timeout(random.randint(3000, 5500))
-                await _log_page_state(page, "step1_homepage")
-            except Exception as e:
-                logger.warning(f"⚠️ Homepage navigation warning (non-fatal): {e}")
+                await page.wait_for_timeout(random.randint(2500, 4000))
 
-            # ── Step 2 – Accept cookie banner ─────────────────────────────────
-            logger.info("🔗 Step 2/5 – Accepting cookie consent banner ...")
-            try:
-                accept_selectors = [
-                    "[data-testid='cookie-policy-manage-dialog-accept-button']",
-                    "button:has-text('Allow all cookies')",
-                    "button:has-text('Allow essential and optional cookies')",
-                    "button:has-text('Allow')",
-                    "button:has-text('Accept')",
-                    "button:has-text('Accept All')",
-                ]
-                for sel in accept_selectors:
-                    btn = page.locator(sel)
-                    if await btn.count() > 0 and await btn.first.is_visible():
-                        await btn.first.click()
-                        logger.info(f"✅ Cookie consent accepted via: {sel}")
-                        await page.wait_for_timeout(random.randint(1500, 2500))
-                        break
-                else:
-                    logger.info("ℹ️  No cookie consent banner detected")
-            except Exception as e:
-                logger.debug(f"Cookie consent handling skipped: {e}")
-
-            # ── Step 3 – Login flow ───────────────────────────────────────────
-            if IG_USERNAME and IG_PASSWORD:
-                logger.info(f"🔗 Step 3/5 – Logging in as: {IG_USERNAME} ...")
+                # Accept cookie banner if present
                 try:
-                    login_loaded = await _navigate_to_login(page)
-                    shot = await _log_page_state(page, "step3_login_page")
-
-                    if not login_loaded:
-                        await _send_screenshot_to_log_group(
-                            shot, "❌ IG: Login page failed to load"
-                        )
-                        # Collect guest cookies anyway
-                    elif await _check_for_checkpoint(page):
-                        shot = await _log_page_state(page, "step3_checkpoint_prelogin")
-                        await _send_screenshot_to_log_group(
-                            shot,
-                            "🚨 **IG: Checkpoint BEFORE login**\n"
-                            "Account may be flagged. Resolve manually."
-                        )
-                    else:
-                        # ── Find and fill username ────────────────────────────
-                        username_input = await _find_username_input(page)
-                        if username_input:
-                            await _human_type(page, username_input, IG_USERNAME)
-                            logger.info(f"✍️  Username entered: {IG_USERNAME}")
-
-                            # Pressing Tab often advances focus to password on new layout
-                            await username_input.press("Tab")
-                            await page.wait_for_timeout(random.randint(500, 1000))
-                        else:
-                            shot = await _log_page_state(page, "step3_no_username_field")
-                            await _send_screenshot_to_log_group(
-                                shot, "❌ IG: Username input field not found"
-                            )
-
-                        # ── Find and fill password ────────────────────────────
-                        password_input = await _find_password_input(page)
-                        if password_input:
-                            await _human_type(page, password_input, IG_PASSWORD)
-                            logger.info("✍️  Password entered")
-                        else:
-                            shot = await _log_page_state(page, "step3_no_password_field")
-                            await _send_screenshot_to_log_group(
-                                shot, "❌ IG: Password input field not found"
-                            )
-
-                        # Small random pause before clicking submit
-                        await page.wait_for_timeout(random.randint(800, 1500))
-
-                        # ── Find and click submit ─────────────────────────────
-                        submit_btn = await _find_submit_button(page)
-                        if submit_btn:
-                            await submit_btn.click()
-                            logger.info("🖱️  Login button clicked – awaiting response ...")
-                            await page.wait_for_timeout(random.randint(6000, 9000))
-                        else:
-                            # Last resort: press Enter on password field
-                            if password_input:
-                                await password_input.press("Enter")
-                                logger.info("🖱️  Pressed Enter on password field as fallback")
-                                await page.wait_for_timeout(random.randint(6000, 9000))
-                            else:
-                                logger.error("❌ Cannot submit login – no button or password field found")
-                                shot = await _log_page_state(page, "step3_no_submit")
-                                await _send_screenshot_to_log_group(
-                                    shot, "❌ IG: Cannot submit login form"
-                                )
-
-                        shot = await _log_page_state(page, "step3_post_submit")
-
-                        # ── Post-submit checks ────────────────────────────────
-                        if await _check_for_checkpoint(page):
-                            shot = await _log_page_state(page, "step3_checkpoint_postlogin")
-                            await _send_screenshot_to_log_group(
-                                shot,
-                                "🚨 **IG: Checkpoint after login**\n"
-                                "Meta is blocking automated login. See logs."
-                            )
-                            await send_to_log_group(
-                                text=(
-                                    "🚨 **Instagram Checkpoint / Suspicious-Activity Block**\n\n"
-                                    "Meta flagged this login attempt.\n"
-                                    "Resolution:\n"
-                                    "1. Open Instagram in a real browser\n"
-                                    "2. Log in and complete the challenge\n"
-                                    "3. Export cookies to Netscape format\n"
-                                    f"4. Place at: `{COOKIE_FILE}`\n"
-                                    "5. Restart the bot\n\n"
-                                    "#InstagramCookies #Checkpoint"
-                                )
-                            )
-                        elif await _check_for_2fa(page) != "none":
-                            logger.info("🔑 2FA prompt detected ...")
-                            shot = await _log_page_state(page, "step3_2fa_prompt")
-                            await _send_screenshot_to_log_group(shot, "🔑 IG: 2FA prompt detected")
-                            fa_ok = await _handle_2fa(page)
-                            if fa_ok:
-                                await page.wait_for_timeout(random.randint(4000, 6000))
-                                await _dismiss_popups(page)
-                                login_ok = await _verify_login_success(context, page)
-                            else:
-                                logger.error("❌ 2FA handling failed")
-                                shot = await _log_page_state(page, "step3_2fa_failed")
-                                await _send_screenshot_to_log_group(shot, "❌ IG: 2FA handling failed")
-                        else:
-                            await _dismiss_popups(page)
-                            await page.wait_for_timeout(random.randint(2000, 3500))
-                            shot = await _log_page_state(page, "step3_post_popups")
-                            login_ok = await _verify_login_success(context, page)
-
-                            if login_ok:
-                                logger.info("✅ Instagram login confirmed!")
-                                await send_to_log_group(
-                                    text=(
-                                        f"✅ **Instagram Login Successful**\n\n"
-                                        f"👤 Account : `{IG_USERNAME}`\n"
-                                        f"📝 Reason  : {reason}\n\n"
-                                        f"#InstagramCookies"
-                                    )
-                                )
-                            else:
-                                logger.error(
-                                    "❌ Login did NOT result in a session cookie.\n"
-                                    "   Possible: wrong credentials, account disabled, "
-                                    "or Meta rejected the headless browser silently."
-                                )
-                                shot = await _log_page_state(page, "step3_login_failed")
-                                await _send_screenshot_to_log_group(
-                                    shot,
-                                    "❌ **IG: Login failed – no session cookie issued**\n"
-                                    "Check IG_USERNAME / IG_PASSWORD and see logs."
-                                )
-                                await send_to_log_group(
-                                    text=(
-                                        f"❌ **Instagram Login Failed**\n\n"
-                                        f"👤 Account  : `{IG_USERNAME}`\n"
-                                        f"📝 Reason   : {reason}\n\n"
-                                        f"Possible causes:\n"
-                                        f"• Wrong credentials\n"
-                                        f"• Account disabled or flagged\n"
-                                        f"• Headless browser detected by Meta\n\n"
-                                        f"#InstagramCookies"
-                                    )
-                                )
-
+                    accept_selectors = [
+                        "[data-testid='cookie-policy-manage-dialog-accept-button']",
+                        "button:has-text('Allow all cookies')",
+                        "button:has-text('Allow essential and optional cookies')",
+                        "button:has-text('Accept All')",
+                        "button:has-text('Allow')",
+                    ]
+                    for sel in accept_selectors:
+                        btn = page.locator(sel)
+                        if await btn.count() > 0 and await btn.first.is_visible():
+                            await btn.first.click()
+                            logger.info(f"✅ Cookie consent accepted via: {sel}")
+                            await page.wait_for_timeout(random.randint(1500, 2500))
+                            break
                 except Exception as e:
-                    logger.error(
-                        f"❌ Unhandled exception during Instagram login:\n"
-                        f"   {type(e).__name__}: {str(e)[:400]}"
-                    )
-                    shot = await _log_page_state(page, "step3_exception")
-                    await _send_screenshot_to_log_group(
-                        shot, f"❌ **IG: Login exception**\n`{str(e)[:300]}`"
-                    )
-            else:
-                logger.warning(
-                    "⚠️ Step 3/5 – SKIPPED (IG_USERNAME / IG_PASSWORD not set)\n"
-                    "   Only guest cookies will be collected."
-                )
+                    logger.debug(f"Cookie consent handling skipped: {e}")
 
-            # ── Step 4 – Natural browsing simulation ──────────────────────────
-            logger.info("🔗 Step 4/5 – Simulating natural browsing ...")
+                await _log_page_state(page, "step1_homepage")
+
+                # Simulate human behaviour
+                await page.mouse.move(random.randint(200, 800), random.randint(100, 400))
+                await page.wait_for_timeout(random.randint(500, 1200))
+                await page.mouse.wheel(0, random.randint(100, 400))
+                await page.wait_for_timeout(random.randint(1000, 2000))
+
+            except Exception as e:
+                logger.warning(f"Homepage warmup warning (non-fatal): {e}")
+
+            # ── Step 2 – Login ────────────────────────────────────────────────
+            logger.info(f"🔗 Step 2/4 – Logging in as: {IG_USERNAME} ...")
+
+            # Try classic login first
+            try:
+                login_ok = await _try_classic_login(page, context)
+            except Exception as e:
+                logger.warning(f"Classic login threw exception: {e}")
+                login_ok = False
+
+            # If classic failed, try mobile login
+            if not login_ok:
+                logger.warning("⚠️ Classic login failed – trying mobile web login ...")
+                try:
+                    login_ok = await _try_mobile_login(page, context)
+                except Exception as e:
+                    logger.warning(f"Mobile login threw exception: {e}")
+                    login_ok = False
+
+            # ── Post-login checks ─────────────────────────────────────────────
+            if login_ok:
+                # Handle 2FA if triggered
+                fa_type = await _check_for_2fa(page)
+                if fa_type != "none":
+                    logger.info(f"🔑 2FA prompt detected ({fa_type}) ...")
+                    shot = await _log_page_state(page, "step2_2fa_prompt")
+                    await _send_screenshot_to_log_group(shot, f"🔑 IG: 2FA prompt ({fa_type})")
+                    fa_ok = await _handle_2fa(page)
+                    if fa_ok:
+                        await page.wait_for_timeout(5000)
+                        login_ok = await _verify_login_success(context, page)
+                    else:
+                        login_ok = False
+
+                # Check for checkpoint
+                if await _check_for_checkpoint(page):
+                    shot = await _log_page_state(page, "step2_checkpoint")
+                    await _send_screenshot_to_log_group(
+                        shot, "🚨 **IG: Checkpoint detected after login**"
+                    )
+                    login_ok = False
+
+                if login_ok:
+                    # Dismiss any post-login popups
+                    await _dismiss_popups(page)
+                    await page.wait_for_timeout(random.randint(2000, 3500))
+                    shot = await _log_page_state(page, "step2_logged_in")
+                    logger.info("✅ Instagram login confirmed!")
+                    await send_to_log_group(
+                        text=(
+                            f"✅ **Instagram Login Successful**\n\n"
+                            f"👤 Account : `{IG_USERNAME}`\n"
+                            f"📝 Reason  : {reason}\n\n"
+                            f"#InstagramCookies"
+                        )
+                    )
+
+            if not login_ok:
+                logger.error(
+                    "❌ Instagram login FAILED.\n"
+                    "   Cookies will NOT be saved.\n"
+                    "   Possible causes:\n"
+                    "   • Wrong credentials\n"
+                    "   • Account disabled or flagged\n"
+                    "   • Bot detection by Instagram\n"
+                    "   • Account requires SMS 2FA\n"
+                    "   • Account locked/suspended"
+                )
+                shot = await _log_page_state(page, "step2_login_failed")
+                await _send_screenshot_to_log_group(
+                    shot,
+                    "❌ **IG: Login Failed – Cookies NOT saved**\n"
+                    "Check credentials and see logs."
+                )
+                await send_to_log_group(
+                    text=(
+                        f"❌ **Instagram Login FAILED**\n\n"
+                        f"👤 Account : `{IG_USERNAME}`\n"
+                        f"📝 Reason  : {reason}\n\n"
+                        f"**Cookies NOT generated.**\n\n"
+                        f"Possible causes:\n"
+                        f"• Wrong IG_USERNAME / IG_PASSWORD\n"
+                        f"• Account disabled or flagged\n"
+                        f"• Bot detection by Meta\n"
+                        f"• SMS 2FA enabled (not supported)\n\n"
+                        f"#InstagramCookies"
+                    )
+                )
+                await context.close()
+                context = None
+                return False
+
+            # ── Step 3 – Natural browsing simulation ──────────────────────────
+            logger.info("🔗 Step 3/4 – Simulating natural browsing ...")
             try:
                 await page.goto(
-                    "https://www.instagram.com/explore/",
+                    "https://www.instagram.com/",
                     wait_until="domcontentloaded",
                     timeout=30_000,
                 )
                 await page.wait_for_timeout(random.randint(2000, 4000))
-                await page.mouse.move(
-                    random.randint(100, 600), random.randint(100, 400)
-                )
-                await page.wait_for_timeout(random.randint(500, 1500))
-                await page.mouse.wheel(0, random.randint(300, 800))
-                await page.wait_for_timeout(random.randint(500, 1000))
-                await _log_page_state(page, "step4_explore")
+                await page.mouse.move(random.randint(100, 600), random.randint(100, 400))
+                await page.wait_for_timeout(random.randint(500, 1200))
+                await page.mouse.wheel(0, random.randint(200, 600))
+                await page.wait_for_timeout(random.randint(1000, 2000))
+                await _log_page_state(page, "step3_feed")
             except Exception as e:
-                logger.debug(f"Natural browsing simulation failed (non-fatal): {e}")
+                logger.debug(f"Natural browsing simulation non-fatal: {e}")
 
-            # ── Step 5 – Export cookies ───────────────────────────────────────
-            logger.info("🔗 Step 5/5 – Exporting cookies ...")
+            # ── Step 4 – Export cookies ───────────────────────────────────────
+            logger.info("🔗 Step 4/4 – Exporting authenticated cookies ...")
             all_cookies = await context.cookies()
             await context.close()
             context = None
@@ -916,19 +1012,35 @@ async def generate_cookies_via_playwright(
                 if "instagram.com" in c.get("domain", "")
                 or "facebook.com" in c.get("domain", "")
             ]
-            cookie_names = {c["name"] for c in ig_cookies}
-            logger.info(f"🍪 Collected {len(ig_cookies)} cookies: {cookie_names}")
 
-            if not ig_cookies:
-                logger.error("❌ Zero Instagram cookies collected – page likely never loaded.")
+            cookie_names = {c["name"] for c in ig_cookies}
+            auth_present = {"sessionid", "ds_user_id"} & cookie_names
+
+            logger.info(
+                f"🍪 Collected {len(ig_cookies)} cookies: {cookie_names}\n"
+                f"   Auth cookies present: {auth_present or 'NONE'}"
+            )
+
+            if not auth_present:
+                logger.error(
+                    "❌ No authenticated cookies found (sessionid/ds_user_id missing).\n"
+                    "   Login appeared to succeed but cookies are invalid.\n"
+                    "   NOT writing cookie file."
+                )
+                await send_to_log_group(
+                    text=(
+                        "❌ **Instagram: Login appeared OK but no auth cookies found**\n"
+                        "Cookie file NOT written.\n#InstagramCookies"
+                    )
+                )
                 return False
 
             ok = _write_netscape_cookies(ig_cookies, COOKIE_FILE)
             if ok:
                 logger.info(
-                    f"✅ Cookie file written.\n"
-                    f"   Login status : {'AUTHENTICATED ✅' if login_ok else 'GUEST ONLY ⚠️'}\n"
-                    f"   Cookies      : {cookie_names}"
+                    f"✅ Authenticated Instagram cookies saved!\n"
+                    f"   Auth cookies: {auth_present}\n"
+                    f"   Total cookies: {len(ig_cookies)}"
                 )
             return ok
 
@@ -943,14 +1055,14 @@ async def generate_cookies_via_playwright(
                 if pages:
                     shot = await _log_page_state(pages[-1], "fatal_crash")
                     await _send_screenshot_to_log_group(
-                        shot, f"❌ **IG: Playwright session crashed**\n`{str(e)[:300]}`"
+                        shot, f"❌ **IG: Playwright crashed**\n`{str(e)[:300]}`"
                     )
                 await context.close()
             except Exception:
                 pass
         await send_to_log_group(
             text=(
-                f"❌ **Instagram Browser Profile – Session Crashed**\n\n"
+                f"❌ **Instagram Browser Session Crashed**\n\n"
                 f"📝 Reason : {reason}\n"
                 f"⚠️ Error  : `{str(e)[:300]}`\n\n"
                 f"#InstagramCookies"
@@ -965,6 +1077,7 @@ async def refresh_cookies_from_browser(
     reason: str = "On-demand refresh",
 ) -> Optional[str]:
     async with _COOKIE_LOCK:
+        # Check if another coroutine already refreshed
         if (
             os.path.exists(COOKIE_FILE)
             and verify_cookies_file(COOKIE_FILE)
@@ -975,28 +1088,30 @@ async def refresh_cookies_from_browser(
 
         ok = await generate_cookies_via_playwright(reason=reason)
         if not ok:
-            logger.error("Instagram cookie generation failed.")
+            logger.error("Instagram cookie generation failed (login unsuccessful).")
             return None
+
         if not os.path.exists(COOKIE_FILE):
-            logger.error("Cookie file missing after generation.")
+            logger.error("Cookie file missing after generation – login failed.")
             return None
-        if not verify_cookies_file(COOKIE_FILE) or is_cookie_file_expired(COOKIE_FILE):
-            logger.warning("⚠️ Cookie verification failed – retrying ...")
+
+        if not verify_cookies_file(COOKIE_FILE):
+            logger.error("Cookie file verification failed after generation.")
             if os.path.exists(COOKIE_FILE):
                 os.remove(COOKIE_FILE)
-            ok2 = await generate_cookies_via_playwright(reason=f"{reason} (retry)")
-            if not ok2 or not os.path.exists(COOKIE_FILE):
-                return None
-            if not verify_cookies_file(COOKIE_FILE):
-                logger.error("❌ Cookie retry also failed verification")
-                return None
+            return None
 
-        logger.info("✅ Instagram cookies verified successfully")
+        if is_cookie_file_expired(COOKIE_FILE):
+            logger.error("Cookie file expired immediately after generation – this should not happen.")
+            return None
+
+        logger.info("✅ Instagram authenticated cookies verified successfully")
+
         ip_info   = await get_public_ip_info() or {}
         timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
         await send_to_log_group(
             text=(
-                f"🌐 **Instagram Cookies Generated**\n\n"
+                f"🌐 **Instagram Cookies Generated (Authenticated)**\n\n"
                 f"📅 Time     : `{timestamp}`\n"
                 f"🌍 IP       : `{ip_info.get('ip', 'unknown')}`\n"
                 f"📍 Location : {ip_info.get('city', 'unknown')}, "
@@ -1017,22 +1132,29 @@ def verify_cookies_file(filename: str) -> bool:
         if not os.path.exists(filename):
             logger.error(f"Instagram cookies file does not exist: {filename}")
             return False
+
         with open(filename, "r", encoding="utf-8") as f:
             content = f.read()
+
         if "instagram.com" not in content:
             logger.error("No instagram.com domain found in cookies file")
             return False
-        guest_cookies = ["mid", "ig_did", "csrftoken", "datr"]
-        auth_cookies  = ["sessionid", "ds_user_id", "rur"]
-        found_guest   = [c for c in guest_cookies if c in content]
-        found_auth    = [c for c in auth_cookies  if c in content]
-        found_all     = found_guest + found_auth
-        if len(found_all) < 2:
-            logger.warning(f"⚠️ Too few Instagram cookies: {found_all}")
+
+        # REQUIRE authenticated cookies
+        auth_cookies = ["sessionid", "ds_user_id"]
+        found_auth   = [c for c in auth_cookies if c in content]
+
+        if not found_auth:
+            logger.error(
+                "❌ Cookie file has NO auth cookies (sessionid/ds_user_id missing).\n"
+                "   This is a guest-only cookie file and cannot be used for downloads."
+            )
             return False
+
         if content.strip().startswith("{") or '"domain"' in content:
             logger.error("Instagram cookies file is JSON format, not Netscape")
             return False
+
         valid_lines = 0
         for line in content.strip().split("\n"):
             if line.startswith("#") or not line.strip():
@@ -1040,21 +1162,17 @@ def verify_cookies_file(filename: str) -> bool:
             if "\t" not in line:
                 continue
             valid_lines += 1
+
         if valid_lines < 2:
             logger.error(f"Too few valid cookie lines: {valid_lines}")
             return False
-        if found_auth:
-            logger.info(
-                f"✅ Instagram cookies verified (LOGGED-IN): "
-                f"lines={valid_lines} | auth={found_auth}"
-            )
-        else:
-            logger.warning(
-                f"⚠️ Instagram cookies verified (GUEST ONLY – downloads may fail): "
-                f"lines={valid_lines} | guest={found_guest}\n"
-                f"   Set IG_USERNAME + IG_PASSWORD env vars for full access."
-            )
+
+        logger.info(
+            f"✅ Instagram cookies verified (AUTHENTICATED): "
+            f"lines={valid_lines} | auth={found_auth}"
+        )
         return True
+
     except Exception as e:
         logger.error(f"Error verifying Instagram cookies: {e}")
         return False
@@ -1127,12 +1245,13 @@ def is_auth_error(exception: Exception) -> bool:
 async def get_cookies(force_refresh: bool = False) -> Optional[str]:
     if not force_refresh and os.path.exists(COOKIE_FILE):
         if verify_cookies_file(COOKIE_FILE) and not is_cookie_file_expired(COOKIE_FILE):
-            logger.info("✅ Using existing (non-expired) Instagram cookies")
+            logger.info("✅ Using existing valid authenticated Instagram cookies")
             return COOKIE_FILE
         else:
-            logger.warning("Instagram cookies invalid or expired – regenerating ...")
+            logger.warning("Instagram cookies invalid/expired or not authenticated – regenerating ...")
             if os.path.exists(COOKIE_FILE):
                 os.remove(COOKIE_FILE)
+
     reason = (
         "Force refresh – login/rate-limit detected"
         if force_refresh
@@ -1163,18 +1282,20 @@ def get_ytdlp_opts(
             "Referer":         "https://www.instagram.com/",
         },
     }
+
     if use_cookie_file and os.path.exists(use_cookie_file):
         base["cookiefile"] = use_cookie_file
         logger.debug(f"Using Instagram cookiefile: {use_cookie_file}")
     else:
-        base["cookiesfrombrowser"] = ("chrome", IG_PROFILE_DIR)
-        logger.debug("Falling back to cookiesfrombrowser (Chromium profile)")
+        logger.warning("No cookie file available for yt-dlp")
 
     proxy = choose_random_proxy(IG_PROXY_POOL)
     if proxy:
         base["proxy"] = proxy
+
     if extra_opts:
         base.update(extra_opts)
+
     return base
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1218,7 +1339,10 @@ async def download_with_ytdlp(
 
     cookie_file = await get_cookies()
     if not cookie_file:
-        logger.error("No valid Instagram cookies – cannot download")
+        logger.error(
+            "❌ No valid authenticated Instagram cookies available.\n"
+            "   Login must succeed before downloads are possible."
+        )
         return None
 
     def _build_opts(cf):
@@ -1252,16 +1376,20 @@ async def download_with_ytdlp(
 
             video_id = (info or {}).get("id") or shortcode or ""
             filepath = None
+
             if info and info.get("requested_downloads"):
                 filepath = info["requested_downloads"][0].get("filepath")
+
             if not filepath or not os.path.exists(filepath):
                 filepath = (
                     _find_downloaded_file(video_id)
                     or _find_downloaded_file(shortcode or "")
                 )
+
             if filepath and os.path.exists(filepath):
                 logger.info(f"✅ Instagram download successful: {filepath}")
                 return filepath
+
             logger.error("Instagram download finished but file not found on disk")
             return None
 
@@ -1276,7 +1404,7 @@ async def download_with_ytdlp(
                     text=(
                         "⚠️ **Instagram: Auth / Rate-Limit Detected**\n\n"
                         "🧹 Old cookies cleared\n"
-                        "🔄 Regenerating cookies ...\n\n"
+                        "🔄 Regenerating authenticated cookies ...\n\n"
                         "#InstagramCookies"
                     )
                 )
@@ -1288,7 +1416,7 @@ async def download_with_ytdlp(
                     ydl_opts = _build_opts(new_cookie)
                     continue
                 else:
-                    logger.error("Cookie regeneration failed – aborting")
+                    logger.error("Cookie regeneration failed – cannot retry download")
                     return None
             else:
                 logger.error(
@@ -1296,6 +1424,7 @@ async def download_with_ytdlp(
                     f"{str(e)[:300]}"
                 )
                 return None
+
     return None
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1303,7 +1432,11 @@ async def download_with_ytdlp(
 # ══════════════════════════════════════════════════════════════════════════════
 async def _fetch_info(url: str) -> Optional[dict]:
     cookie_file = await get_cookies()
-    ydl_opts    = get_ytdlp_opts(
+    if not cookie_file:
+        logger.warning("No authenticated cookies for info fetch – may fail")
+        return None
+
+    ydl_opts = get_ytdlp_opts(
         {"skip_download": True},
         use_cookie_file=cookie_file,
     )
@@ -1324,18 +1457,37 @@ async def startup_services():
     if not ENABLE_IG_COOKIES:
         logger.info("Instagram cookie handling disabled (ENABLE_IG_COOKIES=false).")
         return
+
+    if not IG_USERNAME or not IG_PASSWORD:
+        logger.error(
+            "❌ IG_USERNAME and IG_PASSWORD are required.\n"
+            "   Set them as environment variables.\n"
+            "   Instagram downloads will NOT work without authenticated cookies."
+        )
+        await send_to_log_group(
+            text=(
+                "❌ **Instagram: Credentials Not Configured**\n\n"
+                "Set `IG_USERNAME` and `IG_PASSWORD` environment variables.\n"
+                "Downloads will fail until this is resolved.\n\n"
+                "#InstagramCookies"
+            )
+        )
+        return
+
     logger.info("🚀 Starting Instagram cookie services ...")
     cleanup_playwright_profile()
+
     need_refresh = (
         not os.path.exists(COOKIE_FILE)
         or not verify_cookies_file(COOKIE_FILE)
         or is_cookie_file_expired(COOKIE_FILE)
     )
+
     if need_refresh:
-        logger.info("🔄 No valid Instagram cookies – generating ...")
+        logger.info("🔄 No valid authenticated Instagram cookies – generating ...")
         cookie_file = await get_cookies(force_refresh=True)
         if cookie_file:
-            logger.info(f"✅ Instagram cookies ready: {cookie_file}")
+            logger.info(f"✅ Instagram authenticated cookies ready: {cookie_file}")
         else:
             logger.warning(
                 "⚠️ Instagram cookie generation failed on startup.\n"
@@ -1344,12 +1496,12 @@ async def startup_services():
             await send_to_log_group(
                 text=(
                     "⚠️ **Instagram Startup Cookie Generation Failed**\n\n"
-                    "Will retry automatically on first download.\n\n"
+                    "Login may have failed. Will retry on first download.\n\n"
                     "#InstagramCookies"
                 )
             )
     else:
-        logger.info("✅ Existing Instagram cookies are valid – skipping regeneration.")
+        logger.info("✅ Existing authenticated Instagram cookies are valid – skipping regeneration.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  InstagramAPI CLASS
@@ -1372,6 +1524,7 @@ class InstagramAPI:
         webpage_url  = url
         ext          = "mp4"
         vid_id       = shortcode
+
         if raw:
             duration_sec = raw.get("duration") or 0
             title        = raw.get("title") or raw.get("uploader") or title
@@ -1380,6 +1533,7 @@ class InstagramAPI:
             webpage_url  = raw.get("webpage_url") or url
             ext          = raw.get("ext") or "mp4"
             vid_id       = raw.get("id") or shortcode
+
         return {
             "title":        title,
             "uploader":     uploader,
