@@ -1,12 +1,26 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -e
 
-echo "Checking Chromium installation..."
+echo "🔍 Checking Chromium installation..."
 
 if [ ! -d "/ms-playwright" ]; then
-    echo "Chromium not found. Installing..."
-    playwright install chromium
+echo "⬇️ Chromium not found. Installing..."
+playwright install chromium
 else
-    echo "Chromium already installed. Skipping download."
+echo "✅ Chromium already installed. Skipping download."
 fi
 
+echo "🚀 Starting bgutil server..."
+node "$BGUTIL_SERVER_HOME/build/index.js" &
+BGUTIL_PID=$!
+
+echo "⏳ Waiting for bgutil to be ready..."
+sleep 3
+
+echo "🤖 Starting bot..."
 python3 -m SHASHA_DRUGZ
+
+echo "🛑 Stopping bgutil server..."
+kill $BGUTIL_PID 2>/dev/null || true
+
+wait $BGUTIL_PID
