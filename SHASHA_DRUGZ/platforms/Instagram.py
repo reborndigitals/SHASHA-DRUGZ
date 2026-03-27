@@ -2,6 +2,7 @@ import os
 import re
 import glob
 import time
+import shutil
 import random
 import asyncio
 import logging
@@ -76,19 +77,21 @@ SHORTCODE_REGEX = re.compile(
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  USER-AGENT ROTATION
+#  FIX 1 — USER-AGENT ROTATION (updated to 2025/2026 Chrome versions)
 # ══════════════════════════════════════════════════════════════════════════════
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6_4) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 ]
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -209,6 +212,17 @@ def cleanup_playwright_profile():
                 logger.info(f"🧹 Removed stale IG profile file: {fname}")
             except Exception as e:
                 logger.warning(f"Could not remove {fname}: {e}")
+
+# FIX 5 — Full profile wipe to avoid stale session poisoning
+def wipe_playwright_profile():
+    """Completely removes and recreates the Playwright profile directory."""
+    try:
+        if os.path.exists(IG_PROFILE_DIR):
+            shutil.rmtree(IG_PROFILE_DIR)
+            logger.info("🧹 Wiped stale Playwright profile directory")
+        os.makedirs(IG_PROFILE_DIR, exist_ok=True)
+    except Exception as e:
+        logger.warning(f"Failed to wipe Playwright profile: {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  NETSCAPE COOKIE WRITER
@@ -523,23 +537,20 @@ STEALTH_SCRIPT = """
 """
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  LOGIN VIA /accounts/login/ CLASSIC PATH (most reliable)
+#  LOGIN VIA /accounts/login/ CLASSIC PATH
 # ══════════════════════════════════════════════════════════════════════════════
 async def _try_classic_login(page, context) -> bool:
-    """
-    Uses the classic /accounts/login/ page with the traditional form.
-    This is more reliable than the new ?flo=true React layout.
-    """
     logger.info("🔐 Attempting classic login path: /accounts/login/")
 
     try:
-        # Navigate directly with mobile-friendly headers to get simpler DOM
+        # FIX 2 — Use domcontentloaded instead of networkidle (Instagram SPA never idles)
         await page.goto(
             "https://www.instagram.com/accounts/login/",
-            wait_until="networkidle",
-            timeout=60_000,
+            wait_until="domcontentloaded",
+            timeout=45_000,
         )
-        await page.wait_for_timeout(random.randint(3000, 5000))
+        # FIX 2 — Give React extra time to hydrate after domcontentloaded
+        await page.wait_for_timeout(random.randint(5000, 8000))
     except Exception as e:
         logger.warning(f"Classic login navigation warning: {e}")
         try:
@@ -548,16 +559,34 @@ async def _try_classic_login(page, context) -> bool:
                 wait_until="domcontentloaded",
                 timeout=45_000,
             )
-            await page.wait_for_timeout(random.randint(4000, 6000))
+            await page.wait_for_timeout(random.randint(5000, 8000))
         except Exception as e2:
             logger.error(f"Classic login navigation failed: {e2}")
             return False
+
+    # FIX 3 — Blank-page guard: bail early if Instagram served an empty page
+    try:
+        body_len = len(await page.inner_text("body"))
+        logger.info(f"📄 Login page body length: {body_len} chars")
+        if body_len < 200:
+            logger.error(
+                "❌ Login page appears blank/empty – likely bot-blocked at this URL.\n"
+                "   Meta served no content; cannot find login form."
+            )
+            screenshot_path = await _log_page_state(page, "step2_blank_login_page")
+            await _send_screenshot_to_log_group(
+                screenshot_path,
+                "🚨 **IG: Login page blank – bot-blocked or empty response**\n"
+                "Check proxy / UA / account status."
+            )
+            return False
+    except Exception as e:
+        logger.warning(f"Body length check failed (non-fatal): {e}")
 
     # Wait for username input with extended timeout
     username_input = None
     password_input = None
 
-    # Comprehensive selectors for classic page
     username_selectors = [
         "input[name='username']",
         "input[aria-label='Phone number, username, or email']",
@@ -581,7 +610,6 @@ async def _try_classic_login(page, context) -> bool:
         logger.error("❌ Classic login: username field not found")
         return False
 
-    # Find password field
     password_selectors = [
         "input[name='password']",
         "input[type='password']",
@@ -603,7 +631,6 @@ async def _try_classic_login(page, context) -> bool:
         logger.error("❌ Classic login: password field not found")
         return False
 
-    # Type credentials
     logger.info(f"✍️  Entering username: {IG_USERNAME}")
     await _human_type(page, username_input, IG_USERNAME)
     await page.wait_for_timeout(random.randint(500, 1000))
@@ -612,7 +639,6 @@ async def _try_classic_login(page, context) -> bool:
     await _human_type(page, password_input, IG_PASSWORD)
     await page.wait_for_timeout(random.randint(700, 1200))
 
-    # Find and click submit
     submit_selectors = [
         "button[type='submit']",
         "button:has-text('Log in')",
@@ -637,7 +663,6 @@ async def _try_classic_login(page, context) -> bool:
         await password_input.press("Enter")
         logger.info("🖱️  Enter pressed on password field")
 
-    # Wait for navigation after login
     try:
         await page.wait_for_url(
             lambda url: "login" not in url.lower() and "accounts" not in url.lower(),
@@ -645,7 +670,6 @@ async def _try_classic_login(page, context) -> bool:
         )
         logger.info(f"✅ Navigated away from login page → {page.url}")
     except Exception:
-        # Not necessarily an error – check cookies
         await page.wait_for_timeout(8000)
 
     return await _verify_login_success(context, page)
@@ -655,14 +679,9 @@ async def _try_classic_login(page, context) -> bool:
 #  LOGIN VIA MOBILE API (most stealth-friendly)
 # ══════════════════════════════════════════════════════════════════════════════
 async def _try_mobile_login(page, context) -> bool:
-    """
-    Uses Instagram's mobile web login which has a simpler DOM and
-    is less likely to trigger bot detection.
-    """
     logger.info("📱 Attempting mobile web login path")
 
     try:
-        # Set mobile viewport first
         await page.set_viewport_size({"width": 390, "height": 844})
 
         await page.goto(
@@ -672,7 +691,16 @@ async def _try_mobile_login(page, context) -> bool:
         )
         await page.wait_for_timeout(random.randint(4000, 6500))
 
-        # Try to accept any cookie banner
+        # FIX 3 — Blank-page guard for mobile path too
+        try:
+            body_len = len(await page.inner_text("body"))
+            logger.info(f"📄 Mobile login page body length: {body_len} chars")
+            if body_len < 200:
+                logger.error("❌ Mobile login page is blank – bot-blocked")
+                return False
+        except Exception:
+            pass
+
         try:
             cookie_btn = page.locator("button:has-text('Allow all cookies'), button:has-text('Accept All')")
             if await cookie_btn.count() > 0:
@@ -681,7 +709,6 @@ async def _try_mobile_login(page, context) -> bool:
         except Exception:
             pass
 
-        # Look for username input
         try:
             await page.wait_for_selector(
                 "input[name='username'], input[name='email'], input[aria-label*='username']",
@@ -719,7 +746,6 @@ async def _try_mobile_login(page, context) -> bool:
         await _human_type(page, password_input, IG_PASSWORD)
         await page.wait_for_timeout(random.randint(700, 1300))
 
-        # Submit
         submit_btn = None
         for sel in ["button[type='submit']", "button:has-text('Log in')", "button:has-text('Log In')"]:
             el = page.locator(sel)
@@ -734,7 +760,6 @@ async def _try_mobile_login(page, context) -> bool:
 
         await page.wait_for_timeout(10000)
 
-        # Restore desktop viewport
         await page.set_viewport_size({"width": 1920, "height": 1080})
 
         return await _verify_login_success(context, page)
@@ -780,15 +805,16 @@ async def generate_cookies_via_playwright(
 
     await send_to_log_group(
         text=(
-            f"🌐 **Instagram – Generating Cookies**\n\n"
+            f"🌐 **Browser Profile – Generating Cookies**\n\n"
             f"📝 Reason   : {reason}\n"
-            f"👤 Username : `{IG_USERNAME}`\n"
             f"⏳ Launching headless Chromium ...\n\n"
-            f"#InstagramCookies"
+            f"#YouTubeCookies"
         )
     )
 
-    cleanup_playwright_profile()
+    # FIX 5 — Wipe the entire persistent profile before each fresh login
+    # to avoid stale cookies / localStorage poisoning the new session
+    wipe_playwright_profile()
 
     proxy      = choose_random_proxy(IG_PLAYWRIGHT_PROXY_POOL)
     user_agent = random.choice(USER_AGENTS)
@@ -814,12 +840,10 @@ async def generate_cookies_via_playwright(
                     "--start-maximized",
                     "--lang=en-US",
                     "--accept-lang=en-US",
-                    # Disable automation flags
                     "--disable-automation",
                     "--no-first-run",
                     "--no-default-browser-check",
                     "--disable-default-apps",
-                    # Memory/performance
                     "--disable-background-networking",
                     "--disable-background-timer-throttling",
                     "--disable-client-side-phishing-detection",
@@ -838,10 +862,10 @@ async def generate_cookies_via_playwright(
                 timezone_id="America/New_York",
                 ignore_https_errors=True,
                 accept_downloads=False,
-                # Extra HTTP headers
+                # FIX 1 — Updated sec-ch-ua header to match current Chrome versions
                 extra_http_headers={
                     "Accept-Language": "en-US,en;q=0.9",
-                    "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+                    "sec-ch-ua": '"Chromium";v="131", "Not(A:Brand";v="99", "Google Chrome";v="131"',
                     "sec-ch-ua-mobile": "?0",
                     "sec-ch-ua-platform": '"Windows"',
                 },
@@ -895,9 +919,31 @@ async def generate_cookies_via_playwright(
             # ── Step 2 – Login ────────────────────────────────────────────────
             logger.info(f"🔗 Step 2/4 – Logging in as: {IG_USERNAME} ...")
 
-            # Try classic login first
+            # FIX 4 — Navigate to login by clicking from homepage instead of
+            # direct goto. Direct navigation is a known bot-detection trigger.
+            login_clicked = False
             try:
-                login_ok = await _try_classic_login(page, context)
+                login_link = page.locator(
+                    "a[href='/accounts/login/'], "
+                    "a:has-text('Log in'), "
+                    "a:has-text('Log In')"
+                )
+                if await login_link.count() > 0:
+                    await login_link.first.click()
+                    await page.wait_for_timeout(random.randint(3000, 5500))
+                    logger.info(f"✅ Navigated to login via click → {page.url}")
+                    login_clicked = True
+            except Exception as e:
+                logger.warning(f"Click-to-login failed – will fall through to classic goto: {e}")
+
+            # Try classic login (handles the goto itself if click didn't navigate there)
+            try:
+                if login_clicked and "login" in page.url.lower():
+                    # We're already on the login page; skip the goto inside _try_classic_login
+                    # by calling the field-detection portion directly
+                    login_ok = await _try_classic_login_on_current_page(page, context)
+                else:
+                    login_ok = await _try_classic_login(page, context)
             except Exception as e:
                 logger.warning(f"Classic login threw exception: {e}")
                 login_ok = False
@@ -913,7 +959,6 @@ async def generate_cookies_via_playwright(
 
             # ── Post-login checks ─────────────────────────────────────────────
             if login_ok:
-                # Handle 2FA if triggered
                 fa_type = await _check_for_2fa(page)
                 if fa_type != "none":
                     logger.info(f"🔑 2FA prompt detected ({fa_type}) ...")
@@ -926,7 +971,6 @@ async def generate_cookies_via_playwright(
                     else:
                         login_ok = False
 
-                # Check for checkpoint
                 if await _check_for_checkpoint(page):
                     shot = await _log_page_state(page, "step2_checkpoint")
                     await _send_screenshot_to_log_group(
@@ -935,7 +979,6 @@ async def generate_cookies_via_playwright(
                     login_ok = False
 
                 if login_ok:
-                    # Dismiss any post-login popups
                     await _dismiss_popups(page)
                     await page.wait_for_timeout(random.randint(2000, 3500))
                     shot = await _log_page_state(page, "step2_logged_in")
@@ -1070,6 +1113,124 @@ async def generate_cookies_via_playwright(
         )
         return False
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FIX 4 HELPER — Classic login on a page we're already on
+#  (skips the goto, jumps straight to field detection)
+# ══════════════════════════════════════════════════════════════════════════════
+async def _try_classic_login_on_current_page(page, context) -> bool:
+    """
+    Runs the field-detection + submit portion of classic login
+    without navigating away first. Used when we've already clicked
+    the Log In link from the homepage.
+    """
+    logger.info("🔐 Classic login: already on login page (arrived via click)")
+
+    # FIX 3 — blank-page guard
+    try:
+        body_len = len(await page.inner_text("body"))
+        logger.info(f"📄 Login page body length: {body_len} chars")
+        if body_len < 200:
+            logger.error("❌ Login page is blank after click-navigation – bot blocked")
+            screenshot_path = await _log_page_state(page, "step2_blank_after_click")
+            await _send_screenshot_to_log_group(
+                screenshot_path, "🚨 **IG: Blank login page after click**"
+            )
+            return False
+    except Exception as e:
+        logger.warning(f"Body length check failed: {e}")
+
+    username_input = None
+    password_input = None
+
+    username_selectors = [
+        "input[name='username']",
+        "input[aria-label='Phone number, username, or email']",
+        "input[aria-label*='username']",
+        "input[aria-label*='email']",
+        "input[type='text']",
+    ]
+
+    for sel in username_selectors:
+        try:
+            await page.wait_for_selector(sel, timeout=8000, state="visible")
+            el = page.locator(sel)
+            if await el.count() > 0 and await el.first.is_visible():
+                username_input = el.first
+                logger.info(f"✅ Classic (click-nav): username field via {sel}")
+                break
+        except Exception:
+            continue
+
+    if not username_input:
+        logger.error("❌ Classic (click-nav): username field not found")
+        return False
+
+    password_selectors = [
+        "input[name='password']",
+        "input[type='password']",
+        "input[aria-label='Password']",
+        "input[aria-label*='assword']",
+    ]
+
+    for sel in password_selectors:
+        try:
+            el = page.locator(sel)
+            if await el.count() > 0 and await el.first.is_visible():
+                password_input = el.first
+                logger.info(f"✅ Classic (click-nav): password field via {sel}")
+                break
+        except Exception:
+            continue
+
+    if not password_input:
+        logger.error("❌ Classic (click-nav): password field not found")
+        return False
+
+    logger.info(f"✍️  Entering username: {IG_USERNAME}")
+    await _human_type(page, username_input, IG_USERNAME)
+    await page.wait_for_timeout(random.randint(500, 1000))
+
+    logger.info("✍️  Entering password")
+    await _human_type(page, password_input, IG_PASSWORD)
+    await page.wait_for_timeout(random.randint(700, 1200))
+
+    submit_selectors = [
+        "button[type='submit']",
+        "button:has-text('Log in')",
+        "button:has-text('Log In')",
+    ]
+
+    submit_btn = None
+    for sel in submit_selectors:
+        try:
+            el = page.locator(sel)
+            if await el.count() > 0 and await el.first.is_visible():
+                submit_btn = el.first
+                logger.info(f"✅ Classic (click-nav): submit button via {sel}")
+                break
+        except Exception:
+            continue
+
+    if submit_btn:
+        await submit_btn.click()
+        logger.info("🖱️  Submit button clicked")
+    else:
+        await password_input.press("Enter")
+        logger.info("🖱️  Enter pressed on password field")
+
+    try:
+        await page.wait_for_url(
+            lambda url: "login" not in url.lower() and "accounts" not in url.lower(),
+            timeout=15_000,
+        )
+        logger.info(f"✅ Navigated away from login page → {page.url}")
+    except Exception:
+        await page.wait_for_timeout(8000)
+
+    return await _verify_login_success(context, page)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  REFRESH COOKIES  (acquires _COOKIE_LOCK)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1077,7 +1238,6 @@ async def refresh_cookies_from_browser(
     reason: str = "On-demand refresh",
 ) -> Optional[str]:
     async with _COOKIE_LOCK:
-        # Check if another coroutine already refreshed
         if (
             os.path.exists(COOKIE_FILE)
             and verify_cookies_file(COOKIE_FILE)
@@ -1140,7 +1300,6 @@ def verify_cookies_file(filename: str) -> bool:
             logger.error("No instagram.com domain found in cookies file")
             return False
 
-        # REQUIRE authenticated cookies
         auth_cookies = ["sessionid", "ds_user_id"]
         found_auth   = [c for c in auth_cookies if c in content]
 
