@@ -1,8 +1,9 @@
-# ╔══════════════════════════════════════════════════════════════════════╗
+
+# ╔══════════════════════════════════════════════════════════════════════╗ 
 # ║          LIFE GAMES MODULE — SHASHA_DRUGZ BOT                        ║
 # ║          Single-file plugin · MongoDB persistent storage             ║
 # ║                                                                      ║
-# ║  FINAL FIX v3 — ROOT CAUSE SOLVED:                                  ║
+# ║  FINAL FIX v4 — ALL COOLDOWNS REMOVED                               ║
 # ║                                                                      ║
 # ║  The no-slash commands (bbet, ppay, ssteal …) were being eaten       ║
 # ║  by other modules that register catch-all / filters.text handlers   ║
@@ -19,10 +20,9 @@
 # ║                    group=-1)                                         ║
 # ║  Both decorators point to the SAME handler function.                 ║
 # ║                                                                      ║
-# ║  Cooldown system: FULLY REMOVED from all game commands.             ║
-# ║  daily/work use lightweight in-memory dicts (no DB).                ║
+# ║  Cooldown system: FULLY REMOVED from ALL commands including         ║
+# ║  daily and work. Spam freely.                                        ║
 # ╚══════════════════════════════════════════════════════════════════════╝
-
 import os
 import random
 import asyncio
@@ -36,12 +36,10 @@ from pyrogram.types import (
     InlineKeyboardButton,
 )
 from pyrogram.enums import ChatMemberStatus
-
 # ─────────────────────────────────────────────────────────────────
 #  SHASHA_DRUGZ IMPORTS
 # ─────────────────────────────────────────────────────────────────
 from SHASHA_DRUGZ import app
-
 try:
     from config import MONGO_DB_URI as MONGO_URL
     from SHASHA_DRUGZ.misc import SUDOERS as _SUDOERS_RAW
@@ -49,39 +47,32 @@ try:
 except Exception:
     MONGO_URL = os.environ.get("MONGO_URL", "")
     SUDOERS   = set()
-
 try:
     from config import OWNER_ID
     OWNER_ID = int(OWNER_ID)
 except Exception:
     OWNER_ID = 0
-
 # ─────────────────────────────────────────────────────────────────
 #  MONGODB SETUP
 # ─────────────────────────────────────────────────────────────────
 from pymongo import MongoClient
-
 _mongo     = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
 _db        = _mongo["lifegames_db"]
 users_col  = _db["users"]
 groups_col = _db["groups"]
 users_col.create_index("user_id", unique=True)
 groups_col.create_index("chat_id", unique=True)
-
 # ─────────────────────────────────────────────────────────────────
 #  ASYNC WRAPPER — keeps sync pymongo off the event loop
 # ─────────────────────────────────────────────────────────────────
 _loop = asyncio.get_event_loop()
-
 async def _run(fn, *args):
     return await _loop.run_in_executor(None, fn, *args)
-
 # ─────────────────────────────────────────────────────────────────
 #  GAME CONSTANTS
 # ─────────────────────────────────────────────────────────────────
 SLOT_ICONS     = ["🍒", "🍋", "🍉", "⭐", "💎", "7️⃣"]
 LEVEL_XP_TABLE = [0, 100, 300, 600, 1000, 1500, 2100, 2800, 3600, 4500, 5500, 7000]
-
 JOBS = {
     "hacker": {"emoji": "💻", "bonus_type": "steal_chance",  "bonus_val": 15, "salary": 3000000},
     "banker": {"emoji": "🏦", "bonus_type": "daily_bonus",   "bonus_val": 10, "salary": 2500000},
@@ -109,12 +100,10 @@ ARMOR = {
     "tactical_suit": {"emoji": "🥷", "price": 500_000_000, "defense": 40},
 }
 SOCIAL_EMOJIS = {"hug": "🤗", "kiss": "😘", "slap": "👋", "love": "❤️"}
-
 LIFE_ASSETS = {
     "win":  "SHASHA_DRUGZ/assets/shasha/win.jpeg",
     "loss": "SHASHA_DRUGZ/assets/shasha/loss.jpg",
 }
-
 # ─────────────────────────────────────────────────────────────────
 #  DATABASE HELPERS
 # ─────────────────────────────────────────────────────────────────
@@ -124,7 +113,6 @@ _DEFAULT_USER = {
     "job": "", "pet": "", "gun": "", "armor": "",
     "jail_until": 0, "bank": 0, "streak": 0,
 }
-
 def _get_user(uid: int) -> dict:
     doc = users_col.find_one({"user_id": uid})
     if not doc:
@@ -135,20 +123,15 @@ def _get_user(uid: int) -> dict:
         users_col.update_one({"user_id": uid}, {"$set": missing})
         doc.update(missing)
     return doc
-
 def _update_user(uid: int, fields: dict):
     users_col.update_one({"user_id": uid}, {"$set": fields}, upsert=True)
-
 def _add_coins(uid: int, amount: int):
     users_col.update_one({"user_id": uid}, {"$inc": {"coins": amount}}, upsert=True)
-
 def _remove_coins(uid: int, amount: int):
     users_col.update_one({"user_id": uid}, {"$inc": {"coins": -amount}}, upsert=True)
-
 def _get_coins(uid: int) -> int:
     doc = users_col.find_one({"user_id": uid}, {"coins": 1})
     return doc["coins"] if doc else _DEFAULT_USER["coins"]
-
 def _add_xp(uid: int, amount: int) -> int:
     user   = _get_user(uid)
     new_xp = user["xp"] + amount
@@ -157,10 +140,8 @@ def _add_xp(uid: int, amount: int) -> int:
         level += 1
     _update_user(uid, {"xp": new_xp, "level": level})
     return level
-
 def _get_top(mode: str) -> list:
     return list(users_col.find({}, {"user_id": 1, mode: 1}).sort(mode, -1).limit(10))
-
 # ─────────────────────────────────────────────────────────────────
 #  UTILITY HELPERS
 # ─────────────────────────────────────────────────────────────────
@@ -170,11 +151,9 @@ def fmt_time(secs: int) -> str:
     if h:  return f"{h}h {m}m"
     if m:  return f"{m}m {s}s"
     return f"{s}s"
-
 def mention(user) -> str:
     name = (user.first_name or "User")[:20]
     return f"[{name}](tg://user?id={user.id})"
-
 def calc_power(user: dict) -> int:
     base     = user.get("level", 1) * 5
     pet_pw   = PETS.get(user.get("pet",   ""), {}).get("power",   0)
@@ -182,12 +161,10 @@ def calc_power(user: dict) -> int:
     armor_df = ARMOR.get(user.get("armor",""), {}).get("defense", 0)
     luck     = random.randint(1, 30)
     return base + pet_pw + gun_dmg + armor_df + luck
-
 def _parse_args(text: str) -> list:
     """Return tokens after the first word. Works for /cmd and plain alias."""
     parts = (text or "").strip().split()
     return parts[1:] if parts else []
-
 async def is_admin(client, m: Message) -> bool:
     if not m.from_user:
         return False
@@ -199,7 +176,6 @@ async def is_admin(client, m: Message) -> bool:
         return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
     except Exception:
         return False
-
 async def _send_life_image(message, result_type: str, caption: str):
     path = LIFE_ASSETS.get(result_type)
     if path and os.path.isfile(path):
@@ -209,7 +185,6 @@ async def _send_life_image(message, result_type: str, caption: str):
         except Exception:
             pass
     await message.reply_text(caption)
-
 # ─────────────────────────────────────────────────────────────────
 #  INLINE KEYBOARD BUILDERS
 # ─────────────────────────────────────────────────────────────────
@@ -221,7 +196,6 @@ def _shop_main_kb():
         ],
         [InlineKeyboardButton("🎒 ᴍʏ ɪɴᴠᴇɴᴛᴏʀʏ", callback_data="shop_inventory")],
     ])
-
 def _armory_kb():
     rows = []
     for key, item in GUNS.items():
@@ -236,7 +210,6 @@ def _armory_kb():
         )])
     rows.append([InlineKeyboardButton("⬅ ʙᴀᴄᴋ", callback_data="shop_main")])
     return InlineKeyboardMarkup(rows)
-
 def _petshop_kb():
     rows = [
         [InlineKeyboardButton(
@@ -247,22 +220,16 @@ def _petshop_kb():
     ]
     rows.append([InlineKeyboardButton("⬅ ʙᴀᴄᴋ", callback_data="shop_main")])
     return InlineKeyboardMarkup(rows)
-
 # ─────────────────────────────────────────────────────────────────
 #  IN-MEMORY STATE
 # ─────────────────────────────────────────────────────────────────
 _pending_duels:    dict = {}
 _active_giveaways: dict = {}
-_daily_cooldowns:  dict = {}   # uid -> unix ts of last claim
-_work_cooldowns:   dict = {}   # uid -> unix ts of last work
-
 # ─────────────────────────────────────────────────────────────────
 #  _rf() — shorthand for no-slash regex filter (always group filters.group)
 # ─────────────────────────────────────────────────────────────────
 def _rf(pattern: str):
     return filters.regex(pattern, re.IGNORECASE) & filters.group
-
-
 # ═══════════════════════════════════════════════════════════════════
 #
 #  HANDLER REGISTRATION PATTERN (used for EVERY command):
@@ -281,8 +248,6 @@ def _rf(pattern: str):
 #  steal our no-slash messages.
 #
 # ═══════════════════════════════════════════════════════════════════
-
-
 # ──────────────────────────────────────────────────────────────────
 #  PROFILE
 # ──────────────────────────────────────────────────────────────────
@@ -313,43 +278,29 @@ async def _profile_handler(client, m: Message):
         f"⚔️ ᴘᴏᴡᴇʀ   : **{calc_power(u)}**</blockquote>",
         disable_web_page_preview=True,
     )
-
 @Client.on_message(filters.command(["lifeprofile"]) & filters.group)
 async def profile_slash(client, m: Message):
     await _profile_handler(client, m)
-
 @Client.on_message(_rf(r"^(pprofile|profile)\b"), group=-1)
 async def profile_noslash(client, m: Message):
     await _profile_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  BALANCE
 # ──────────────────────────────────────────────────────────────────
 async def _balance_handler(client, m: Message):
     coins = await _run(_get_coins, m.from_user.id)
     await m.reply(f"<blockquote>💰 ʏᴏᴜʀ ʙᴀʟᴀɴᴄᴇ: **{coins:,}** ᴄᴏɪɴs</blockquote>")
-
 @Client.on_message(filters.command(["lifebalance"]) & filters.group)
 async def balance_slash(client, m: Message):
     await _balance_handler(client, m)
-
 @Client.on_message(_rf(r"^(bbalance|balance)\b"), group=-1)
 async def balance_noslash(client, m: Message):
     await _balance_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
-#  DAILY  (24h in-memory cooldown — kept for game balance)
+#  DAILY  (NO cooldown — claim as many times as you want)
 # ──────────────────────────────────────────────────────────────────
 async def _daily_handler(client, m: Message):
-    uid  = m.from_user.id
-    now  = int(time.time())
-    last = _daily_cooldowns.get(uid, 0)
-    wait = 86400 - (now - last)
-    if wait > 0:
-        return await m.reply(f"<blockquote>⏳ ᴄᴏᴍᴇ ʙᴀᴄᴋ ɪɴ **{fmt_time(wait)}**</blockquote>")
-    _daily_cooldowns[uid] = now
+    uid   = m.from_user.id
     u     = await _run(_get_user, uid)
     base  = random.randint(200, 500)
     bonus = 0
@@ -364,16 +315,12 @@ async def _daily_handler(client, m: Message):
         f"<blockquote>💰 **+{reward}** ᴄᴏɪɴs{bonus_line}\n"
         f"⭐ **+10** xᴘ</blockquote>"
     )
-
 @Client.on_message(filters.command(["lifedaily"]) & filters.group)
 async def daily_slash(client, m: Message):
     await _daily_handler(client, m)
-
 @Client.on_message(_rf(r"^(ddaily|daily)\b"), group=-1)
 async def daily_noslash(client, m: Message):
     await _daily_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  LEADERBOARD
 # ──────────────────────────────────────────────────────────────────
@@ -397,16 +344,12 @@ async def _top_handler(client, m: Message):
         f"<blockquote>━━━━━━━━━━━━━━━━━━━━</blockquote>\n" + "\n".join(lines),
         disable_web_page_preview=True,
     )
-
 @Client.on_message(filters.command(["lifetop"]) & filters.group)
 async def top_slash(client, m: Message):
     await _top_handler(client, m)
-
 @Client.on_message(_rf(r"^(ttop|top)\b"), group=-1)
 async def top_noslash(client, m: Message):
     await _top_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  SOCIAL ACTIONS
 # ──────────────────────────────────────────────────────────────────
@@ -419,28 +362,22 @@ async def _social(m: Message, action: str):
         f"<blockquote>{emoji} **{mention(m.from_user)}** {action}ed **{mention(target)}**!</blockquote>",
         disable_web_page_preview=True,
     )
-
 @Client.on_message(filters.command(["lifehug"]) & filters.group)
 async def hug_slash(client, m): await _social(m, "hug")
 @Client.on_message(_rf(r"^(hhug|hug)\b"), group=-1)
 async def hug_noslash(client, m): await _social(m, "hug")
-
 @Client.on_message(filters.command(["lifekiss"]) & filters.group)
 async def kiss_slash(client, m): await _social(m, "kiss")
 @Client.on_message(_rf(r"^(kkiss|kiss)\b"), group=-1)
 async def kiss_noslash(client, m): await _social(m, "kiss")
-
 @Client.on_message(filters.command(["lifeslap"]) & filters.group)
 async def slap_slash(client, m): await _social(m, "slap")
 @Client.on_message(_rf(r"^(sslap|slap)\b"), group=-1)
 async def slap_noslash(client, m): await _social(m, "slap")
-
 @Client.on_message(filters.command(["lifelove"]) & filters.group)
 async def love_slash(client, m): await _social(m, "love")
 @Client.on_message(_rf(r"^(llove|love)\b"), group=-1)
 async def love_noslash(client, m): await _social(m, "love")
-
-
 # ──────────────────────────────────────────────────────────────────
 #  MARRY
 # ──────────────────────────────────────────────────────────────────
@@ -466,13 +403,10 @@ async def _marry_handler(client, m: Message):
         f"**{mention(m.reply_to_message.from_user)}** ᴀʀᴇ ɴᴏᴡ ᴍᴀʀʀɪᴇᴅ! 💕</blockquote>",
         disable_web_page_preview=True,
     )
-
 @Client.on_message(filters.command(["lifemarry"]) & filters.group)
 async def marry_slash(client, m): await _marry_handler(client, m)
 @Client.on_message(_rf(r"^(mmarry|marry)\b"), group=-1)
 async def marry_noslash(client, m): await _marry_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  DIVORCE
 # ──────────────────────────────────────────────────────────────────
@@ -484,13 +418,10 @@ async def _divorce_handler(client, m: Message):
     await _run(_update_user, u["partner"], {"partner": 0})
     await _run(_update_user, uid, {"partner": 0})
     await m.reply("<blockquote>💔 ʏᴏᴜ ᴀʀᴇ ɴᴏᴡ ᴅɪᴠᴏʀᴄᴇᴅ.</blockquote>")
-
 @Client.on_message(filters.command(["lifedivorce"]) & filters.group)
 async def divorce_slash(client, m): await _divorce_handler(client, m)
 @Client.on_message(_rf(r"^(ddivorce|divorce)\b"), group=-1)
 async def divorce_noslash(client, m): await _divorce_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  PARENT
 # ──────────────────────────────────────────────────────────────────
@@ -504,13 +435,10 @@ async def _parent_handler(client, m: Message):
         f"**{mention(m.reply_to_message.from_user)}**!</blockquote>",
         disable_web_page_preview=True,
     )
-
 @Client.on_message(filters.command(["lifeparent"]) & filters.group)
 async def parent_slash(client, m): await _parent_handler(client, m)
 @Client.on_message(_rf(r"^(pparent|parent)\b"), group=-1)
 async def parent_noslash(client, m): await _parent_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  SIBLING
 # ──────────────────────────────────────────────────────────────────
@@ -525,13 +453,10 @@ async def _sibling_handler(client, m: Message):
         f"**{mention(m.reply_to_message.from_user)}** ᴀʀᴇ ɴᴏᴡ sɪʙʟɪɴɢs!</blockquote>",
         disable_web_page_preview=True,
     )
-
 @Client.on_message(filters.command(["lifesibling"]) & filters.group)
 async def sibling_slash(client, m): await _sibling_handler(client, m)
 @Client.on_message(_rf(r"^(ssibling|sibling)\b"), group=-1)
 async def sibling_noslash(client, m): await _sibling_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  STEAL
 # ──────────────────────────────────────────────────────────────────
@@ -577,13 +502,10 @@ async def _steal_handler(client, m: Message):
             f"<blockquote>ғɪɴᴇ: **{fine}** ᴄᴏɪɴs\n"
             f"🚔 ᴊᴀɪʟᴇᴅ **10 ᴍɪɴᴜᴛᴇs**</blockquote>"
         )
-
 @Client.on_message(filters.command(["steal"]) & filters.group)
 async def steal_slash(client, m): await _steal_handler(client, m)
 @Client.on_message(_rf(r"^(ssteal|steal)\b"), group=-1)
 async def steal_noslash(client, m): await _steal_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  DUEL
 # ──────────────────────────────────────────────────────────────────
@@ -620,12 +542,10 @@ async def _duel_handler(client, m: Message):
         ]]),
         disable_web_page_preview=True,
     )
-
 @Client.on_message(filters.command(["duel"]) & filters.group)
 async def duel_slash(client, m): await _duel_handler(client, m)
 @Client.on_message(_rf(r"^(dduel|duel)\b"), group=-1)
 async def duel_noslash(client, m): await _duel_handler(client, m)
-
 @Client.on_callback_query(filters.regex(r"^duel_(accept|decline)_(.+)$"))
 async def duel_response(client, q: CallbackQuery):
     action = q.matches[0].group(1)
@@ -663,8 +583,6 @@ async def duel_response(client, q: CallbackQuery):
         f"💰 ᴘʀɪᴢᴇ: **{bet:,}** ᴄᴏɪɴs · ⭐ +25 xᴘ</blockquote>",
         disable_web_page_preview=True,
     )
-
-
 # ──────────────────────────────────────────────────────────────────
 #  BOWLING
 # ──────────────────────────────────────────────────────────────────
@@ -694,13 +612,10 @@ async def _bowling_handler(client, m: Message):
         await _run(_remove_coins, uid, bet)
         result = f"<blockquote>🎳 sᴄᴏʀᴇ: **{score}/6** — ɢᴜᴛᴛᴇʀʙᴀʟʟ!\n💸 ʟᴏsᴛ **{bet:,}** ᴄᴏɪɴs</blockquote>"
     await m.reply(result)
-
 @Client.on_message(filters.command(["lifebowling"]) & filters.group)
 async def bowling_slash(client, m): await _bowling_handler(client, m)
 @Client.on_message(_rf(r"^(bbowling|bowling)\b"), group=-1)
 async def bowling_noslash(client, m): await _bowling_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  SLOTS
 # ──────────────────────────────────────────────────────────────────
@@ -740,13 +655,10 @@ async def _slots_handler(client, m: Message):
         await _run(_remove_coins, uid, bet)
         body += f"<blockquote>💀 **ɴᴏ ᴍᴀᴛᴄʜ!**\n💸 ʟᴏsᴛ **{bet:,}** ᴄᴏɪɴs</blockquote>"
     await msg.edit(body)
-
 @Client.on_message(filters.command(["sslots", "slots"]) & filters.group)
 async def slots_slash(client, m): await _slots_handler(client, m)
 @Client.on_message(_rf(r"^(sslots|slots)\b"), group=-1)
 async def slots_noslash(client, m): await _slots_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  JOB
 # ──────────────────────────────────────────────────────────────────
@@ -780,27 +692,18 @@ async def _job_handler(client, m: Message):
         f"<blockquote>💰 sᴀʟᴀʀʏ: **{ji['salary']:,}** / 4ʜ\n"
         f"🎯 ʙᴏɴᴜs: +{ji['bonus_val']}% {ji['bonus_type'].replace('_', ' ')}</blockquote>"
     )
-
 @Client.on_message(filters.command(["lifejob"]) & filters.group)
 async def job_slash(client, m): await _job_handler(client, m)
 @Client.on_message(_rf(r"^(jjob|job)\b"), group=-1)
 async def job_noslash(client, m): await _job_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
-#  WORK  (in-memory 4h cooldown)
+#  WORK  (NO cooldown — work as many times as you want)
 # ──────────────────────────────────────────────────────────────────
 async def _work_handler(client, m: Message):
     uid = m.from_user.id
     u   = await _run(_get_user, uid)
     if not u["job"]:
         return await m.reply("<blockquote>❌ ɴᴏ ᴊᴏʙ! ᴜsᴇ `job` ᴛᴏ ᴘɪᴄᴋ ᴏɴᴇ.</blockquote>")
-    now  = int(time.time())
-    last = _work_cooldowns.get(uid, 0)
-    wait = 14400 - (now - last)
-    if wait > 0:
-        return await m.reply(f"<blockquote>⏳ ᴡᴏʀᴋ ᴄᴏᴏʟᴅᴏᴡɴ: **{fmt_time(wait)}**</blockquote>")
-    _work_cooldowns[uid] = now
     ji     = JOBS[u["job"]]
     salary = max(50, ji["salary"] + random.randint(-50, 100))
     await _run(_add_coins, uid, salary)
@@ -809,13 +712,10 @@ async def _work_handler(client, m: Message):
         f"<blockquote>💼 {ji['emoji']} ᴡᴏʀᴋᴇᴅ ᴀs **{u['job'].capitalize()}**</blockquote>\n"
         f"<blockquote>💰 ᴇᴀʀɴᴇᴅ: **{salary:,}** · ⭐ +20 xᴘ</blockquote>"
     )
-
 @Client.on_message(filters.command(["lifework"]) & filters.group)
 async def work_slash(client, m): await _work_handler(client, m)
 @Client.on_message(_rf(r"^(wwork|work)\b"), group=-1)
 async def work_noslash(client, m): await _work_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  FIGHT
 # ──────────────────────────────────────────────────────────────────
@@ -850,13 +750,10 @@ async def _fight_handler(client, m: Message):
         f"💪 {p1} ᴠs {p2}\n"
         f"💰 **{reward:,}** coins · ⭐ +20 xᴘ</blockquote>"
     )
-
 @Client.on_message(filters.command(["lifefight"]) & filters.group)
 async def fight_slash(client, m): await _fight_handler(client, m)
 @Client.on_message(_rf(r"^(ffight|fight)\b"), group=-1)
 async def fight_noslash(client, m): await _fight_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  GIVEAWAY
 # ──────────────────────────────────────────────────────────────────
@@ -881,7 +778,6 @@ async def _end_giveaway(key: str, host_uid: int, amount: int, reply_msg):
         await reply_msg.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-
 async def _giveaway_handler(client, m: Message):
     args = _parse_args(m.text)
     try:
@@ -907,12 +803,10 @@ async def _giveaway_handler(client, m: Message):
         disable_web_page_preview=True,
     )
     asyncio.create_task(_end_giveaway(key, uid, amount, sent))
-
 @Client.on_message(filters.command(["lifegiveaway"]) & filters.group)
 async def giveaway_slash(client, m): await _giveaway_handler(client, m)
 @Client.on_message(_rf(r"^(ggiveaway|giveaway)\b"), group=-1)
 async def giveaway_noslash(client, m): await _giveaway_handler(client, m)
-
 @Client.on_callback_query(filters.regex(r"^giveaway_join_(.+)$"))
 async def giveaway_join_cb(client, q: CallbackQuery):
     key = q.matches[0].group(1)
@@ -924,8 +818,6 @@ async def giveaway_join_cb(client, q: CallbackQuery):
         return await q.answer("✅ ᴀʟʀᴇᴀᴅʏ ᴇɴᴛᴇʀᴇᴅ!", show_alert=True)
     ga["participants"].append(uid)
     await q.answer(f"✅ ᴇɴᴛᴇʀᴇᴅ! ᴛᴏᴛᴀʟ: {len(ga['participants'])}", show_alert=True)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  SHOP + CALLBACKS
 # ──────────────────────────────────────────────────────────────────
@@ -934,24 +826,19 @@ async def _shop_handler(client, m: Message):
         "<blockquote>🛒 **ʟɪғᴇ sʜᴏᴘ**\nᴄʜᴏᴏsᴇ:</blockquote>",
         reply_markup=_shop_main_kb(),
     )
-
 @Client.on_message(filters.command(["lifeshop"]) & filters.group)
 async def shop_slash(client, m): await _shop_handler(client, m)
 @Client.on_message(_rf(r"^(sshop|shop)\b"), group=-1)
 async def shop_noslash(client, m): await _shop_handler(client, m)
-
 @Client.on_callback_query(filters.regex(r"^shop_main$"))
 async def shop_main_cb(client, q: CallbackQuery):
     await q.message.edit("<blockquote>🛒 **ʟɪғᴇ sʜᴏᴘ**\nᴄʜᴏᴏsᴇ:</blockquote>", reply_markup=_shop_main_kb())
-
 @Client.on_callback_query(filters.regex(r"^shop_armory$"))
 async def shop_armory_cb(client, q: CallbackQuery):
     await q.message.edit("<blockquote>🔫 **ᴀʀᴍᴏʀʏ**</blockquote>", reply_markup=_armory_kb())
-
 @Client.on_callback_query(filters.regex(r"^shop_petshop$"))
 async def shop_petshop_cb(client, q: CallbackQuery):
     await q.message.edit("<blockquote>🐾 **ᴘᴇᴛ sʜᴏᴘ**</blockquote>", reply_markup=_petshop_kb())
-
 @Client.on_callback_query(filters.regex(r"^buy_gun_(.+)$"))
 async def buy_gun_cb(client, q: CallbackQuery):
     key  = q.matches[0].group(1)
@@ -969,7 +856,6 @@ async def buy_gun_cb(client, q: CallbackQuery):
         f"⚔️ +{item['damage']} ᴅᴀᴍᴀɢᴇ · 💰 {item['price']:,} ᴘᴀɪᴅ</blockquote>",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅ ʙᴀᴄᴋ", callback_data="shop_armory")]]),
     )
-
 @Client.on_callback_query(filters.regex(r"^buy_armor_(.+)$"))
 async def buy_armor_cb(client, q: CallbackQuery):
     key  = q.matches[0].group(1)
@@ -988,7 +874,6 @@ async def buy_armor_cb(client, q: CallbackQuery):
         f"🛡 +{item['defense']} ᴅᴇғᴇɴsᴇ · 💰 {item['price']:,} ᴘᴀɪᴅ</blockquote>",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅ ʙᴀᴄᴋ", callback_data="shop_armory")]]),
     )
-
 @Client.on_callback_query(filters.regex(r"^buy_pet_(.+)$"))
 async def buy_pet_cb(client, q: CallbackQuery):
     key  = q.matches[0].group(1)
@@ -1006,7 +891,6 @@ async def buy_pet_cb(client, q: CallbackQuery):
         f"💪 +{item['power']} ᴘᴏᴡᴇʀ · 💰 {item['price']:,} ᴘᴀɪᴅ</blockquote>",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅ ʙᴀᴄᴋ", callback_data="shop_petshop")]]),
     )
-
 @Client.on_callback_query(filters.regex(r"^shop_inventory$"))
 async def shop_inventory_cb(client, q: CallbackQuery):
     uid = q.from_user.id
@@ -1027,8 +911,6 @@ async def shop_inventory_cb(client, q: CallbackQuery):
         + f"━━━━━━━━━━━━━━━━\n⚔️ ᴛᴏᴛᴀʟ ᴘᴏᴡᴇʀ: **{calc_power(u)}**",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅ ʙᴀᴄᴋ", callback_data="shop_main")]]),
     )
-
-
 # ──────────────────────────────────────────────────────────────────
 #  INVENTORY
 # ──────────────────────────────────────────────────────────────────
@@ -1050,13 +932,10 @@ async def _inventory_handler(client, m: Message):
         f"⚔️ ᴘᴏᴡᴇʀ: **{calc_power(u)}**\n"
         f"💼 ᴊᴏʙ: {JOBS.get(u['job'],{}).get('emoji','❌')} **{u['job'].capitalize() or 'None'}**"
     )
-
 @Client.on_message(filters.command(["lifeinventory"]) & filters.group)
 async def inventory_slash(client, m): await _inventory_handler(client, m)
 @Client.on_message(_rf(r"^(iinventory|inventory)\b"), group=-1)
 async def inventory_noslash(client, m): await _inventory_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  SETTINGS  (admin)
 # ──────────────────────────────────────────────────────────────────
@@ -1080,12 +959,10 @@ async def _settings_handler(client, m: Message):
             )],
         ]),
     )
-
 @Client.on_message(filters.command(["lifesettings"]) & filters.group)
 async def settings_slash(client, m): await _settings_handler(client, m)
 @Client.on_message(_rf(r"^(ssettings|settings)\b"), group=-1)
 async def settings_noslash(client, m): await _settings_handler(client, m)
-
 @Client.on_callback_query(filters.regex(r"^setting_(games|betting)_(-?\d+)$"))
 async def settings_toggle_cb(client, q: CallbackQuery):
     setting = q.matches[0].group(1)
@@ -1095,8 +972,6 @@ async def settings_toggle_cb(client, q: CallbackQuery):
     new_val = not current
     groups_col.update_one({"chat_id": chat_id}, {"$set": {db_key: new_val}}, upsert=True)
     await q.answer(f"{'✅' if new_val else '❌'} {setting}!", show_alert=True)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  ENABLE / DISABLE  (admin)
 # ──────────────────────────────────────────────────────────────────
@@ -1105,24 +980,19 @@ async def _enable_handler(client, m: Message):
         return await m.reply("❌ ᴀᴅᴍɪɴs ᴏɴʟʏ!")
     groups_col.update_one({"chat_id": m.chat.id}, {"$set": {"games_enabled": True}}, upsert=True)
     await m.reply("<blockquote>✅ ɢᴀᴍᴇs **ᴇɴᴀʙʟᴇᴅ**!</blockquote>")
-
 async def _disable_handler(client, m: Message):
     if not await is_admin(client, m):
         return await m.reply("<blockquote>❌ ᴀᴅᴍɪɴs ᴏɴʟʏ!</blockquote>")
     groups_col.update_one({"chat_id": m.chat.id}, {"$set": {"games_enabled": False}}, upsert=True)
     await m.reply("<blockquote>❌ ɢᴀᴍᴇs **ᴅɪsᴀʙʟᴇᴅ**!</blockquote>")
-
 @Client.on_message(filters.command(["lifeenable"]) & filters.group)
 async def enable_slash(client, m): await _enable_handler(client, m)
 @Client.on_message(_rf(r"^(eenable|enable)\b"), group=-1)
 async def enable_noslash(client, m): await _enable_handler(client, m)
-
 @Client.on_message(filters.command(["lifedisable"]) & filters.group)
 async def disable_slash(client, m): await _disable_handler(client, m)
 @Client.on_message(_rf(r"^(ddisable|disable)\b"), group=-1)
 async def disable_noslash(client, m): await _disable_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  RESET  (owner/sudo)
 # ──────────────────────────────────────────────────────────────────
@@ -1139,13 +1009,10 @@ async def _reset_handler(client, m: Message):
         f"<blockquote>✅ ʀᴇsᴇᴛ [{tid}](tg://user?id={tid})</blockquote>",
         disable_web_page_preview=True,
     )
-
 @Client.on_message(filters.command(["lifereset"]) & filters.group)
 async def reset_slash(client, m): await _reset_handler(client, m)
 @Client.on_message(_rf(r"^(rreset|reset)\b"), group=-1)
 async def reset_noslash(client, m): await _reset_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  ADD COINS  (owner/sudo)
 # ──────────────────────────────────────────────────────────────────
@@ -1166,13 +1033,10 @@ async def _addcoins_handler(client, m: Message):
         f"<blockquote>✅ **{amount:,}** ᴄᴏɪɴs → {mention(m.reply_to_message.from_user)}</blockquote>",
         disable_web_page_preview=True,
     )
-
 @Client.on_message(filters.command(["lifeaddcoins"]) & filters.group)
 async def addcoins_slash(client, m): await _addcoins_handler(client, m)
 @Client.on_message(_rf(r"^(aaddcoins|addcoins)\b"), group=-1)
 async def addcoins_noslash(client, m): await _addcoins_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  DEPOSIT
 # ──────────────────────────────────────────────────────────────────
@@ -1192,13 +1056,10 @@ async def _deposit_handler(client, m: Message):
     await _run(_remove_coins, uid, amount)
     await _run(_update_user, uid, {"bank": user.get("bank", 0) + amount})
     await m.reply(f"<blockquote>🏦 ᴅᴇᴘᴏsɪᴛᴇᴅ **{amount:,}** ᴄᴏɪɴs</blockquote>")
-
 @Client.on_message(filters.command(["deposit"]) & filters.group)
 async def deposit_slash(client, m): await _deposit_handler(client, m)
 @Client.on_message(_rf(r"^deposit\b"), group=-1)
 async def deposit_noslash(client, m): await _deposit_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  WITHDRAW
 # ──────────────────────────────────────────────────────────────────
@@ -1218,13 +1079,10 @@ async def _withdraw_handler(client, m: Message):
     await _run(_update_user, uid, {"bank": bank - amount})
     await _run(_add_coins, uid, amount)
     await m.reply(f"<blockquote>🏦 ᴡɪᴛʜᴅʀᴀᴡɴ **{amount:,}** ᴄᴏɪɴs</blockquote>")
-
 @Client.on_message(filters.command(["withdraw"]) & filters.group)
 async def withdraw_slash(client, m): await _withdraw_handler(client, m)
 @Client.on_message(_rf(r"^withdraw\b"), group=-1)
 async def withdraw_noslash(client, m): await _withdraw_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  BET  (NO cooldown)
 # ──────────────────────────────────────────────────────────────────
@@ -1261,13 +1119,10 @@ async def _bet_handler(client, m: Message):
             f"<blockquote>❌ ʟᴏsᴛ **{amount:,}** ᴄᴏɪɴs</blockquote>"
         )
         await _send_life_image(m, "loss", caption)
-
 @Client.on_message(filters.command(["bet"]) & filters.group)
 async def bet_slash(client, m): await _bet_handler(client, m)
 @Client.on_message(_rf(r"^(bbet|bet)\b"), group=-1)
 async def bet_noslash(client, m): await _bet_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  ROB  (NO cooldown)
 # ──────────────────────────────────────────────────────────────────
@@ -1294,13 +1149,10 @@ async def _rob_handler(client, m: Message):
         await m.reply(
             f"<blockquote>🚨 **ғᴀɪʟᴇᴅ!**\n💸 ғɪɴᴇ: {fine:,} ᴄᴏɪɴs</blockquote>"
         )
-
 @Client.on_message(filters.command(["rob"]) & filters.group)
 async def rob_slash(client, m): await _rob_handler(client, m)
 @Client.on_message(_rf(r"^(rrob|rob)\b"), group=-1)
 async def rob_noslash(client, m): await _rob_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  PAY  (NO cooldown)
 # ──────────────────────────────────────────────────────────────────
@@ -1332,13 +1184,10 @@ async def _pay_handler(client, m: Message):
         f"💰 {amount:,} ᴄᴏɪɴs</blockquote>",
         disable_web_page_preview=True,
     )
-
 @Client.on_message(filters.command(["pay"]) & filters.group)
 async def pay_slash(client, m): await _pay_handler(client, m)
 @Client.on_message(_rf(r"^(ppay|pay)\b"), group=-1)
 async def pay_noslash(client, m): await _pay_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  LOAN  (NO cooldown)
 # ──────────────────────────────────────────────────────────────────
@@ -1364,13 +1213,10 @@ async def _loan_handler(client, m: Message):
         f"ғʀᴏᴍ {mention(m.reply_to_message.from_user)}</blockquote>",
         disable_web_page_preview=True,
     )
-
 @Client.on_message(filters.command(["loan"]) & filters.group)
 async def loan_slash(client, m): await _loan_handler(client, m)
 @Client.on_message(_rf(r"^(lloan|loan)\b"), group=-1)
 async def loan_noslash(client, m): await _loan_handler(client, m)
-
-
 # ──────────────────────────────────────────────────────────────────
 #  HELP
 # ──────────────────────────────────────────────────────────────────
@@ -1400,13 +1246,10 @@ async def _help_handler(client, m: Message):
         "ᴀɴʏ ᴄᴀᴘɪᴛᴀʟɪsᴀᴛɪᴏɴ: `BET` `Bet` `BBET` ✅\n"
         "sʟᴀsʜ: `/bet` `/lifebowling` ✅</blockquote>"
     )
-
 @Client.on_message(filters.command(["lifehelp"]) & filters.group)
 async def help_slash(client, m): await _help_handler(client, m)
 @Client.on_message(_rf(r"^(hhelp|lifehelp)\b"), group=-1)
 async def help_noslash(client, m): await _help_handler(client, m)
-
-
 # ─────────────────────────────────────────────────────────────────
 #  MODULE META
 # ─────────────────────────────────────────────────────────────────
