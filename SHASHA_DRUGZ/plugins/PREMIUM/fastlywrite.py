@@ -252,7 +252,7 @@ async def _process_win(message, game_data: dict, elapsed: float, is_late: bool =
         f"⚡ **sᴘᴇᴇᴅ:** {wpm:.2f} ᴡᴘᴍ"
         f"{reply_line}</blockquote>"
     )
-    await redis_client.set(f"fastly_result:{message.chat.id}", result_text, ex=600)
+    await redis_client.set(f"fastly_result:{message.chat.id}", result_text, ex=14400)
     await message.reply_text(result_text, reply_markup=result_buttons(message.chat.id))
 
 # ================================================================
@@ -287,7 +287,7 @@ async def send_game(chat_id: int, force: bool = False):
     now      = time.time()
     game_key = f"fastly:{chat_id}"
     await redis_client.hset(game_key, mapping={"word": word, "time": str(now), "msg_id": "0"})
-    await redis_client.expire(game_key, 600)
+    await redis_client.expire(game_key, 14399)
     # ─────────────────────────────────────────────────────────
 
     sent_msg = None
