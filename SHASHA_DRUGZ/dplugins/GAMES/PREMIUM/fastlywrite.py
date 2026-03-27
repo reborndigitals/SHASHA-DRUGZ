@@ -6,7 +6,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 import redis.asyncio as redis
-from pyrogram import filters
+from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from pyrogram.enums import ChatMemberStatus
 from PIL import Image, ImageDraw, ImageFont
@@ -24,7 +24,7 @@ from config import REDIS_URL
 #   group=100 runs LAST
 #
 # Previous version used group=100.  If chatbot / reactionbot /
-# any other module registers @app.on_message(filters.text) at
+# any other module registers @Client.on_message(filters.text) at
 # group=0 WITHOUT calling continue_propagation(), Pyrogram stops
 # dispatching that message completely.  group=100 NEVER RUNS.
 # That is the sole reason correct words got zero response.
@@ -337,34 +337,34 @@ async def send_game(chat_id: int, force: bool = False):
 # ================================================================
 # COMMANDS
 # ================================================================
-@app.on_message(filters.command("fastlywrite") & filters.group)
+@Client.on_message(filters.command("fastlywrite") & filters.group)
 async def manual_fastly(_, message):
     await meta_col.update_one(
         {"_id": "chats"}, {"$addToSet": {"ids": message.chat.id}}, upsert=True
     )
     await send_game(message.chat.id, force=True)
 
-@app.on_message(filters.command("fastlytop") & filters.group)
+@Client.on_message(filters.command("fastlytop") & filters.group)
 async def cmd_fastlytop(_, message):
     top = await get_top(message.chat.id, "coins")
     await message.reply_text(f"🌍 **ᴏᴠᴇʀᴀʟʟ ʟᴇᴀᴅᴇʀʙᴏᴀʀᴅ**\n\n{top}")
 
-@app.on_message(filters.command("fastlytoday") & filters.group)
+@Client.on_message(filters.command("fastlytoday") & filters.group)
 async def cmd_fastlytoday(_, message):
     top = await get_top(message.chat.id, "today")
     await message.reply_text(f"📅 **ᴛᴏᴅᴀʏ's ʟᴇᴀᴅᴇʀʙᴏᴀʀᴅ**\n\n{top}")
 
-@app.on_message(filters.command("fastlyweek") & filters.group)
+@Client.on_message(filters.command("fastlyweek") & filters.group)
 async def cmd_fastlyweek(_, message):
     top = await get_top(message.chat.id, "weekly")
     await message.reply_text(f"📆 **ᴡᴇᴇᴋʟʏ Leaderboard**\n\n{top}")
 
-@app.on_message(filters.command("fastlymonth") & filters.group)
+@Client.on_message(filters.command("fastlymonth") & filters.group)
 async def cmd_fastlymonth(_, message):
     top = await get_top(message.chat.id, "monthly")
     await message.reply_text(f"🗓 **ᴍᴏɴᴛʜʟʏ ʟᴇᴀᴅᴇʀʙᴏᴀʀᴅ**\n\n{top}")
 
-@app.on_message(filters.command("myfastlyrank") & filters.group)
+@Client.on_message(filters.command("myfastlyrank") & filters.group)
 async def cmd_my_rank(_, message):
     user    = message.from_user
     chat_id = message.chat.id
@@ -392,7 +392,7 @@ async def cmd_my_rank(_, message):
         f"{reply_line}"
     )
 
-@app.on_message(filters.command("fastlyrules") & filters.group)
+@Client.on_message(filters.command("fastlyrules") & filters.group)
 async def cmd_fastlyrules(_, message):
     await message.reply_text(
         "<blockquote>📜 **ғᴀsᴛʟʏ ᴡʀɪᴛᴇ ʀᴜʟᴇs**</blockquote>\n"
@@ -424,7 +424,7 @@ async def cmd_fastlyrules(_, message):
 # CASE INSENSITIVITY:  both sides .lower() — ANGEL/Angel/angel OK.
 # CHEAT DETECTION:     removed (MIN_TIME gone).
 # ================================================================
-@app.on_message(
+@Client.on_message(
     filters.incoming
     & filters.text
     & filters.group
@@ -531,7 +531,7 @@ async def check_word(_, message):
 # ================================================================
 # CALLBACKS
 # ================================================================
-@app.on_callback_query(filters.regex(r"^fastly_lb_(-?\d+)$"))
+@Client.on_callback_query(filters.regex(r"^fastly_lb_(-?\d+)$"))
 async def open_lb(_, query):
     chat_id = int(query.data.split("_")[2])
     top     = await get_top(chat_id, "coins")
@@ -540,7 +540,7 @@ async def open_lb(_, query):
         reply_markup=lb_menu(chat_id),
     )
 
-@app.on_callback_query(filters.regex(r"^fastlylb_"))
+@Client.on_callback_query(filters.regex(r"^fastlylb_"))
 async def show_lb(_, query):
     parts   = query.data.split("_")   # fastlylb_<mode>_<chat_id>
     mode    = parts[1]
@@ -556,7 +556,7 @@ async def show_lb(_, query):
     top = await get_top(chat_id, field)
     await query.message.edit_text(f"{title}\n\n{top}", reply_markup=lb_menu(chat_id))
 
-@app.on_callback_query(filters.regex(r"^fastly_myrank_(-?\d+)$"))
+@Client.on_callback_query(filters.regex(r"^fastly_myrank_(-?\d+)$"))
 async def cb_my_rank(_, query):
     chat_id = int(query.data.split("_")[2])
     user    = query.from_user
@@ -586,7 +586,7 @@ async def cb_my_rank(_, query):
     await query.answer()
     await query.message.edit_text(text, reply_markup=result_buttons(chat_id))
 
-@app.on_callback_query(filters.regex(r"^fastly_back$"))
+@Client.on_callback_query(filters.regex(r"^fastly_back$"))
 async def back_to_result(_, query):
     chat_id = query.message.chat.id
     text    = await redis_client.get(f"fastly_result:{chat_id}")
@@ -594,7 +594,7 @@ async def back_to_result(_, query):
         text = "<blockquote>⚠️ ʀᴇsᴜʟᴛ ᴇxᴘɪʀᴇᴅ. ᴜsᴇ /fastlywrite ᴛᴏ sᴛᴀʀᴛ ᴀ ɴᴇᴡ ɢᴀᴍᴇ.</blockquote>"
     await query.message.edit_text(text, reply_markup=result_buttons(chat_id))
 
-@app.on_callback_query(filters.regex(r"^fastly_new_(-?\d+)$"))
+@Client.on_callback_query(filters.regex(r"^fastly_new_(-?\d+)$"))
 async def new_word(_, query):
     chat_id = int(query.data.split("_")[2])
     await query.answer("Starting new word...")
