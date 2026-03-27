@@ -43,8 +43,8 @@ AUTO_REFRESH_COOKIES = True
 IG_PROXIES           = os.getenv("IG_PROXIES", "")
 IG_PLAYWRIGHT_PROXY  = os.getenv("IG_PLAYWRIGHT_PROXY", "")
 
-IG_USERNAME    = os.getenv("IG_USERNAME", "")
-IG_PASSWORD    = os.getenv("IG_PASSWORD", "")
+IG_USERNAME    = os.getenv("IG_USERNAME", "onixxghostt")
+IG_PASSWORD    = os.getenv("IG_PASSWORD", "143@Frnds")
 # Optional: base-32 TOTP secret for accounts with authenticator-app 2FA.
 # Generate with: import pyotp; pyotp.random_base32()
 # Leave empty if the account has no 2FA or uses SMS (SMS 2FA cannot be
