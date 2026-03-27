@@ -29,6 +29,9 @@ from SHASHA_DRUGZ.utils.database import get_assistant
 from SHASHA_DRUGZ.utils.extraction import extract_user
 from strings import get_string
 
+# ─── ADDED IMPORTS FOR ASSISTANT JOIN ERRORS ────────────────────────────────
+from pyrogram.errors import FloodWait, UserAlreadyParticipant, InviteHashExpired, InviteHashInvalid
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  START STICKERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -194,32 +197,42 @@ async def join_assistant(chat_id: int):
     if not userbot:
         return False, "No assistant available"
 
-    # Already joined check
+    # ✅ Already joined check (SAFE)
     try:
-        await app.get_chat_member(chat_id, userbot.id)
-        return True, "Already in group"
+        member = await app.get_chat_member(chat_id, userbot.id)
+        if member:
+            return True, "Already in group"
     except:
         pass
 
-    # Username join
+    # ✅ Username join
     try:
         chat = await app.get_chat(chat_id)
         if chat.username:
             await userbot.join_chat(chat.username)
             return True, "Joined via username"
+    except UserAlreadyParticipant:
+        return True, "Already in group"
     except Exception as e:
         print("Username join fail:", e)
 
-    # Invite link join
+    # ✅ Invite link join
     try:
         if not await has_invite_permission(chat_id):
             return False, "Bot needs invite permission"
 
         link = await app.export_chat_invite_link(chat_id)
         await asyncio.sleep(1)
-        await userbot.join_chat(link)
 
+        await userbot.join_chat(link)
         return True, "Joined via invite"
+
+    except UserAlreadyParticipant:
+        return True, "Already in group"
+
+    except (InviteHashExpired, InviteHashInvalid):
+        return False, "Invite link invalid"
+
     except Exception as e:
         print("Invite join fail:", e)
 
@@ -236,14 +249,15 @@ async def auto_retry_join(chat_id: int):
                 return True
 
             print(f"[RETRY {i+1}] {msg}")
-
             await asyncio.sleep(RETRY_DELAY)
 
         except FloodWait as e:
+            print(f"[FLOODWAIT] Sleeping {e.value}s")
             await asyncio.sleep(e.value)
 
         except Exception as e:
             print("Retry error:", e)
+            await asyncio.sleep(5)
 
     print(f"[FAILED] Assistant join failed in {chat_id}")
     return False
@@ -251,6 +265,44 @@ async def auto_retry_join(chat_id: int):
 
 async def instant_assistant_join(chat_id: int):
     asyncio.create_task(auto_retry_join(chat_id))
+
+
+# 🔥 ADDED: Assistant checker UI
+async def ensure_assistant_joined(message: Message):
+    chat_id = message.chat.id
+
+    try:
+        userbot = await get_assistant(chat_id)
+    except Exception as e:
+        return await message.reply_text("❌ Assistant not available.")
+
+    msg = await message.reply_text(
+        f"🔍 **Checking [Assistant](tg://openmessage?user_id={userbot.id})...**"
+    )
+
+    # 🔥 RUN BACKGROUND JOIN ALWAYS (IMPORTANT)
+    asyncio.create_task(auto_retry_join(chat_id))
+
+    # ✅ Check already joined
+    try:
+        await app.get_chat_member(chat_id, userbot.id)
+        return await msg.edit_text(
+            f"✅ **[Assistant](tg://openmessage?user_id={userbot.id}) already in this group.**"
+        )
+    except:
+        pass
+
+    # ❌ Not joined → try immediate
+    success, result = await join_assistant(chat_id)
+
+    if success:
+        return await msg.edit_text(
+            f"✅ **[Assistant](tg://openmessage?user_id={userbot.id}) joined successfully!**"
+        )
+    else:
+        return await msg.edit_text(
+            f"⚠️ **{result}**\n🔄 Retrying in background..."
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -399,6 +451,9 @@ async def start_gp(client, message: Message, _):
     )
     await add_served_chat(message.chat.id)
 
+    # 🔥 Ensure assistant present when /start used in group
+    await ensure_assistant_joined(message)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  WELCOME HANDLER (new chat members)
@@ -441,14 +496,11 @@ async def welcome(client, message: Message):
 
                 await add_served_chat(message.chat.id)
 
-                # 🔥 ASSISTANT AUTO JOIN LOGIC (using improved retry system)
-                success, msg = await join_assistant(message.chat.id)
-                if not success:
-                    # If immediate join fails, start background retry
-                    asyncio.create_task(auto_retry_join(message.chat.id))
-                    await message.reply_text(f"⚠️ {msg}. Retrying in background...")
-                else:
-                    await message.reply_text(f"✅ {msg}")
+                # 🔥 Use the new assistant checker instead of old join logic
+                await ensure_assistant_joined(message)
+
+                # 🔥 EXTRA: instant background join
+                await instant_assistant_join(message.chat.id)
 
                 # 🎉 Welcome UI
                 await message.reply_photo(
