@@ -22,6 +22,7 @@ vc_logging_status: Dict[int, bool] = {}
 vcloggerdb = mongodb.vclogger
 
 # --- Config ---
+# Your standard prefixes
 PREFIXES = ["/", "!", "%", ",", "", ".", "@", "#"]
 
 # --- Database Functions ---
@@ -113,7 +114,6 @@ async def get_group_call_participants(userbot, peer):
 async def monitor_vc_chat(chat_id):
     userbot = await get_assistant(chat_id)
     if not userbot:
-        LOGGER.warning(f"monitor_vc_chat: No assistant for chat {chat_id}, stopping monitor.")
         return
 
     while chat_id in active_vc_chats and await get_vc_logger_status(chat_id):
@@ -143,30 +143,22 @@ async def monitor_vc_chat(chat_id):
             vc_active_users[chat_id] = new_users
 
         except Exception as e:
-            # Silent error to prevent log spam, but log once for debugging
-            LOGGER.debug(f"monitor_vc_chat error in chat {chat_id}: {e}")
+            pass # Silent error to prevent log spam
         
         await asyncio.sleep(5) # Check every 5 seconds
 
 async def check_and_monitor_vc(chat_id):
     if not await get_vc_logger_status(chat_id):
         return
+    userbot = await get_assistant(chat_id)
+    if not userbot:
+        return
     try:
-        userbot = await get_assistant(chat_id)
-        if not userbot:
-            LOGGER.warning(f"No assistant available for chat {chat_id}, disabling VC logger to avoid repeated failures.")
-            # Automatically disable to prevent endless error loops
-            vc_logging_status[chat_id] = False
-            await save_vc_logger_status(chat_id, False)
-            return
         if chat_id not in active_vc_chats:
             active_vc_chats.add(chat_id)
             asyncio.create_task(monitor_vc_chat(chat_id))
     except Exception as e:
-        LOGGER.error(f"Error in VC Monitor setup for chat {chat_id}: {e}")
-        # If we can't get an assistant, don't keep retrying
-        if chat_id in active_vc_chats:
-            active_vc_chats.discard(chat_id)
+        LOGGER.error(f"Error in VC Monitor: {e}")
 
 # --- Event Handlers (Join/Leave) ---
 
@@ -206,56 +198,42 @@ async def handle_user_leave(chat_id, user_id, userbot):
 async def vclogger_command(_, message: Message):
     chat_id = message.chat.id
     args = message.text.split()
-    current_status = await get_vc_logger_status(chat_id)
+    status = await get_vc_logger_status(chat_id)
 
-    # No arguments -> default to enable
+    prefix_ui = ", ".join([f"<b>{p}vclogger</b>" for p in ["/", "!"]])
+    current_state_ui = to_small_caps(str(status if status is not None else "Not Set"))
+
     if len(args) == 1:
-        # Enable by default
-        if current_status:
-            await message.reply("✅ **VC Logger is already enabled.**", disable_web_page_preview=True)
-        else:
+        text = (
+            f"📌 <b>VC Logger Status:</b> <b>{current_state_ui}</b>\n\n"
+            f"Usage: {prefix_ui} <b>[on|off]</b>"
+        )
+        await message.reply(text, disable_web_page_preview=True)
+    elif len(args) == 2:
+        arg = args[1].lower()
+        if arg in ["on", "enable", "yes"]:
             vc_logging_status[chat_id] = True
             await save_vc_logger_status(chat_id, True)
-            await message.reply("✅ **VC Logger Enabled** (default action)", disable_web_page_preview=True)
+            await message.reply(
+                f"✅ <b>VC Logging Enabled</b>",
+                disable_web_page_preview=True
+            )
             asyncio.create_task(check_and_monitor_vc(chat_id))
-        return
-
-    # With argument
-    arg = args[1].lower()
-    if arg in ["on", "enable", "yes"]:
-        if current_status:
-            await message.reply("✅ **VC Logger is already enabled.**", disable_web_page_preview=True)
-        else:
-            vc_logging_status[chat_id] = True
-            await save_vc_logger_status(chat_id, True)
-            await message.reply("✅ **VC Logger Enabled**", disable_web_page_preview=True)
-            asyncio.create_task(check_and_monitor_vc(chat_id))
-    elif arg in ["off", "disable", "no"]:
-        if not current_status:
-            await message.reply("❌ **VC Logger is already disabled.**", disable_web_page_preview=True)
-        else:
+        elif arg in ["off", "disable", "no"]:
             vc_logging_status[chat_id] = False
             await save_vc_logger_status(chat_id, False)
-            await message.reply("🚫 **VC Logger Disabled**", disable_web_page_preview=True)
+            await message.reply(
+                f"🚫 <b>VC Logging Disabled</b>",
+                disable_web_page_preview=True
+            )
             active_vc_chats.discard(chat_id)
             vc_active_users.pop(chat_id, None)
-    elif arg == "status":
-        status_text = "Enabled" if current_status else "Disabled"
-        await message.reply(f"📌 **VC Logger is currently:** `{status_text}`", disable_web_page_preview=True)
-    else:
-        await message.reply(
-            "❌ **Invalid option.**\n\n"
-            "Usage:\n"
-            "• `/vclogger` → Enable (default)\n"
-            "• `/vclogger on` → Enable\n"
-            "• `/vclogger off` → Disable\n"
-            "• `/vclogger status` → Check current status",
-            disable_web_page_preview=True
-        )
+        else:
+            await message.reply("❌ Invalid option. Use **on** or **off**.")
 
 # --- Auto Start ---
 # Ensure database is loaded when bot starts
-@app.on_message(filters.command("reload_vclog", prefixes=PREFIXES) & filters.user(1281282633)) # Placeholder for debug
+@app.on_message(filters.command("reload_vclog", prefixes=PREFIXES) & filters.user(123456789)) # Placeholder for debug
 async def manual_reload(client, message):
     await load_vc_logger_status()
     await message.reply("Reloaded VC Log status.")
@@ -264,7 +242,6 @@ async def manual_reload(client, message):
 loop = asyncio.get_event_loop()
 if loop.is_running():
     loop.create_task(load_vc_logger_status())
-
 __menu__ = "CMD_MUSIC"
 __mod_name__ = "H_B_61"
 __help__ = """
