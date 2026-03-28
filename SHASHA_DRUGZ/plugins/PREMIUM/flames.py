@@ -8,7 +8,6 @@ from pyrogram import filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ChatType
 
-print("[flames] flames, match")
 
 # --- FLAMES RESULT CONFIG ---
 RESULTS = {
