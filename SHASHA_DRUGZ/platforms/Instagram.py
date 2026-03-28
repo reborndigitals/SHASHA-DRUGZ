@@ -19,7 +19,6 @@ from config import LOG_GROUP_ID
 # ══════════════════════════════════════════════════════════════════════════════
 #  USER-AGENT ROTATION
 # ══════════════════════════════════════════════════════════════════════════════
-
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -28,31 +27,29 @@ USER_AGENTS = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
 ]
 
-# ══════════════════════════════════════════════════���═══════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 #  ENVIRONMENT
 # ══════════════════════════════════════════════════════════════════════════════
-
 ENABLE_IG_COOKIES    = os.getenv("ENABLE_IG_COOKIES", "true").lower() == "true"
 AUTO_REFRESH_COOKIES = True
 YTDLP_PROXIES        = os.getenv("YTDLP_PROXIES", "")
 PLAYWRIGHT_PROXIES   = os.getenv("PLAYWRIGHT_PROXIES", "")
 PLAYWRIGHT_PROFILE_DIR = os.path.join(os.getcwd(), "playwright_profile_ig")
 os.makedirs(PLAYWRIGHT_PROFILE_DIR, exist_ok=True)
-
 COOKIES_DIR = os.path.join(os.getcwd(), "cookies")
 os.makedirs(COOKIES_DIR, exist_ok=True)
-
 COOKIE_FILE = os.path.join(COOKIES_DIR, "instagram_cookies.txt")
 IG_CACHE_DIR = os.path.join(os.getcwd(), "igcache")
 os.makedirs(IG_CACHE_DIR, exist_ok=True)
-
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(3)
 _COOKIE_LOCK = asyncio.Lock()
 
+# Required Instagram app header — fixes "Missing x-ig-app-id" warnings
+IG_APP_ID = "936619743392459"
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  PROXY HELPERS
-# ═══════════════════════════════════��══════════════════════════════════════════
-
+# ══════════════════════════════════════════════════════════════════════════════
 def _parse_proxy_list(proxy_env: str):
     if not proxy_env:
         return []
@@ -67,7 +64,6 @@ def choose_random_proxy(pool):
 # ══════════════════════════════════════════════════════════════════════════════
 #  LOGGER
 # ══════════════════════════════════════════════════════════════════════════════
-
 def get_logger(name: str):
     try:
         return LOGGER(name)
@@ -83,10 +79,9 @@ def get_logger(name: str):
 
 logger = get_logger("SHASHA_DRUGZ/platforms/Instagram.py")
 
-# ══════════��═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE CLEANUP
 # ══════════════════════════════════════════════════════════════════════════════
-
 def clear_old_cookies():
     try:
         if os.path.exists(COOKIE_FILE):
@@ -103,7 +98,6 @@ def clear_old_cookies():
 # ══════════════════════════════════════════════════════════════════════════════
 #  LOG GROUP HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
-
 async def send_to_log_group(text: str = None, file_obj=None):
     if not LOG_GROUP_ID:
         logger.warning("LOG_GROUP_ID not configured – skipping")
@@ -120,7 +114,6 @@ async def send_cookie_file_to_log_group(reason: str = ""):
     if not os.path.exists(COOKIE_FILE):
         logger.warning("Cookie file missing – cannot send to log group.")
         return
-
     timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
     caption = (
         f"🍪 **Instagram Cookie Regenerated**\n\n"
@@ -129,7 +122,6 @@ async def send_cookie_file_to_log_group(reason: str = ""):
         f"📝 Reason : {reason or 'On-demand refresh'}\n\n"
         f"#InstagramCookies"
     )
-
     try:
         import pyrogram
         with open(COOKIE_FILE, "rb") as f:
@@ -149,7 +141,6 @@ async def send_cookie_file_to_log_group(reason: str = ""):
 # ══════════════════════════════════════════════════════════════════════════════
 #  PUBLIC IP INFO
 # ══════════════════════════════════════════════════════════════════════════════
-
 async def get_public_ip_info():
     try:
         async with aiohttp.ClientSession() as session:
@@ -168,8 +159,7 @@ async def get_public_ip_info():
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PLAYWRIGHT PROFILE LOCK CLEANUP
-# ═══════════════════════════════════════════════════════��══════════════════════
-
+# ══════════════════════════════════════════════════════════════════════════════
 def cleanup_playwright_profile():
     stale_files = [
         "SingletonLock", "SingletonCookie",
@@ -187,7 +177,6 @@ def cleanup_playwright_profile():
 # ══════════════════════════════════════════════════════════════════════════════
 #  BROWSER PROFILE COOKIE GENERATION
 # ══════════════════════════════════════════════════════════════════════════════
-
 async def generate_cookies_via_playwright(reason: str = "Profile cookie generation") -> bool:
     logger.info(f"🌐 Launching browser profile to generate cookies [{reason}] ...")
     await send_to_log_group(
@@ -198,12 +187,10 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
             f"#InstagramCookies"
         )
     )
-
     cleanup_playwright_profile()
     proxy      = choose_random_proxy(PLAYWRIGHT_PROXY_POOL)
     user_agent = random.choice(USER_AGENTS)
     context    = None
-
     try:
         async with async_playwright() as p:
             context = await p.chromium.launch_persistent_context(
@@ -222,9 +209,7 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                 viewport={"width": 1920, "height": 1080},
                 ignore_https_errors=True,
             )
-
             page = await context.new_page()
-
             # Stealth: remove webdriver fingerprint
             await page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -232,7 +217,6 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                 Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
                 window.chrome = { runtime: {} };
             """)
-
             try:
                 logger.info("🔗 Visiting instagram.com ...")
                 await page.goto("https://www.instagram.com",
@@ -244,7 +228,6 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                 await page.wait_for_timeout(random.randint(500, 1000))
             except Exception as e:
                 logger.warning(f"instagram.com warning: {e}")
-
             try:
                 logger.info("🔗 Visiting instagram.com/explore ...")
                 await page.goto("https://www.instagram.com/explore/",
@@ -252,11 +235,9 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                 await page.wait_for_timeout(4000)
             except Exception as e:
                 logger.warning(f"instagram.com/explore warning: {e}")
-
             await context.close()
             logger.info("✅ Browser profile cookies refreshed successfully")
             return True
-
     except Exception as e:
         logger.error(f"❌ Playwright cookie generation error: {str(e)[:300]}")
         if context:
@@ -264,7 +245,6 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                 await context.close()
             except Exception:
                 pass
-
         await send_to_log_group(
             text=(
                 f"❌ **Browser Profile – Cookie Generation Failed**\n\n"
@@ -278,7 +258,6 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
 # ══════════════════════════════════════════════════════════════════════════════
 #  EXTRACT COOKIES FROM BROWSER PROFILE
 # ══════════════════════════════════════════════════════════════════════════════
-
 async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Optional[str]:
     async with _COOKIE_LOCK:
         # After waiting for the lock, check if cookies are already fresh
@@ -286,14 +265,11 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
                 and not is_cookie_file_expired(COOKIE_FILE):
             logger.info("✅ Cookies already refreshed by another coroutine — reusing")
             return COOKIE_FILE
-
         ok = await generate_cookies_via_playwright(reason=reason)
         if not ok:
             logger.error("Browser profile cookie generation failed.")
             return None
-
         logger.info(f"🔄 Extracting cookies from browser profile ... [reason={reason}]")
-
         try:
             cmd = [
                 "yt-dlp",
@@ -304,15 +280,12 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
                 "--no-download",
                 "https://www.instagram.com",
             ]
-
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
-
             if process.returncode == 0 and os.path.exists(COOKIE_FILE):
                 if verify_cookies_file(COOKIE_FILE) and not is_cookie_file_expired(COOKIE_FILE):
                     logger.info("✅ Cookies extracted and verified successfully")
@@ -340,19 +313,16 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
                     ok2 = await generate_cookies_via_playwright(reason=f"{reason} (retry)")
                     if not ok2:
                         return None
-
                     process2 = await asyncio.create_subprocess_exec(
                         *cmd,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                     )
                     await asyncio.wait_for(process2.communicate(), timeout=120)
-
                     if process2.returncode == 0 and os.path.exists(COOKIE_FILE):
                         if verify_cookies_file(COOKIE_FILE):
                             await send_cookie_file_to_log_group(reason=f"{reason} (retry)")
                             return COOKIE_FILE
-
                     logger.error("❌ Retry extraction also failed")
                     return None
             else:
@@ -367,7 +337,6 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
                     )
                 )
                 return None
-
         except asyncio.TimeoutError:
             logger.error("Cookie extraction timed out (120s)")
             return None
@@ -378,35 +347,27 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
 # ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE VERIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
-
 def verify_cookies_file(filename: str) -> bool:
     try:
         if not os.path.exists(filename):
             logger.error(f"Cookies file does not exist: {filename}")
             return False
-
         with open(filename, "r", encoding="utf-8") as f:
             content = f.read()
-
         if "instagram.com" not in content and ".instagram.com" not in content:
             logger.error("No instagram.com domain in cookies file")
             return False
-
         important_cookies = [
             "sessionid", "ds_user_id", "ig_did", "csrftoken",
             "shbid", "shbts",
         ]
-
         found = [c for c in important_cookies if c in content]
-
         if len(found) < 1:
             logger.warning(f"⚠️ Too few important cookies found: {found}")
             return False
-
         if content.strip().startswith("{") or '"domain"' in content:
             logger.error("Cookies file is JSON format, not Netscape")
             return False
-
         valid_lines = 0
         for line in content.strip().split("\n"):
             if line.startswith("#") or not line.strip():
@@ -415,14 +376,11 @@ def verify_cookies_file(filename: str) -> bool:
                 logger.error(f"Invalid Netscape format (no tabs): {line[:100]}")
                 return False
             valid_lines += 1
-
         if valid_lines < 2:
             logger.error(f"Too few valid cookie lines: {valid_lines}")
             return False
-
         logger.info(f"✅ Cookies verified: {filename} | lines={valid_lines} | found={found}")
         return True
-
     except Exception as e:
         logger.error(f"Error verifying cookies file: {e}")
         return False
@@ -449,9 +407,7 @@ def get_cookie_min_expiry(filepath: str) -> Optional[int]:
                         min_exp = exp
                 except (ValueError, IndexError):
                     continue
-
         return min_exp
-
     except Exception as e:
         logger.error(f"Failed to parse cookie expiry: {e}")
         return None
@@ -459,19 +415,14 @@ def get_cookie_min_expiry(filepath: str) -> Optional[int]:
 def is_cookie_file_expired(filepath: str) -> bool:
     if not os.path.exists(filepath):
         return True
-
     min_exp = get_cookie_min_expiry(filepath)
-
     if min_exp is None:
         logger.warning("Could not determine cookie expiry – treating as expired.")
         return True
-
     now = int(time.time())
-
     if min_exp < now:
         logger.info(f"🕐 Cookie expired at {datetime.datetime.utcfromtimestamp(min_exp).isoformat()}Z")
         return True
-
     remaining = min_exp - now
     logger.info(f"✅ Cookie valid for {remaining // 3600}h {(remaining % 3600) // 60}m")
     return False
@@ -479,7 +430,6 @@ def is_cookie_file_expired(filepath: str) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 #  AUTH / ERROR DETECTION
 # ══════════════════════════════════════════════════════════════════════════════
-
 def is_auth_error(exception: Exception) -> bool:
     error_str = str(exception).lower()
     auth_indicators = [
@@ -501,7 +451,6 @@ def is_auth_error(exception: Exception) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAIN COOKIE GETTER
 # ══════════════════════════════════════════════════════════════════════════════
-
 async def get_cookies(force_refresh: bool = False) -> Optional[str]:
     if not force_refresh and os.path.exists(COOKIE_FILE):
         if verify_cookies_file(COOKIE_FILE) and not is_cookie_file_expired(COOKIE_FILE):
@@ -511,50 +460,37 @@ async def get_cookies(force_refresh: bool = False) -> Optional[str]:
             logger.warning("Existing cookies invalid or expired – regenerating ...")
             if os.path.exists(COOKIE_FILE):
                 os.remove(COOKIE_FILE)
-
     reason = "Force refresh – auth detected" if force_refresh else "Initial / expired"
     return await refresh_cookies_from_browser(reason=reason)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  INSTAGRAM URL & VIDEO ID EXTRACTION
 # ══════════════════════════════════════════════════════════════════════════════
-
 def extract_video_id(url: str) -> Optional[str]:
     if not url:
         return None
-
-    # Instagram reels: /reel/VIDEO_ID/
     reel_match = re.search(r'/reel/([A-Za-z0-9_-]+)/', url)
     if reel_match:
         return reel_match.group(1)
-
-    # Instagram posts: /p/VIDEO_ID/
     post_match = re.search(r'/p/([A-Za-z0-9_-]+)/', url)
     if post_match:
         return post_match.group(1)
-
-    # Instagram TV: /tv/VIDEO_ID/
     tv_match = re.search(r'/tv/([A-Za-z0-9_-]+)/', url)
     if tv_match:
         return tv_match.group(1)
-
-    # Fallback: extract alphanumeric string
     match = re.search(r'([A-Za-z0-9_-]{10,})', url)
     if match:
         return match.group(1)
-
     return None
 
 def is_instagram_url(url: str) -> bool:
     return "instagram.com" in url.lower() or "igsh=" in url.lower()
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  YT-DLP OPTIONS
+#  YT-DLP OPTIONS  (includes x-ig-app-id header fix)
 # ══════════════════════════════════════════════════════════════════════════════
-
 def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict:
     ua = random.choice(USER_AGENTS)
-
     base = {
         "outtmpl":            "downloads/%(id)s.%(ext)s",
         "quiet":              True,
@@ -564,66 +500,110 @@ def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict
         "fragment_retries":   10,
         "cachedir":           IG_CACHE_DIR,
         "http_headers": {
+            # ── fixes "Missing x-ig-app-id" warning ──────────────────────────
+            "x-ig-app-id":     IG_APP_ID,
+            # ─────────────────────────────────────────────────────────────────
             "User-Agent":      ua,
             "Accept-Language": "en-US,en;q=0.9",
+            "Accept":          "*/*",
+            "Origin":          "https://www.instagram.com",
+            "Referer":         "https://www.instagram.com/",
         },
     }
-
     if use_cookie_file and os.path.exists(use_cookie_file):
         base["cookiefile"] = use_cookie_file
         logger.debug(f"Using cookiefile: {use_cookie_file}")
     else:
         base["cookiesfrombrowser"] = ("chrome", PLAYWRIGHT_PROFILE_DIR)
         logger.debug("Falling back to cookiesfrombrowser with persistent profile")
-
     proxy = choose_random_proxy(YTDLP_PROXY_POOL)
     if proxy:
         base["proxy"] = proxy
-
     if extra_opts:
         base.update(extra_opts)
-
     return base
 
 def _get_downloaded_file(video_id: str, prefer_mp4: bool = True) -> Optional[str]:
     if not video_id:
         return None
-
     DOWNLOAD_DIR = "downloads"
     exts = ["mp4", "mkv", "webm", "mov"] if prefer_mp4 \
            else ["webm", "mp4", "mkv", "mov"]
-
     for ext in exts:
         p = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
         if os.path.exists(p):
             return p
-
     if os.path.exists(DOWNLOAD_DIR):
         for f in os.listdir(DOWNLOAD_DIR):
             if video_id in f:
                 return os.path.join(DOWNLOAD_DIR, f)
-
     return None
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  METADATA FETCH  (used by track())
+# ══════════════════════════════════════════════════════════════════════════════
+async def fetch_ig_metadata(link: str) -> Optional[dict]:
+    """
+    Returns a dict with keys: title, duration (seconds), thumbnail, uploader.
+    Uses yt-dlp info extraction (no actual download).
+    """
+    cookie_file = await get_cookies()
+    ydl_opts = get_ytdlp_opts(
+        {"skip_download": True},
+        use_cookie_file=cookie_file,
+    )
+    loop = asyncio.get_event_loop()
+    try:
+        def _extract():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(link, download=False)
+
+        info = await asyncio.wait_for(
+            loop.run_in_executor(None, _extract),
+            timeout=60,
+        )
+        if not info:
+            return None
+        duration_sec = info.get("duration") or 0
+        mins  = int(duration_sec) // 60
+        secs  = int(duration_sec) % 60
+        dur_min = f"{mins:02d}:{secs:02d}"
+        title = (
+            info.get("title")
+            or info.get("description", "")[:60]
+            or info.get("uploader", "Instagram Reel")
+        )
+        thumb = (
+            info.get("thumbnail")
+            or (info.get("thumbnails") or [{}])[-1].get("url")
+        )
+        return {
+            "title":        title,
+            "duration_min": dur_min,
+            "duration_sec": duration_sec,
+            "thumb":        thumb or "",
+            "uploader":     info.get("uploader", "Instagram"),
+            "link":         link,
+            "vidid":        extract_video_id(link) or link,
+        }
+    except Exception as e:
+        logger.error(f"fetch_ig_metadata error: {e}")
+        return None
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CORE DOWNLOAD
 # ══════════════════════════════════════════════════════════════════════════════
-
 async def download_with_ytdlp(link: str, is_audio: bool = False) -> Optional[str]:
     video_id = extract_video_id(link)
-
     if not video_id:
         logger.error(f"Could not extract video ID from {link}")
         return None
-
     DOWNLOAD_DIR = "downloads"
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
     existing = _get_downloaded_file(video_id)
     if existing:
         logger.info(f"📁 File already exists: {existing}")
         return existing
-
     cookie_file = await get_cookies()
     if not cookie_file:
         logger.error("No valid cookies – cannot download")
@@ -648,32 +628,26 @@ async def download_with_ytdlp(link: str, is_audio: bool = False) -> Optional[str
 
     ydl_opts = _build_opts(cookie_file)
     loop     = asyncio.get_event_loop()
-
     for attempt in range(2):
         try:
             await asyncio.sleep(random.uniform(0.5, 2.5))
-
             async with DOWNLOAD_SEMAPHORE:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     await loop.run_in_executor(
                         None, lambda: ydl.extract_info(link, download=True)
                     )
-
             file_path = _get_downloaded_file(video_id)
             if file_path:
                 logger.info(f"✅ Download successful: {file_path}")
                 return file_path
-
             logger.error("Download finished but file not found on disk")
             return None
-
         except Exception as e:
             if is_auth_error(e) and AUTO_REFRESH_COOKIES and attempt == 0:
                 logger.warning(
                     f"🔐 Auth/login error detected on attempt {attempt + 1} – "
                     "regenerating cookies ..."
                 )
-
                 clear_old_cookies()
                 await send_to_log_group(
                     text=(
@@ -683,11 +657,9 @@ async def download_with_ytdlp(link: str, is_audio: bool = False) -> Optional[str
                         "#InstagramCookies"
                     )
                 )
-
                 new_cookie = await refresh_cookies_from_browser(
                     reason="Auth/login error detected during download"
                 )
-
                 if new_cookie:
                     logger.info("✅ Fresh cookies obtained – retrying download ...")
                     ydl_opts = _build_opts(new_cookie)
@@ -698,13 +670,11 @@ async def download_with_ytdlp(link: str, is_audio: bool = False) -> Optional[str
             else:
                 logger.error(f"Download error (attempt {attempt + 1}): {str(e)[:300]}")
                 return None
-
     return None
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  DOWNLOAD WRAPPERS
 # ══════════════════════════════════════════════════════════════════════════════
-
 async def download_video(link: str) -> Optional[str]:
     logger.info(f"🎬 Downloading Instagram video: {link}")
     return await download_with_ytdlp(link, is_audio=False)
@@ -716,16 +686,13 @@ async def download_audio(link: str) -> Optional[str]:
 # ══════════════════════════════════════════════════════════════════════════════
 #  UTILITY
 # ══════════════════════════════════════════════════════════════════════════════
-
 async def check_file_size(link):
     try:
         ydl_opts = get_ytdlp_opts(
             {"quiet": True},
             use_cookie_file=COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
         )
-
         loop = asyncio.get_event_loop()
-
         def _get_size():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info  = ydl.extract_info(link, download=False)
@@ -735,12 +702,10 @@ async def check_file_size(link):
                     if size:
                         total += size
                 return total
-
         return await asyncio.wait_for(
             loop.run_in_executor(None, _get_size),
             timeout=60,
         )
-
     except Exception as e:
         logger.error(f"Failed to get file size: {e}")
         return None
@@ -748,23 +713,40 @@ async def check_file_size(link):
 # ══════════════════════════════════════════════════════════════════════════════
 #  INSTAGRAM API CLASS
 # ══════════════════════════════════════════════════════════════════════════════
-
 class InstagramAPI:
-
     def __init__(self):
         self.base = "https://www.instagram.com/reel/"
         self.regex = re.compile(
             r"(https?://)?(www\.)?instagram\.com/(reel|p|tv)/([A-Za-z0-9_-]+)"
         )
 
-    async def exists(self, link: str) -> bool:
+    # ── called as: await Instagram.valid(url) ────────────────────────────────
+    async def valid(self, link: str) -> bool:
+        """Return True if the URL looks like a supported Instagram post/reel/TV link."""
         return is_instagram_url(link) and bool(re.search(self.regex, link))
+
+    # ── called as: await Instagram.exists(url) ───────────────────────────────
+    async def exists(self, link: str) -> bool:
+        """Alias for valid() – kept for backward compatibility."""
+        return await self.valid(link)
+
+    # ── called as: details, track_id = await Instagram.track(url) ────────────
+    async def track(self, link: str) -> Tuple[dict, str]:
+        """
+        Fetch metadata for an Instagram reel / post.
+        Returns (details_dict, video_id_str).
+        Raises Exception on failure so the caller can show _["play_3"].
+        """
+        meta = await fetch_ig_metadata(link)
+        if not meta:
+            raise Exception("Could not fetch Instagram metadata")
+        track_id = meta["vidid"]
+        return meta, track_id
 
     async def url(self, message_1: Message) -> Union[str, None]:
         messages = [message_1]
         if message_1.reply_to_message:
             messages.append(message_1.reply_to_message)
-
         for message in messages:
             if message.entities:
                 for entity in message.entities:
@@ -775,21 +757,16 @@ class InstagramAPI:
                 for entity in message.caption_entities:
                     if entity.type == MessageEntityType.TEXT_LINK:
                         return entity.url
-
         return None
 
     async def video(self, link: str) -> tuple:
         try:
             if not is_instagram_url(link):
                 return 0, "Invalid Instagram URL"
-
             downloaded_file = await download_video(link)
-
             if downloaded_file:
                 return 1, downloaded_file
-
             return 0, "Video download failed"
-
         except Exception as e:
             return 0, f"Video failed: {str(e)[:100]}"
 
@@ -797,35 +774,28 @@ class InstagramAPI:
         try:
             if not is_instagram_url(link):
                 return 0, "Invalid Instagram URL"
-
             downloaded_file = await download_audio(link)
-
             if downloaded_file:
                 return 1, downloaded_file
-
             return 0, "Audio download failed"
-
         except Exception as e:
             return 0, f"Audio failed: {str(e)[:100]}"
 
     async def download(
         self,
-        link:      str,
-        mystic     = None,
-        video:     Union[bool, str] = None,
-        audio:     Union[bool, str] = None,
+        link:  str,
+        mystic = None,
+        video: Union[bool, str] = None,
+        audio: Union[bool, str] = None,
     ) -> tuple:
         try:
             if not is_instagram_url(link):
                 return None, False
-
             if audio:
                 downloaded_file = await download_audio(link)
             else:
                 downloaded_file = await download_video(link)
-
             return downloaded_file, bool(downloaded_file)
-
         except Exception as e:
             logger.error(f"Download error: {e}")
             return None, False
@@ -833,26 +803,20 @@ class InstagramAPI:
 # ══════════════════════════════════════════════════════════════════════════════
 #  STARTUP
 # ══════════════════════════════════════════════════════════════════════════════
-
 async def startup_services():
     if not ENABLE_IG_COOKIES:
         logger.info("Instagram cookie handling disabled (ENABLE_IG_COOKIES=false).")
         return
-
     logger.info("🚀 Starting Instagram services (Browser Profile) ...")
-
     cleanup_playwright_profile()
-
     need_refresh = (
         not os.path.exists(COOKIE_FILE)
         or not verify_cookies_file(COOKIE_FILE)
         or is_cookie_file_expired(COOKIE_FILE)
     )
-
     if need_refresh:
         logger.info("🔄 No valid cookies found – generating via Browser Profile ...")
         cookie_file = await get_cookies(force_refresh=True)
-
         if cookie_file:
             logger.info(f"✅ Cookies ready: {cookie_file}")
         else:
@@ -860,7 +824,6 @@ async def startup_services():
                 "⚠️ Cookie generation failed on startup.\n"
                 "   The bot will retry automatically on the first download request."
             )
-
             await send_to_log_group(
                 text=(
                     "⚠️ **Startup Cookie Generation Failed**\n\n"
