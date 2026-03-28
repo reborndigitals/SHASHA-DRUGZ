@@ -17,8 +17,6 @@ from SHASHA_DRUGZ.core.mongo import mongodb
 from SHASHA_DRUGZ.misc import SUDOERS
 from SHASHA_DRUGZ.utils.database import get_served_chats
 
-print("[ban] ban, unban, mute, unmute, tmute, muteall, unmuteall, gban, gunban, tban, sban")
-
 # ========================== GLOBAL BAN DATABASE ==========================
 gbans_collection = mongodb.gbans
 
