@@ -34,26 +34,24 @@ RUN pip install --upgrade pip \
 # Install Playwright browser
 RUN playwright install chromium
 
-# Clone and build bgutil server
+# Clone bgutil server and install Node deps only.
+# v1.3.1+ removed the TypeScript compile step entirely.
+# The server runs src/main.ts directly at runtime via swc-node.
+# There is NO build/ folder and NO npx tsc step.
 RUN git clone --single-branch --depth 1 \
         https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git \
         /app/bgutil-ytdlp-pot-provider \
     && cd /app/bgutil-ytdlp-pot-provider/server \
-    && echo "=== package.json ===" && cat package.json \
-    && npm ci --ignore-scripts \
-    && echo "=== Running npm run build ===" \
-    && npm run build \
-    && echo "=== build/ contents ===" && ls -la build/ \
-    && test -f build/index.js \
-        || (echo "❌ ERROR: build/index.js still missing!" && exit 1) \
-    && echo "✅ build/index.js confirmed." \
-    && npm prune --production \
-    && rm -rf src ../.git /root/.npm /tmp/*
+    && npm ci \
+    && test -f src/main.ts \
+        || (echo "ERROR: src/main.ts not found after clone!" && exit 1) \
+    && echo "OK: src/main.ts confirmed. No compile needed for v1.3.1+." \
+    && rm -rf ../.git /root/.npm /tmp/*
 
 # Copy project files
 COPY . .
 
-# Cleanup
+# Cleanup + fix start script permissions
 RUN chmod +x start \
     && find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
     && find . -name "*.pyc" -delete 2>/dev/null || true
