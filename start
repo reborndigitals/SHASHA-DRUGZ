@@ -25,3 +25,4 @@ python3 -m SHASHA_DRUGZ
 echo "Stopping bgutil server..."
 kill $BGUTIL_PID 2>/dev/null || true
 wait $BGUTIL_PID 2>/dev/null || true
+
