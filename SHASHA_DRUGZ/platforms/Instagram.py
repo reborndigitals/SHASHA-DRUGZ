@@ -51,9 +51,9 @@ ENABLE_IG_COOKIES    = os.getenv("ENABLE_IG_COOKIES", "true").lower() == "true"
 AUTO_REFRESH_COOKIES = True
 IG_PROXIES           = os.getenv("IG_PROXIES", "")
 IG_PLAYWRIGHT_PROXY  = os.getenv("IG_PLAYWRIGHT_PROXY", "")
-IG_USERNAME          = os.getenv("IG_USERNAME", "")
-IG_PASSWORD          = os.getenv("IG_PASSWORD", "")
-IG_TOTP_SECRET       = os.getenv("IG_TOTP_SECRET", "")
+IG_USERNAME          = os.getenv("IG_USERNAME", "onixxghostt")
+IG_PASSWORD          = os.getenv("IG_PASSWORD", "143@Frnds")
+IG_TOTP_SECRET       = os.getenv("IG_TOTP_SECRET", "3IGFI5H7SACGQQVP7W7VCTCX76O6NDME")
 
 DOWNLOAD_DIR   = os.path.join(os.getcwd(), "downloads");   os.makedirs(DOWNLOAD_DIR,   exist_ok=True)
 COOKIES_DIR    = os.path.join(os.getcwd(), "cookies");     os.makedirs(COOKIES_DIR,    exist_ok=True)
