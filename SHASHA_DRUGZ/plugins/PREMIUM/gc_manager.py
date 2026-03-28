@@ -3,14 +3,12 @@
 #   Drop this file into: SHASHA_DRUGZ/plugins/gcmanager.py
 #   Single-file — zero extra files needed.
 # ============================================================
-
 import re
 import asyncio
 import hashlib
 import logging
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
-
 from motor.motor_asyncio import AsyncIOMotorClient
 from pyrogram import filters, enums
 from pyrogram.errors import (
@@ -26,7 +24,6 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     CallbackQuery,
 )
-
 from SHASHA_DRUGZ import app
 from SHASHA_DRUGZ.misc import SUDOERS
 from config import OWNER_ID
@@ -62,7 +59,6 @@ async def get_db():
 
 
 # ── Group helpers ─────────────────────────────────────────────
-
 async def db_add_allowed_group(chat_id: int, chat_title: str, added_by: int) -> bool:
     db = await get_db()
     try:
@@ -107,7 +103,6 @@ async def db_get_all_allowed_groups() -> List[Dict]:
 
 
 # ── Session helpers ───────────────────────────────────────────
-
 async def db_create_session(chat_id: int, created_by: int) -> Optional[str]:
     db = await get_db()
     try:
@@ -154,7 +149,6 @@ async def db_clear_session_data(chat_id: int, session_id: str):
 
 
 # ── Link helpers ──────────────────────────────────────────────
-
 async def db_add_link(chat_id: int, user_id: int, username: str,
                       link: str, encrypted: str, session_id: str):
     db = await get_db()
@@ -254,7 +248,6 @@ async def db_mark_user_links_verified(chat_id: int, user_id: int, session_id: st
 
 
 # ── Safe list helpers ─────────────────────────────────────────
-
 async def db_is_user_in_safe_list(chat_id: int, session_id: str, user_id: int) -> bool:
     db = await get_db()
     try:
@@ -290,7 +283,6 @@ async def db_get_safe_users(chat_id: int, session_id: str) -> List[Dict]:
 
 
 # ── Ad tracking helpers ───────────────────────────────────────
-
 async def db_enable_ad_tracking(chat_id: int, session_id: str):
     db = await get_db()
     try:
@@ -331,7 +323,6 @@ async def db_add_to_ad_list(chat_id: int, user_id: int, username: str):
 
 
 # ── SR list helpers ───────────────────────────────────────────
-
 async def db_add_to_sr_list(chat_id: int, user_id: int, username: str):
     db = await get_db()
     try:
@@ -355,7 +346,6 @@ async def db_get_sr_list(chat_id: int) -> List[Dict]:
 
 
 # ── Warning helpers ───────────────────────────────────────────
-
 async def db_get_warn_limit(chat_id: int) -> int:
     db = await get_db()
     try:
@@ -379,7 +369,6 @@ async def db_set_warn_limit(chat_id: int, limit: int):
 
 
 # ── Custom pin message helpers ────────────────────────────────
-
 async def db_set_rs(chat_id: int, slot: int, text: str):
     db = await get_db()
     try:
@@ -403,7 +392,6 @@ async def db_get_rs(chat_id: int, slot: int) -> Optional[str]:
 
 
 # ── Anon mode helpers ─────────────────────────────────────────
-
 async def db_toggle_anon_mode(chat_id: int) -> bool:
     """Toggle anon admin mode; returns new state."""
     db = await get_db()
@@ -425,7 +413,6 @@ async def db_toggle_anon_mode(chat_id: int) -> bool:
 # ─────────────────────────────────────────────────────────────
 #  UTILITY FUNCTIONS
 # ─────────────────────────────────────────────────────────────
-
 def encrypt_link(link: str) -> str:
     return hashlib.sha256(link.encode()).hexdigest()[:16]
 
@@ -528,11 +515,24 @@ OPEN_PERMS = ChatPermissions(
 
 MUTED_PERMS = ChatPermissions()   # all False by default
 
+# ─────────────────────────────────────────────────────────────
+#  ALL COMMAND NAMES — used to build the ~filters.command filter
+# ─────────────────────────────────────────────────────────────
+ALL_COMMANDS = [
+    "gcstarts", "gcclose", "gcreopen", "gcend", "gcclear", "gcclearall",
+    "gcrefresh", "gccheck", "gcsr", "gcadd", "gcsetwarnlimit",
+    "muteunsafe", "unmuteunsafe", "gcmute", "gcunmute", "unmuteall",
+    "unsafe", "safe", "gcmulti", "gclist", "gccount", "gclink",
+    "srlist", "gchelp", "gcrule", "gcsettings", "anonmode",
+    "p", "gcmanage", "gcpanel", "gcaddgroup", "gcremovegroup", "gclinks",
+    "rs1", "rs2", "rs3", "rs4",
+    "setrs", "setrs2", "setrs3", "setrs4",
+    "start", "help",
+]
 
 # ─────────────────────────────────────────────────────────────
 #  RESOLVE TARGET HELPER
 # ─────────────────────────────────────────────────────────────
-
 async def _resolve_target(client, message: Message) -> Tuple[Optional[int], Optional[str]]:
     """Resolve target user_id and display_name from reply or first arg."""
     if message.reply_to_message and message.reply_to_message.from_user:
@@ -571,31 +571,25 @@ async def gcstarts_command(client, message: Message):
             "/gcmanage — Configure allowed groups\n"
             "/gcpanel — Admin panel"
         )
-
     chat_id = message.chat.id
     user_id = message.from_user.id
-
     if not await is_group_admin(client, chat_id, user_id):
         return await message.reply_text("❌ Only admins can activate the bot!")
-
     if not await db_is_group_allowed(chat_id):
         return await message.reply_text(
             f"⚠️ This group is not authorized!\n"
             f"Contact the bot owner to whitelist it.\n"
             f"Group ID: `{chat_id}`"
         )
-
     session = await db_get_active_session(chat_id)
     if not session:
         session_id = await db_create_session(chat_id, user_id)
         if not session_id:
             return await message.reply_text("❌ Failed to create session!")
-
         try:
             await client.set_chat_permissions(chat_id, OPEN_PERMS)
         except Exception as e:
             logger.warning(f"Could not set chat permissions: {e}")
-
         try:
             await client.send_video(
                 chat_id,
@@ -629,14 +623,11 @@ async def gcclose_command(client, message: Message):
     """Lock the group without ending the session."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("This command is only available in groups!")
-
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ This command is only for admins!")
-
     if not await db_get_active_session(chat_id):
         return await message.reply_text("❌ No active session! Use /gcstarts to begin.")
-
     try:
         await client.set_chat_permissions(chat_id, LOCKED_PERMS)
         try:
@@ -670,14 +661,11 @@ async def gcreopen_command(client, message: Message):
     """Unlock the group and continue the session."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("This command is only available in groups!")
-
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ This command is only for admins!")
-
     if not await db_get_active_session(chat_id):
         return await message.reply_text("❌ No active session! Use /gcstarts to begin.")
-
     try:
         await client.set_chat_permissions(chat_id, OPEN_PERMS)
         await message.reply_text(
@@ -699,24 +687,19 @@ async def gcend_command(client, message: Message):
     """End the current session and clear all data."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("This command is only available in groups!")
-
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ This command is only for admins!")
-
     session = await db_get_active_session(chat_id)
     if not session:
         return await message.reply_text("❌ No active session found!")
-
     session_id = str(session["_id"])
     await db_clear_session_data(chat_id, session_id)
     await db_close_session(chat_id)
-
     try:
         await client.set_chat_permissions(chat_id, LOCKED_PERMS)
     except Exception as e:
         logger.warning(f"gcend lock: {e}")
-
     try:
         await client.send_photo(
             chat_id,
@@ -740,15 +723,12 @@ async def gcclear_command(client, message: Message):
     """Clear tracked data but keep the session active."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("This command is only available in groups!")
-
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ This command is only for admins!")
-
     session = await db_get_active_session(chat_id)
     if not session:
         return await message.reply_text("❌ No active session found!")
-
     await db_clear_session_data(chat_id, str(session["_id"]))
     await message.reply_text(
         "✅ **All tracked data cleared!**\n\n"
@@ -762,19 +742,15 @@ async def gcclearall_command(client, message: Message):
     """Delete recent messages in the group (last ~1 000)."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("This command is only available in groups!")
-
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ This command is only for admins!")
-
     status_msg = await message.reply_text(
         "⏳ **Starting deletion process...**\n"
         "Note: Telegram only allows deletion of messages from the last 48 h."
     )
-
     deleted = failed = 0
     current_id = message.id
-
     for msg_id in range(current_id, max(current_id - 1000, 0), -1):
         try:
             await client.delete_messages(chat_id, msg_id)
@@ -790,7 +766,6 @@ async def gcclearall_command(client, message: Message):
             failed += 1
             if failed > 100:
                 break
-
     try:
         await status_msg.edit_text(
             f"✅ **Clear All Complete**\n\n"
@@ -807,11 +782,9 @@ async def gcrefresh_command(client, message: Message):
     """Refresh/verify the admin list for this group."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("This command is only available in groups!")
-
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ This command is only for admins!")
-
     try:
         admins = await client.get_chat_members(
             chat_id, filter=enums.ChatMembersFilter.ADMINISTRATORS
@@ -835,7 +808,6 @@ async def gcmanage_command(client, message: Message):
     """Group management panel (bot owner only, PM only)."""
     if message.from_user.id != OWNER_ID and message.from_user.id not in SUDOERS:
         return await message.reply_text("❌ This command is only for the bot owner!")
-
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 View Allowed Groups", callback_data="gc_view_groups")],
         [InlineKeyboardButton("➕ Add Group", callback_data="gc_add_group_info")],
@@ -851,9 +823,7 @@ async def gcmanage_command(client, message: Message):
 async def gcmanage_callback(client, query: CallbackQuery):
     if query.from_user.id != OWNER_ID and query.from_user.id not in SUDOERS:
         return await query.answer("Not authorized!", show_alert=True)
-
     await query.answer()
-
     if query.data == "gc_view_groups":
         groups = await db_get_all_allowed_groups()
         if not groups:
@@ -867,7 +837,6 @@ async def gcmanage_callback(client, query: CallbackQuery):
                 f"   Added: {added}\n\n"
             )
         await query.message.edit_text(text)
-
     elif query.data == "gc_add_group_info":
         await query.message.edit_text(
             "➕ **Add New Group**\n\n"
@@ -876,7 +845,6 @@ async def gcmanage_callback(client, query: CallbackQuery):
             "3. Send: `/gcaddgroup <group_id>`\n\n"
             "Example: `/gcaddgroup -1001234567890`"
         )
-
     elif query.data == "gc_remove_group_info":
         await query.message.edit_text(
             "➖ **Remove Group**\n\n"
@@ -890,22 +858,18 @@ async def gcmanage_callback(client, query: CallbackQuery):
 async def gcaddgroup_command(client, message: Message):
     if message.from_user.id != OWNER_ID and message.from_user.id not in SUDOERS:
         return await message.reply_text("❌ Only the bot owner can use this!")
-
     args = message.command[1:]
     if not args:
         return await message.reply_text("❌ Usage: `/gcaddgroup <group_id>`")
-
     try:
         chat_id = int(args[0])
     except ValueError:
         return await message.reply_text("❌ Invalid group ID! Must be a number.")
-
     try:
         chat = await client.get_chat(chat_id)
         chat_title = chat.title or f"Group {chat_id}"
     except Exception:
         chat_title = f"Group {chat_id}"
-
     success = await db_add_allowed_group(chat_id, chat_title, message.from_user.id)
     if success:
         await message.reply_text(
@@ -920,16 +884,13 @@ async def gcaddgroup_command(client, message: Message):
 async def gcremovegroup_command(client, message: Message):
     if message.from_user.id != OWNER_ID and message.from_user.id not in SUDOERS:
         return await message.reply_text("❌ Only the bot owner can use this!")
-
     args = message.command[1:]
     if not args:
         return await message.reply_text("❌ Usage: `/gcremovegroup <group_id>`")
-
     try:
         chat_id = int(args[0])
     except ValueError:
         return await message.reply_text("❌ Invalid group ID! Must be a number.")
-
     success = await db_remove_allowed_group(chat_id)
     if success:
         await message.reply_text(
@@ -945,7 +906,6 @@ async def gcpanel_command(client, message: Message):
     """Full admin panel (owner/sudoers)."""
     if message.from_user.id != OWNER_ID and message.from_user.id not in SUDOERS:
         return await message.reply_text("❌ Only the bot owner can use this!")
-
     groups = await db_get_all_allowed_groups()
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 All Groups", callback_data="gc_view_groups"),
@@ -969,11 +929,9 @@ async def gclinks_command(client, message: Message):
     """View links by group (PM only, owner/sudoers)."""
     if message.from_user.id != OWNER_ID and message.from_user.id not in SUDOERS:
         return await message.reply_text("❌ Only the bot owner can use this!")
-
     groups = await db_get_all_allowed_groups()
     if not groups:
         return await message.reply_text("No allowed groups found.")
-
     text = "📎 **Links Overview by Group**\n\n"
     for g in groups:
         cid = g["chat_id"]
@@ -987,7 +945,6 @@ async def gclinks_command(client, message: Message):
             )
         else:
             text += f"**{g.get('chat_title', cid)}** — no active session\n\n"
-
     await message.reply_text(text)
 
 
@@ -1003,23 +960,18 @@ async def unsafe_command(client, message: Message):
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ Admins only!")
-
     session = await db_get_active_session(chat_id)
     if not session:
         return await message.reply_text("❌ No active session!")
-
     db = await get_db()
     unverified = await db.links.find(
         {"chat_id": chat_id, "session_id": str(session["_id"]), "is_verified": False}
     ).to_list(length=None)
-
     if not unverified:
         return await message.reply_text("✅ All users are verified!")
-
     users: Dict[int, str] = {}
     for lnk in unverified:
         users[lnk["user_id"]] = lnk["username"]
-
     text = "⚠️ **Unverified Users:**\n\n"
     for idx, uname in enumerate(users.values(), 1):
         text += f"{idx}. @{uname}\n"
@@ -1034,16 +986,13 @@ async def safe_command(client, message: Message):
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ Admins only!")
-
     session = await db_get_active_session(chat_id)
     if not session:
         return await message.reply_text("❌ No active session!")
-
     session_id = str(session["_id"])
     safe_users = await db_get_safe_users(chat_id, session_id)
     if not safe_users:
         return await message.reply_text("❌ No users have sent ad/done messages yet!")
-
     text = "✅ **Safe List — Users who sent ad/done:**\n\n"
     for idx, u in enumerate(safe_users, 1):
         uname = u.get("username", "Unknown")
@@ -1057,7 +1006,6 @@ async def safe_command(client, message: Message):
         else:
             text += f"{idx}. "
         text += f"[(@{uname})](tg://user?id={uid}) ✅ {ad_text}\n"
-
     text += f"\n📊 **Total:** {len(safe_users)} users marked safe"
     await message.reply_text(text, disable_web_page_preview=True)
 
@@ -1071,11 +1019,9 @@ async def gccheck_command(client, message: Message):
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ Admins only!")
-
     session = await db_get_active_session(chat_id)
     if not session:
         return await message.reply_text("❌ No active session! Use /gcstarts first.")
-
     await db_enable_ad_tracking(chat_id, str(session["_id"]))
     await message.reply_text(
         "✅ **Check mode enabled!**\n\n"
@@ -1094,11 +1040,9 @@ async def gcsr_command(client, message: Message):
         return await message.reply_text("❌ Admins only!")
     if not message.reply_to_message:
         return await message.reply_text("❌ Reply to the user's message to request SR!")
-
     u = message.reply_to_message.from_user
     username = u.username or u.first_name
     await db_add_to_sr_list(chat_id, u.id, username)
-
     name = f"@{u.username}" if u.username else u.first_name
     await message.reply_text(
         f"📹 {name}, please recheck — your likes may be missing!\n\n"
@@ -1118,16 +1062,13 @@ async def gcadd_command(client, message: Message):
         return await message.reply_text("❌ Admins only!")
     if not message.reply_to_message:
         return await message.reply_text("❌ Reply to the user's message!")
-
     u = message.reply_to_message.from_user
     username = u.username or u.first_name
     await db_add_to_ad_list(chat_id, u.id, username)
-
     session = await db_get_active_session(chat_id)
     if session:
         await db_add_to_safe_list(chat_id, str(session["_id"]), u.id, username, "manual")
         await db_mark_user_links_verified(chat_id, u.id, str(session["_id"]))
-
     name = f"@{u.username}" if u.username else u.first_name
     await message.reply_text(f"✅ {name} added to the ad list!")
 
@@ -1141,14 +1082,12 @@ async def gcsetwarnlimit_command(client, message: Message):
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ Admins only!")
-
     args = message.command[1:]
     if not args or not args[0].isdigit():
         current = await db_get_warn_limit(chat_id)
         return await message.reply_text(
             f"⚙️ Current warn limit: **{current}**\n\nUsage: `/gcsetwarnlimit <number>`"
         )
-
     limit = int(args[0])
     if limit < 1 or limit > 20:
         return await message.reply_text("❌ Limit must be between 1 and 20.")
@@ -1165,23 +1104,19 @@ async def muteunsafe_command(client, message: Message):
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ Admins only!")
-
     session = await db_get_active_session(chat_id)
     if not session:
         return await message.reply_text("❌ No active session!")
-
     session_id = str(session["_id"])
     db = await get_db()
     unverified_links = await db.links.find(
         {"chat_id": chat_id, "session_id": session_id, "is_verified": False}
     ).to_list(length=None)
-
     unique_users = {lnk["user_id"] for lnk in unverified_links}
     args = message.command[1:]
     duration_str = " ".join(args) if args else "3d"
     duration = parse_duration(duration_str)
     until = datetime.utcnow() + duration
-
     muted = failed = 0
     for uid in unique_users:
         try:
@@ -1190,7 +1125,6 @@ async def muteunsafe_command(client, message: Message):
         except Exception as e:
             logger.error(f"muteunsafe user {uid}: {e}")
             failed += 1
-
     await message.reply_text(
         f"🔇 **Mute Operation Complete**\n\n"
         f"✅ Muted: {muted}\n❌ Failed: {failed}\n⏱️ Duration: {duration_str}"
@@ -1206,17 +1140,14 @@ async def unmuteunsafe_command(client, message: Message):
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ Admins only!")
-
     session = await db_get_active_session(chat_id)
     if not session:
         return await message.reply_text("❌ No active session!")
-
     session_id = str(session["_id"])
     db = await get_db()
     unverified_links = await db.links.find(
         {"chat_id": chat_id, "session_id": session_id, "is_verified": False}
     ).to_list(length=None)
-
     unique_users = {lnk["user_id"] for lnk in unverified_links}
     unmuted = failed = 0
     for uid in unique_users:
@@ -1226,7 +1157,6 @@ async def unmuteunsafe_command(client, message: Message):
         except Exception as e:
             logger.error(f"unmuteunsafe user {uid}: {e}")
             failed += 1
-
     await message.reply_text(
         f"🔊 **Unmute Operation Complete**\n\n✅ Unmuted: {unmuted}\n❌ Failed: {failed}"
     )
@@ -1241,7 +1171,6 @@ async def gcmute_command(client, message: Message):
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ Admins only!")
-
     user_id, display = await _resolve_target(client, message)
     if not user_id:
         return await message.reply_text(
@@ -1249,16 +1178,13 @@ async def gcmute_command(client, message: Message):
             "• Reply to a user's message: /gcmute [duration]\n"
             "• /gcmute @username [duration]"
         )
-
     args = message.command[1:]
     if message.reply_to_message:
         duration_str = " ".join(args) if args else ""
     else:
         duration_str = " ".join(args[1:]) if len(args) > 1 else ""
-
     duration = parse_duration(duration_str) if duration_str else timedelta(days=3)
     until = datetime.utcnow() + duration
-
     try:
         await client.restrict_chat_member(chat_id, user_id, MUTED_PERMS, until_date=until)
         dur_display = duration_str or "3d"
@@ -1282,7 +1208,6 @@ async def gcunmute_command(client, message: Message):
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ Admins only!")
-
     user_id, display = await _resolve_target(client, message)
     if not user_id:
         return await message.reply_text(
@@ -1290,7 +1215,6 @@ async def gcunmute_command(client, message: Message):
             "• Reply to a user's message: /gcunmute\n"
             "• /gcunmute @username"
         )
-
     try:
         await client.restrict_chat_member(chat_id, user_id, OPEN_PERMS)
         await message.reply_text(
@@ -1309,7 +1233,6 @@ async def unmuteall_command(client, message: Message):
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ Admins only!")
-
     try:
         await client.set_chat_permissions(chat_id, OPEN_PERMS)
         await message.reply_text(
@@ -1323,7 +1246,6 @@ async def unmuteall_command(client, message: Message):
 # ─────────────────────────────────────────────────────────────
 #  PIN & CUSTOM MESSAGE COMMANDS
 # ─────────────────────────────────────────────────────────────
-
 DROP_LINK_TEXT = (
     "🔗 **DROP YOUR LINK NOW!**\n\n"
     "📌 Share your Twitter/X profile link below.\n"
@@ -1340,7 +1262,6 @@ async def pin_drop_link_command(client, message: Message):
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ Admins only!")
-
     sent = await client.send_message(chat_id, DROP_LINK_TEXT)
     try:
         await client.pin_chat_message(chat_id, sent.id)
@@ -1360,7 +1281,6 @@ for _slot in range(1, 5):
             chat_id = message.chat.id
             if not await is_group_admin(client, chat_id, message.from_user.id):
                 return await message.reply_text("❌ Admins only!")
-
             if message.reply_to_message and message.reply_to_message.text:
                 text = message.reply_to_message.text
             else:
@@ -1372,7 +1292,6 @@ for _slot in range(1, 5):
                         "Or reply to a message."
                     )
                 text = parts[1]
-
             await db_set_rs(chat_id, _s, text)
             await message.reply_text(f"✅ Custom pin message **RS{_s}** saved!")
 
@@ -1391,7 +1310,6 @@ for _slot in range(1, 5):
             chat_id = message.chat.id
             if not await is_group_admin(client, chat_id, message.from_user.id):
                 return await message.reply_text("❌ Admins only!")
-
             text = await db_get_rs(chat_id, _s)
             if not text:
                 suffix = "" if _s == 1 else str(_s)
@@ -1423,14 +1341,12 @@ async def gcsettings_command(client, message: Message):
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ Admins only!")
-
     db = await get_db()
     doc = await db.gc_settings.find_one({"chat_id": chat_id}) or {}
     session = await db_get_active_session(chat_id)
     warn_limit = doc.get("warn_limit", 3)
     anon_mode = doc.get("anon_mode", False)
     rs_slots = [f"RS{i}: {'set ✅' if doc.get(f'rs{i}') else 'not set ❌'}" for i in range(1, 5)]
-
     text = (
         f"⚙️ **GC Settings — {message.chat.title}**\n\n"
         f"📌 Session: {'Active ✅' if session else 'None ❌'}\n"
@@ -1452,7 +1368,6 @@ async def anonmode_command(client, message: Message):
     chat_id = message.chat.id
     if not await is_group_admin(client, chat_id, message.from_user.id):
         return await message.reply_text("❌ Admins only!")
-
     new_state = await db_toggle_anon_mode(chat_id)
     state_text = (
         "**ON** — admin names are hidden in bot messages."
@@ -1550,11 +1465,9 @@ async def gcmulti_command(client, message: Message):
     session = await db_get_active_session(chat_id)
     if not session:
         return await message.reply_text("❌ No active session! Use /gcstarts to begin.")
-
     multi_users = await db_get_users_with_multiple_links(chat_id, str(session["_id"]))
     if not multi_users:
         return await message.reply_text("✅ No users with multiple links found!")
-
     text = "👥 **Users with Multiple Links:**\n\n"
     for u in multi_users:
         text += f"• @{u.get('username', 'Unknown')} — {u.get('count', 0)} links\n"
@@ -1570,12 +1483,10 @@ async def gclist_command(client, message: Message):
     session = await db_get_active_session(chat_id)
     if not session:
         return await message.reply_text("❌ No active session! Use /gcstarts to begin.")
-
     session_id = str(session["_id"])
     users = await db_get_all_users_with_links(chat_id, session_id)
     if not users:
         return await message.reply_text("❌ No users have submitted links yet!")
-
     text = "📋 **Users who submitted links:**\n\n"
     for idx, u in enumerate(users, 1):
         uname = u.get("username", "Unknown")
@@ -1587,7 +1498,6 @@ async def gclist_command(client, message: Message):
         else:
             text += f"{idx}. {tw_user} 𝕏 "
         text += f"[(@{uname})](tg://user?id={uid})\n"
-
     stats = await db_get_session_stats(chat_id, session_id)
     text += f"\n📊 **Total:** {stats['unique_users']} users | {stats['total_links']} links"
     await message.reply_text(text, disable_web_page_preview=True)
@@ -1615,17 +1525,14 @@ async def gclink_command(client, message: Message):
         return await message.reply_text("Groups only!")
     if not message.reply_to_message:
         return await message.reply_text("❌ Reply to a user's message to get their links!")
-
     chat_id = message.chat.id
     u = message.reply_to_message.from_user
     session = await db_get_active_session(chat_id)
     if not session:
         return await message.reply_text("❌ No active session!")
-
     links = await db_get_user_links(chat_id, u.id, str(session["_id"]))
     if not links:
         return await message.reply_text(f"No links found for @{u.username or u.first_name}")
-
     text = f"🔗 **Links from @{u.username or u.first_name}:**\n\n"
     for idx, lnk in enumerate(links, 1):
         text += f"{idx}. 🔐 `{lnk['encrypted_link']}`\n"
@@ -1640,7 +1547,6 @@ async def srlist_command(client, message: Message):
     sr_users = await db_get_sr_list(message.chat.id)
     if not sr_users:
         return await message.reply_text("✅ No pending screen recording requests!")
-
     text = "📹 **Users requested to submit SR:**\n\n"
     for u in sr_users:
         text += f"• @{u.get('username', 'Unknown')}\n"
@@ -1649,11 +1555,12 @@ async def srlist_command(client, message: Message):
 
 # ─────────────────────────────────────────────────────────────
 #  MESSAGE HANDLER — track Twitter/X links
+#  FIX: use filters.command(ALL_COMMANDS) instead of bare
+#       filters.command so that ~ (NOT) works correctly.
 # ─────────────────────────────────────────────────────────────
-
 @app.on_message(
     filters.group
-    & ~filters.command
+    & ~filters.command(ALL_COMMANDS)
     & (filters.text | filters.caption)
 )
 async def handle_group_messages(client, message: Message):
@@ -1671,7 +1578,6 @@ async def handle_group_messages(client, message: Message):
     session = await db_get_active_session(chat_id)
     if not session or not session.get("is_active"):
         return
-
     session_id = str(session["_id"])
     raw_text = (message.text or message.caption or "").lower().strip()
 
@@ -1684,7 +1590,6 @@ async def handle_group_messages(client, message: Message):
                 if not already_safe:
                     await db_add_to_safe_list(chat_id, session_id, user_id, username, kw)
                     await db_mark_user_links_verified(chat_id, user_id, session_id)
-
                 safe_users = await db_get_safe_users(chat_id, session_id)
                 position = next(
                     (i + 1 for i, u in enumerate(safe_users) if u["user_id"] == user_id), 0
@@ -1761,7 +1666,6 @@ async def handle_group_messages(client, message: Message):
 # ─────────────────────────────────────────────────────────────
 #  MODULE METADATA (SHASHA_DRUGZ plugin system)
 # ─────────────────────────────────────────────────────────────
-
 __menu__ = "CMD_MANAGE"
 __mod_name__ = "GC_MANAGER"
 __help__ = """
@@ -1775,33 +1679,40 @@ __help__ = """
 /gcclear — Clear data, keep session
 /gcclearall — Delete recent messages
 /gcrefresh — Refresh admin list
+
 ✅ **Check & Verify:**
 /gccheck — Enable ad/done tracking
 /unsafe — List unverified users
 /safe — List verified users
+
 🔇 **Mute:**
 /muteunsafe [dur] — Mute unverified
 /unmuteunsafe — Unmute unverified
 /gcmute [dur] — Mute user (reply / @user)
 /gcunmute — Unmute user (reply / @user)
 /unmuteall — Restore group permissions
+
 📹 **SR / Ad:**
 /gcsr — Request screen recording (reply)
 /gcadd — Add user to ad list (reply)
 /srlist — Pending SR list
+
 📌 **Pin:**
 /p — Pin 'drop link' message
 /setrs [/setrs2-4] — Save custom pin text
 /rs1-4 — Send & pin custom message
+
 👥 **Users:**
 /gclist — All submitted links
 /gcmulti — Users with multiple links
 /gccount — Unique user count
 /gclink — Links of a user (reply)
+
 ⚙️ **Settings:**
 /gcsettings — View current settings
 /anonmode — Toggle anon admin mode
 /gcsetwarnlimit <n> — Set warn limit
+
 👑 **Owner (PM):**
 /gcpanel — Admin panel
 /gcmanage — Group management
