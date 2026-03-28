@@ -24,7 +24,8 @@ from config import (
     ADMINS_ID, UPI_ID, DEFAULT_QR_PATH, BOT_TOKEN
 )
 from SHASHA_DRUGZ.misc import SUDOERS
-from SHASHA_DRUGZ.utils.bot_settings import apply_to_config
+# ── PATCH: import evict_bot_cache alongside apply_to_config ───────────────────
+from SHASHA_DRUGZ.utils.bot_settings import apply_to_config, evict_bot_cache
 from SHASHA_DRUGZ.mongo.deploydb import (
     ensure_indexes,
     save_deploy_session, get_deploy_session, clear_deploy_session,
@@ -57,20 +58,19 @@ BOT_OWNERS: Dict[int, int] = {}
 # ─── Constants ────────────────────────────────────────────────────────────────
 MODULES_PATH = "SHASHA_DRUGZ/dplugins"
 COMMON_PATH  = "COMMON"
-
 AUTO_BOT_TYPES = {
     "MANAGEMENT": {"path": "MANAGE",   "price": 650, "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ ʙᴏᴛ"},
     "MUSIC":      {"path": "MUSIC",    "price": 450, "display": "ᴍᴜsɪᴄ ʙᴏᴛ"},
     "CHAT":       {"path": "CHAT",     "price": 250, "display": "ᴄʜᴀᴛ ʙᴏᴛ"},
     "REACTION":   {"path": "REACTION", "price": 100, "display": "ʀᴇᴀᴄᴛɪᴏɴ ʙᴏᴛ"},
     "GAME":       {"path": "GAMES",    "price": 300, "display": "ɢᴀᴍᴇ ʙᴏᴛ"},
-    "PRO-BOTS":    {"path": "PRO-BOTS",  "price": 350, "display": "ᴘʀᴏ ʙᴏᴛs"},
+    "PRO-BOTS":   {"path": "PRO-BOTS", "price": 350, "display": "ᴘʀᴏ ʙᴏᴛs"},
 }
 AUTO_COMBOS = {
-    "MANAGEMENT+MUSIC":    {"bots": ["MANAGEMENT","MUSIC"],     "price": 999,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴍᴜsɪᴄ"},
-    "MUSIC+CHAT":          {"bots": ["MUSIC","CHAT"],           "price": 599,  "display": "ᴍᴜsɪᴄ+ᴄʜᴀᴛ"},
-    "CHAT+REACTION":       {"bots": ["CHAT","REACTION"],        "price": 299,  "display": "ᴄʜᴀᴛ+ʀᴇᴀᴄᴛɪᴏɴ"},
-    "MANAGEMENT+PRO-BOTS": {"bots": ["MANAGEMENT","PRO-BOTS"],  "price": 850,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴘʀᴏ"},
+    "MANAGEMENT+MUSIC":    {"bots": ["MANAGEMENT","MUSIC"],    "price": 999,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴍᴜsɪᴄ"},
+    "MUSIC+CHAT":          {"bots": ["MUSIC","CHAT"],          "price": 599,  "display": "ᴍᴜsɪᴄ+ᴄʜᴀᴛ"},
+    "CHAT+REACTION":       {"bots": ["CHAT","REACTION"],       "price": 299,  "display": "ᴄʜᴀᴛ+ʀᴇᴀᴄᴛɪᴏɴ"},
+    "MANAGEMENT+PRO-BOTS": {"bots": ["MANAGEMENT","PRO-BOTS"], "price": 850,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴘʀᴏ"},
 }
 
 # ─── Plugin helpers ────────────────────────────────────────────────────────────
@@ -134,7 +134,12 @@ def get_plugins_for_manual_modules(module_names: List[str]) -> List[str]:
 
 # ─── Full bot data cleanup ─────────────────────────────────────────────────────
 async def cleanup_bot_data(bot_id: int):
-    """Drop ALL bot_{id}_* collections and wipe chats/users rows."""
+    """
+    Drop ALL bot_{id}_* collections and wipe chats/users rows.
+
+    PATCH: also calls evict_bot_cache(bot_id) so stale settings never
+    leak to a future redeploy of the same bot_id.
+    """
     try:
         prefix = f"bot_{bot_id}_"
         for col_name in await raw_mongodb.list_collection_names():
@@ -148,6 +153,8 @@ async def cleanup_bot_data(bot_id: int):
         await raw_mongodb.deploy_users.delete_many({"bot_id": bot_id})
     except Exception as e:
         logging.error(f"[cleanup] chats/users wipe failed for {bot_id}: {e}")
+    # ── PATCH: evict settings cache so stale data never leaks ────────────────
+    evict_bot_cache(bot_id)
 
 # ─── ISOLATION ────────────────────────────────────────────────────────────────
 def _register_isolation_handlers(bot_client: Client, bot_id: int, owner_id: Optional[int]):
@@ -195,11 +202,6 @@ async def _safe_edit(msg, text: str, reply_markup=None, **kwargs):
     except Exception as e:
         logging.warning(f"[deploy] edit failed: {e}")
 
-# ─── FIX 13: Smart message editor — photo vs text detection ───────────────────
-# edit_caption works ONLY on photo/video/document messages.
-# edit_text works ONLY on text messages.
-# Calling the wrong one raises an exception. This helper tries the right one
-# first, and falls back gracefully so the keyboard is always attached.
 async def _edit_approval_msg(msg, text: str, reply_markup=None):
     """
     Edit the admin approval message (which may be a photo OR a plain text
@@ -207,12 +209,10 @@ async def _edit_approval_msg(msg, text: str, reply_markup=None):
     Always attaches the reply_markup regardless of message type.
     """
     if msg.photo or msg.document or msg.video or msg.audio or msg.voice:
-        # Media message — use edit_caption
         try:
             await msg.edit_caption(text, reply_markup=reply_markup)
             return
         except MessageNotModified:
-            # Caption unchanged but maybe keyboard needs updating
             try:
                 await msg.edit_reply_markup(reply_markup=reply_markup)
             except Exception:
@@ -221,7 +221,6 @@ async def _edit_approval_msg(msg, text: str, reply_markup=None):
         except Exception as e:
             logging.warning(f"[edit_approval] edit_caption failed: {e}")
     else:
-        # Text message — use edit_text
         try:
             await msg.edit_text(text, reply_markup=reply_markup)
             return
@@ -233,22 +232,12 @@ async def _edit_approval_msg(msg, text: str, reply_markup=None):
             return
         except Exception as e:
             logging.warning(f"[edit_approval] edit_text failed: {e}")
-    # Last resort: just update the keyboard even if text edit failed
     try:
         await msg.edit_reply_markup(reply_markup=reply_markup)
     except Exception:
         pass
 
-# ─── FIX 12: Send message to user VIA their deployed bot ──────────────────────
-# BUG WAS: queried raw_mongodb.deploy_users with {"user_id": uid} but that
-# collection uses {"_id": uid} and has NO bot_id field.
-# Always returned None → always used main app → messages went "anonymous".
-# FIX: query deploy_bots_col for the user's active deployed bot.
 async def _get_user_bot_client(user_id: int) -> Optional[Client]:
-    """
-    Returns the Pyrogram Client of the deployed bot owned by this user,
-    if it is currently running. Returns None if not found.
-    """
     bot_doc = await deploy_bots_col.find_one(
         {"owner_id": user_id, "status": "active"}
     )
@@ -259,11 +248,6 @@ async def _get_user_bot_client(user_id: int) -> Optional[Client]:
     return None
 
 async def _send_to_user(client: Client, user_id: int, text: str, **kwargs):
-    """
-    Send a message to the user FROM their own deployed bot so it lands in
-    the correct PM chat. Falls back to the main app client if the deployed
-    bot is not running or the send fails.
-    """
     bot_client = await _get_user_bot_client(user_id)
     if bot_client:
         try:
@@ -271,7 +255,6 @@ async def _send_to_user(client: Client, user_id: int, text: str, **kwargs):
             return
         except Exception as e:
             logging.warning(f"[_send_to_user] deployed bot send failed for {user_id}: {e}")
-    # Fallback: main app
     await client.send_message(user_id, text, **kwargs)
 
 # ─── Keyboards ────────────────────────────────────────────────────────────────
@@ -299,8 +282,8 @@ def modules_kb(selected_type, enabled_modules, original_modules=None):
             st = "🍏" if m in enabled_modules else "🍎"
             cb = f"deploy_toggle_{m}"
         kb.append([InlineKeyboardButton(f"{st} {m} (₹{price})", callback_data=cb)])
-    kb.append([InlineKeyboardButton("➕ ᴀᴅᴅ-ᴍᴏᴅᴜʟᴇ",        callback_data="deploy_add_module")])
-    kb.append([InlineKeyboardButton("🔻 ʙᴀᴄᴋ ᴛᴏ ᴛʏᴘᴇs 🔻",  callback_data="deploy_back_to_types")])
+    kb.append([InlineKeyboardButton("➕ ᴀᴅᴅ-ᴍᴏᴅᴜʟᴇ",       callback_data="deploy_add_module")])
+    kb.append([InlineKeyboardButton("🔻 ʙᴀᴄᴋ ᴛᴏ ᴛʏᴘᴇs 🔻", callback_data="deploy_back_to_types")])
     return InlineKeyboardMarkup(kb)
 
 def auto_main_kb(selected_bundles):
@@ -400,7 +383,6 @@ async def deploy_command(client: Client, message: Message):
                 "❌ ɪɴᴠᴀʟɪᴅ ᴛᴏᴋᴇɴ ғᴏʀᴍᴀᴛ.\n📌 `123456789:ABCdef...`",
                 reply_markup=cancel_button_kb()
             )
-        # FIX 6: block duplicate token before payment flow starts
         if await get_deployed_bot_by_token(bot_token):
             return await message.reply_text(
                 "<blockquote>❌ ᴛʜɪs ᴛᴏᴋᴇɴ ɪs ᴀʟʀᴇᴀᴅʏ ᴅᴇᴘʟᴏʏᴇᴅ.\n"
@@ -428,7 +410,6 @@ async def deploy_token_listener(client: Client, message: Message):
             "ᴛʀʏ ᴀɢᴀɪɴ ᴏʀ /canceldeploy ᴛᴏ ᴀʙᴏʀᴛ.",
             reply_markup=cancel_button_kb()
         )
-    # FIX 6: block duplicate token
     if await get_deployed_bot_by_token(text):
         return await message.reply_text(
             "<blockquote>❌ ᴛʜɪs ᴛᴏᴋᴇɴ ɪs ᴀʟʀᴇᴀᴅʏ ᴅᴇᴘʟᴏʏᴇᴅ.\n"
@@ -486,14 +467,12 @@ async def updatemodule_command(client: Client, message: Message):
         reply_markup=type_selection_kb()
     )
 
-# ─── noop: locked module tapped ───────────────────────────────────────────────
+# ─── noop ─────────────────────────────────────────────────────────────────────
 @app.on_callback_query(filters.regex("^noop$"))
 async def noop_callback(_, cq: CallbackQuery):
     await cq.answer("🔒 ᴛʜɪs ᴍᴏᴅᴜʟᴇ ɪs ᴀʟʀᴇᴀᴅʏ ᴘᴜʀᴄʜᴀsᴇᴅ.", show_alert=True)
 
 # ─── Callback dispatcher ──────────────────────────────────────────────────────
-# FIX 3: admin_connect / admin_disconnect / admin_message are handled BEFORE
-# the admin_ catch-all so they never fall into handle_admin_callback.
 @app.on_callback_query(
     filters.regex(r"^(deploy_|num_|admin_|renew_|update_modules_|auto_)"),
     group=5
@@ -503,7 +482,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
     data    = cq.data
     session = await get_deploy_session(user_id)
 
-    # ── Cancel ──────────────────────────────────────────────────────────────
     if data == "deploy_cancel":
         await clear_deploy_session(user_id)
         try: await cq.message.delete()
@@ -511,7 +489,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
         await client.send_message(user_id, "<blockquote>✅ ᴅᴇᴘʟᴏʏᴍᴇɴᴛ ᴄᴀɴᴄᴇʟʟᴇᴅ.</blockquote>")
         await cq.answer(); return
 
-    # ── Mode selection ───────────────────────────────────────────────────────
     if data == "deploy_mode_auto":
         await save_deploy_session(user_id, {"mode": "auto", "step": "auto_main", "selected_bundles": []})
         await _safe_edit(cq.message,
@@ -528,7 +505,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
             reply_markup=type_selection_kb())
         await cq.answer(); return
 
-    # ── Auto toggles ─────────────────────────────────────────────────────────
     if data.startswith("auto_toggle_"):
         bot_name = data.split("_", 2)[2]
         selected = session.get("selected_bundles", [])
@@ -597,11 +573,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
             ]))
         await cq.answer(); return
 
-    # ── FIX 3: admin_connect / disconnect / message BEFORE admin_ catch-all ──
-    # These callbacks come from admin_connection_kb attached to the approval msg.
-    # admin_connect_123456  → split("_") = ["admin","connect","123456"]  → [2]="123456" ✓
-    # admin_disconnect_123456 → ["admin","disconnect","123456"]           → [2]="123456" ✓
-    # admin_message_123456  → ["admin","message","123456"]               → [2]="123456" ✓
     if data.startswith("admin_connect_"):
         await connect_admin_to_user(client, cq, user_id, int(data.split("_")[2])); return
     if data.startswith("admin_disconnect_"):
@@ -609,7 +580,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
     if data.startswith("admin_message_"):
         await prepare_admin_message(client, cq, user_id, int(data.split("_")[2])); return
 
-    # ── Module type / toggle / payment ───────────────────────────────────────
     if data.startswith("deploy_type_"):
         st = data.split("_", 2)[2]
         await save_deploy_session(user_id, {"last_type": st})
@@ -619,7 +589,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
             f"<blockquote>**ᴛʏᴘᴇ:** {st}</blockquote>\n<blockquote>sᴇʟᴇᴄᴛ ᴍᴏᴅᴜʟᴇs:</blockquote>",
             reply_markup=modules_kb(st, en, og))
         await cq.answer()
-
     elif data.startswith("deploy_toggle_"):
         mn = data.split("_", 2)[2]
         if session.get("is_update") and mn in session.get("original_modules", []):
@@ -633,14 +602,12 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
         try: await cq.message.edit_reply_markup(reply_markup=modules_kb(st, en, og))
         except MessageNotModified: pass
         await cq.answer()
-
     elif data == "deploy_back_to_types":
         await save_deploy_session(user_id, {"step": "select_type"})
         await _safe_edit(cq.message,
             "<blockquote>**sᴇʟᴇᴄᴛ ᴍᴏᴅᴜʟᴇ ᴛʏᴘᴇ:**</blockquote>",
             reply_markup=type_selection_kb())
         await cq.answer()
-
     elif data == "deploy_add_module":
         en        = session.get("enabled_modules", [])
         is_update = session.get("is_update", False)
@@ -666,14 +633,12 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
                 [InlineKeyboardButton("🔻 ʙᴀᴄᴋ 🔻",            callback_data="deploy_back_to_modules")]
             ]))
         await cq.answer()
-
     elif data == "deploy_add_more":
         await save_deploy_session(user_id, {"step": "select_type"})
         await _safe_edit(cq.message,
             "<blockquote>**sᴇʟᴇᴄᴛ ᴀɴᴏᴛʜᴇʀ ᴍᴏᴅᴜʟᴇ ᴛʏᴘᴇ:**</blockquote>",
             reply_markup=type_selection_kb())
         await cq.answer()
-
     elif data == "deploy_back_to_modules":
         st = session.get("last_type")
         en = session.get("enabled_modules", [])
@@ -686,7 +651,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
                 f"<blockquote>**ᴛʏᴘᴇ:** {st}</blockquote>",
                 reply_markup=modules_kb(st, en, original_modules=og))
         await cq.answer()
-
     elif data == "deploy_pay_now":
         await save_deploy_session(user_id, {"step": "payment_method"})
         await _safe_edit(cq.message,
@@ -733,7 +697,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
     if data.startswith("num_"):
         await handle_numeric_keypad(client, cq, user_id, session); return
 
-    # FIX 3: admin_ catch-all is LAST — approve/reject/refund only
     if data.startswith("admin_"):
         await handle_admin_callback(client, cq, user_id); return
 
@@ -749,7 +712,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
 async def handle_numeric_keypad(client, cq: CallbackQuery, user_id: int, session: dict):
     action      = cq.data.split("_", 1)[1]
     temp_amount = session.get("temp_amount", "")
-
     if action.isdigit():
         temp_amount += action
     elif action == "dot":
@@ -763,18 +725,15 @@ async def handle_numeric_keypad(client, cq: CallbackQuery, user_id: int, session
             amount = float(temp_amount)
         except ValueError:
             await cq.answer("ɪɴᴠᴀʟɪᴅ ᴀᴍᴏᴜɴᴛ.", show_alert=True); return
-
         total_expected = session.get("total")
         if amount != total_expected:
             await cq.answer(
                 f"ᴀᴍᴏᴜɴᴛ ᴍɪsᴍᴀᴛᴄʜ. ᴇxᴘᴇᴄᴛᴇᴅ ₹{total_expected}.",
                 show_alert=True); return
-
         pm         = session.get("payment_method")
         is_update  = session.get("is_update", False)
         is_renewal = session.get("is_renewal", False)
         mode       = session.get("mode", "manual")
-
         if mode == "auto":
             pd = {
                 "user_id":          user_id,
@@ -792,22 +751,21 @@ async def handle_numeric_keypad(client, cq: CallbackQuery, user_id: int, session
             }
         else:
             pd = {
-                "user_id":   user_id,
-                "username":  cq.from_user.username,
-                "full_name": cq.from_user.first_name,
-                "token":     session["token"],
-                "modules":   session.get("enabled_modules", []),
-                "amount":    amount,
-                "method":    pm,
-                "proof":     session.get("screenshot_file_id"),
-                "type":      "manual",
-                "is_update": is_update,
-                "is_renewal":is_renewal,  # FIX 2: carry renewal flag to payment
+                "user_id":    user_id,
+                "username":   cq.from_user.username,
+                "full_name":  cq.from_user.first_name,
+                "token":      session["token"],
+                "modules":    session.get("enabled_modules", []),
+                "amount":     amount,
+                "method":     pm,
+                "proof":      session.get("screenshot_file_id"),
+                "type":       "manual",
+                "is_update":  is_update,
+                "is_renewal": is_renewal,
             }
             if is_update or is_renewal:
                 pd["bot_id"]           = session["bot_id"]
                 pd["original_modules"] = session.get("original_modules", [])
-
         pid   = await create_pending_payment(user_id, pd)
         label = "Renewal" if is_renewal else ("Update" if is_update else "New")
         caption = (
@@ -821,10 +779,8 @@ async def handle_numeric_keypad(client, cq: CallbackQuery, user_id: int, session
                                     caption=caption, reply_markup=admin_review_kb(pid))
         else:
             await client.send_message(DEPLOY_LOGGER, caption, reply_markup=admin_review_kb(pid))
-
         await _safe_edit(cq.message, "✅ ᴘᴀʏᴍᴇɴᴛ ʀᴇǫᴜᴇsᴛ sᴇɴᴛ. ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...")
         await save_deploy_session(user_id, {"temp_amount": ""}); return
-
     await save_deploy_session(user_id, {"temp_amount": temp_amount})
     await _safe_edit(cq.message,
         f"<blockquote>**ᴇɴᴛᴇʀ ᴀᴍᴏᴜɴᴛ ᴘᴀɪᴅ (₹):**</blockquote>\n\n`{temp_amount or '0'}`",
@@ -851,7 +807,6 @@ async def handle_screenshot(client: Client, message: Message):
 async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
     if admin_id not in ADMINS_ID and admin_id != OWNER_ID:
         await cq.answer("ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ.", show_alert=True); return
-
     parts      = cq.data.split("_")
     action     = parts[1]
     payment_id = parts[2]
@@ -866,23 +821,19 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
         is_renewal = payment.get("is_renewal", False)
         mode       = payment.get("type", "manual")
 
-        # ── FIX 2: RENEWAL — only extend expiry, NEVER re-deploy ──────────────
         if is_renewal:
             bot_id  = payment["bot_id"]
             old_bot = await get_deployed_bot_by_id(bot_id)
             if not old_bot:
                 await cq.answer("ʙᴏᴛ ɴᴏᴛ ғᴏᴜɴᴅ.", show_alert=True); return
-
             cur_expiry = old_bot.get("expiry_date", datetime.utcnow())
             base       = cur_expiry if cur_expiry > datetime.utcnow() else datetime.utcnow()
             new_expiry = base + timedelta(days=30)
-
             await update_deployed_bot(bot_id, {
                 "expiry_date":  new_expiry,
                 "status":       "active",
-                "warning_sent": False,   # FIX 7: reset so warning fires again next cycle
+                "warning_sent": False,
             })
-
             pdf = generate_invoice({
                 "invoice_id":     str(uuid.uuid4())[:8],
                 "User ID":        payment["user_id"],
@@ -902,7 +853,6 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
                 f"<blockquote>✅ **ʙᴏᴛ ʀᴇɴᴇᴡᴇᴅ!**\n"
                 f"ʙᴏᴛ: @{old_bot.get('username','')}\n"
                 f"ɴᴇᴡ ᴇxᴘɪʀʏ: {to_ist(new_expiry).strftime('%d-%m-%Y %I:%M %p IST')}</blockquote>")
-            # FIX 13: use _edit_approval_msg so this works for text AND photo messages
             await _edit_approval_msg(
                 cq.message,
                 f"<blockquote>🔄 ʀᴇɴᴇᴡᴇᴅ @{old_bot.get('username','')} | "
@@ -913,7 +863,6 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             await clear_deploy_session(payment["user_id"])
             return
 
-        # ── Validate token (update + fresh deploy) ─────────────────────────────
         try:
             resp = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=5)
             if resp.status_code != 200: raise AccessTokenInvalid
@@ -926,61 +875,49 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             await delete_pending_payment(payment_id); return
 
         if is_update:
-            # ── UPDATE PATH ────────────────────────────────────────────────────
             bot_id  = payment["bot_id"]
             old_bot = await get_deployed_bot_by_id(bot_id)
             if not old_bot:
                 await cq.answer("ᴏʀɪɢɪɴᴀʟ ʙᴏᴛ ɴᴏᴛ ғᴏᴜɴᴅ.", show_alert=True); return
-
-            old_modules = old_bot.get("modules", [])
-            # FIX 8: auto update uses modules_plugins key, manual uses modules key
-            incoming    = payment.get("modules", payment.get("modules_plugins", []))
-            new_modules = list(set(old_modules + incoming))
-            new_plugins = list(set(get_plugins_for_manual_modules(new_modules) + COMMON_PLUGINS))
-
+            old_modules     = old_bot.get("modules", [])
+            incoming        = payment.get("modules", payment.get("modules_plugins", []))
+            new_modules     = list(set(old_modules + incoming))
+            new_plugins     = list(set(get_plugins_for_manual_modules(new_modules) + COMMON_PLUGINS))
             added_modules   = [m for m in incoming if m not in old_modules]
             added_cost      = sum(MODULE_PRICES.get(m, 0) for m in added_modules)
             old_renewal_amt = old_bot.get("renewal_amount", old_bot.get("payment_amount", 0))
             new_renewal_amt = old_renewal_amt + added_cost
-
             await update_deployed_bot(bot_id, {
                 "modules":        new_modules,
                 "plugins":        new_plugins,
                 "renewal_amount": new_renewal_amt,
             })
-
             if bot_id in DEPLOYED_CLIENTS:
                 try: await DEPLOYED_CLIENTS[bot_id].stop()
                 except Exception: pass
                 del DEPLOYED_CLIENTS[bot_id]
             DEPLOYED_BOTS.discard(bot_id)
-
             sdir = f"deploy_sessions/{bot_id}"; os.makedirs(sdir, exist_ok=True)
             bc = Client(name=f"deploy_{bot_id}", api_id=API_ID, api_hash=API_HASH,
                         bot_token=token, workdir=sdir,
                         plugins=dict(root="SHASHA_DRUGZ.dplugins", include=new_plugins))
             await bc.start()
             _register_isolation_handlers(bc, bot_id, old_bot["owner_id"])
-            # Warm per-bot settings cache so _BotStr proxies resolve DB values
             await apply_to_config(bot_id)
             DEPLOYED_CLIENTS[bot_id]    = bc
             DEPLOYED_BOTS.add(bot_id)
             BOT_ALLOWED_PLUGINS[bot_id] = set(new_plugins)
-            BOT_OWNERS[bot_id]          = old_bot["owner_id"]   # FIX 4
+            BOT_OWNERS[bot_id]          = old_bot["owner_id"]
             _iso_cache[bot_id]          = old_bot["owner_id"]
-
             await _send_to_user(client, payment["user_id"],
                 f"<blockquote>✅ ʙᴏᴛ @{bot_username} ᴜᴘᴅᴀᴛᴇᴅ!\n"
                 f"ɴᴇᴡ ᴍᴏᴅᴜʟᴇs: {', '.join(added_modules) or 'none'}\n"
                 f"ʀᴇɴᴇᴡᴀʟ ᴀᴍᴏᴜɴᴛ: ₹{new_renewal_amt}/ᴍᴏɴᴛʜ</blockquote>")
-            # FIX 13
             await _edit_approval_msg(
                 cq.message,
                 f"✅ ᴜᴘᴅᴀᴛᴇᴅ @{bot_username} | ʀᴇɴᴇᴡᴀʟ=₹{new_renewal_amt}"
             )
-
         else:
-            # ── FRESH DEPLOY PATH ──────────────────────────────────────────────
             if mode == "auto":
                 ap     = list(set(payment.get("modules_plugins", []) + COMMON_PLUGINS))
                 dm     = []
@@ -992,7 +929,6 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
                 ap     = list(set(get_plugins_for_manual_modules(payment.get("modules", [])) + COMMON_PLUGINS))
                 dm     = payment.get("modules", [])
                 bundle = "manual"
-
             sdir = f"deploy_sessions/{bot_id}"; os.makedirs(sdir, exist_ok=True)
             bc = Client(name=f"deploy_{bot_id}", api_id=API_ID, api_hash=API_HASH,
                         bot_token=token, workdir=sdir,
@@ -1002,10 +938,8 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             bot_id       = bot_me.id
             bot_username = bot_me.username
             _register_isolation_handlers(bc, bot_id, payment["user_id"])
-            # Warm per-bot settings cache so _BotStr proxies resolve DB values
             await apply_to_config(bot_id)
             await set_bot_commands_and_description(token, bot_username)
-
             expiry = datetime.utcnow() + timedelta(days=30)
             await save_deployed_bot({
                 "bot_id":         bot_id,
@@ -1030,7 +964,6 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             BOT_ALLOWED_PLUGINS[bot_id] = set(ap)
             BOT_OWNERS[bot_id]          = payment["user_id"]
             _iso_cache[bot_id]          = payment["user_id"]
-
             pdf = generate_invoice({
                 "invoice_id":     str(uuid.uuid4())[:8],
                 "User ID":        payment["user_id"],
@@ -1046,21 +979,17 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
                     caption="<blockquote>🧾 **ɪɴᴠᴏɪᴄᴇ** — ᴛʜᴀɴᴋ ʏᴏᴜ!</blockquote>")
             except Exception:
                 pass
-            # FIX 12: _send_to_user now routes via user's deployed bot PM
             await _send_to_user(client, payment["user_id"],
                 f"<blockquote>✅ **ʙᴏᴛ ᴅᴇᴘʟᴏʏᴇᴅ!**\n"
                 f"ʙᴏᴛ: @{bot_username}\n"
                 f"ᴇxᴘɪʀᴇs: {to_ist(expiry).strftime('%d-%m-%Y %I:%M %p IST')}</blockquote>")
-
             ud  = await raw_mongodb.deploy_users.find_one({"_id": payment["user_id"]})
             isc = bool(ud and ud.get("connected_to_admin") == admin_id)
-            # FIX 13: works correctly for BOTH text and photo approval messages
             await _edit_approval_msg(
                 cq.message,
                 f"<blockquote>✅ ᴅᴇᴘʟᴏʏᴇᴅ @{bot_username} | ₹{payment['amount']}</blockquote>",
                 reply_markup=admin_connection_kb(payment["user_id"], isc)
             )
-
         await delete_pending_payment(payment_id)
         await clear_deploy_session(payment["user_id"])
 
@@ -1068,10 +997,9 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
         await cq.answer("Rejected.", show_alert=False)
         await _send_to_user(client, payment["user_id"],
             "<blockquote>❌ ᴘᴀʏᴍᴇɴᴛ ʀᴇᴊᴇᴄᴛᴇᴅ. ᴄᴏɴᴛᴀᴄᴛ sᴜᴘᴘᴏʀᴛ.</blockquote>")
-        # FIX 13: works on text messages too
         await _edit_approval_msg(cq.message, "❌ Rejected.")
         await delete_pending_payment(payment_id)
-        await clear_deploy_session(payment["user_id"])   # FIX 5: unblock user
+        await clear_deploy_session(payment["user_id"])
 
     elif action == "refund":
         await cq.answer("Refund processing...", show_alert=False)
@@ -1096,10 +1024,9 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             BOT_OWNERS.pop(bid, None)
             _iso_cache.pop(bid, None)
             await delete_deployed_bot(bid)
-            await cleanup_bot_data(bid)
+            await cleanup_bot_data(bid)   # ← evict_bot_cache called inside here
         await _send_to_user(client, payment["user_id"],
             f"<blockquote>💸 ʀᴇғᴜɴᴅ ₹{payment['amount']} ᴘʀᴏᴄᴇssᴇᴅ.</blockquote>")
-        # FIX 13
         await _edit_approval_msg(cq.message, "💸 Refunded.")
         await delete_pending_payment(payment_id)
         await clear_deploy_session(payment["user_id"])
@@ -1119,15 +1046,13 @@ async def expiry_checker():
                 BOT_OWNERS.pop(bid, None)
                 _iso_cache.pop(bid, None)
                 await cleanup_expired_bot(bid)
-                await cleanup_bot_data(bid)
+                await cleanup_bot_data(bid)   # ← evict_bot_cache called inside here
                 await app.send_message(bot["owner_id"],
                     f"<blockquote>⚠️ ʙᴏᴛ @{bot['username']} ᴇxᴘɪʀᴇᴅ ᴀɴᴅ ʀᴇᴍᴏᴠᴇᴅ.\n"
                     f"ᴅᴇᴘʟᴏʏ ᴀɢᴀɪɴ ᴛᴏ ʀᴇsᴛᴀʀᴛ ғʀᴇsʜ.</blockquote>")
                 for admin in ADMINS_ID:
                     await app.send_message(admin, f"⚠️ @{bot['username']} expired & wiped.")
                 await app.send_message(DEPLOY_LOGGER, f"⚠️ @{bot['username']} expired & cleaned.")
-
-            # FIX 7: one warning per bot per expiry cycle via warning_sent flag
             for bot in await get_bots_expiring_soon(days=2):
                 if bot.get("warning_sent"):
                     continue
@@ -1136,24 +1061,22 @@ async def expiry_checker():
                     f"<blockquote>🔔 ʙᴏᴛ @{bot['username']} ᴇxᴘɪʀᴇs ɪɴ {days_left} ᴅᴀʏ(s). ʀᴇɴᴇᴡ ɴᴏᴡ!</blockquote>",
                     reply_markup=renew_kb(bot["bot_id"]))
                 await update_deployed_bot(bot["bot_id"], {"warning_sent": True})
-
         except Exception:
             logging.exception("expiry checker error")
         await asyncio.sleep(3600)
 
-# ─── FIX 1+2: handle_renew_cb — for renew_ BUTTON (CallbackQuery) ─────────────
+# ─── handle_renew_cb ──────────────────────────────────────────────────────────
 async def handle_renew_cb(client, cq: CallbackQuery, user_id: int, bot_id: int):
     bot = await get_deployed_bot_by_id(bot_id)
     if not bot or bot["owner_id"] != user_id:
         await cq.answer("ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ.", show_alert=True); return
-
     renewal_total = bot.get("renewal_amount", bot.get("payment_amount", 0))
     await save_deploy_session(user_id, {
         "token":           bot["token"],
         "enabled_modules": bot.get("modules", []),
         "step":            "payment_summary",
         "total":           renewal_total,
-        "is_renewal":      True,   # FIX 2: renewal path — admin side just extends expiry
+        "is_renewal":      True,
         "is_update":       False,
         "bot_id":          bot_id,
         "mode":            "manual"
@@ -1172,7 +1095,6 @@ async def handle_renew_cb(client, cq: CallbackQuery, user_id: int, bot_id: int):
     except Exception: pass
     await cq.answer()
 
-# FIX 1: /renew COMMAND — uses Message object, separate from the callback version
 @app.on_message(filters.command("renew"))
 async def renew_command(client: Client, message: Message):
     if len(message.command) < 2:
@@ -1181,11 +1103,9 @@ async def renew_command(client: Client, message: Message):
     bot = await get_deployed_bot_by_username(message.command[1].lstrip('@'))
     if not bot or bot["owner_id"] != message.from_user.id:
         return await message.reply_text("ɴᴏᴛ ғᴏᴜɴᴅ ᴏʀ ʏᴏᴜ ᴅᴏɴ'ᴛ ᴏᴡɴ ɪᴛ.")
-
     user_id       = message.from_user.id
     bot_id        = bot["bot_id"]
     renewal_total = bot.get("renewal_amount", bot.get("payment_amount", 0))
-
     await save_deploy_session(user_id, {
         "token":           bot["token"],
         "enabled_modules": bot.get("modules", []),
@@ -1230,16 +1150,11 @@ async def handle_update_modules(client, cq, user_id: int, bot_id: int):
     await cq.answer()
 
 # ─── Admin connection helpers ──────────────────────────────────────────────────
-# FIX 3: routed directly from dispatcher — bypasses handle_admin_callback
-# FIX 11: edit_reply_markup to flip button state after connect/disconnect
-# FIX 13: uses edit_reply_markup which works on BOTH photo and text messages
-
 async def connect_admin_to_user(client, cq: CallbackQuery, admin_id: int, target_id: int):
     if admin_id not in ADMINS_ID and admin_id != OWNER_ID:
         await cq.answer("Unauthorized.", show_alert=True); return
     await raw_mongodb.deploy_users.update_one(
         {"_id": target_id}, {"$set": {"connected_to_admin": admin_id}}, upsert=True)
-    # FIX 11: flip to Disconnect button — edit_reply_markup works on both photo/text
     try:
         await cq.message.edit_reply_markup(
             reply_markup=admin_connection_kb(target_id, True))
@@ -1251,7 +1166,6 @@ async def disconnect_admin_from_user(client, cq: CallbackQuery, admin_id: int, t
         await cq.answer("Unauthorized.", show_alert=True); return
     await raw_mongodb.deploy_users.update_one(
         {"_id": target_id}, {"$set": {"connected_to_admin": None}})
-    # FIX 11: flip back to Connect button
     try:
         await cq.message.edit_reply_markup(
             reply_markup=admin_connection_kb(target_id, False))
@@ -1268,11 +1182,6 @@ async def prepare_admin_message(client, cq: CallbackQuery, admin_id: int, target
     await cq.answer()
 
 # ─── Message forwarding ────────────────────────────────────────────────────────
-# FIX 12: admin→user message is sent VIA _send_to_user which routes through
-#          the user's deployed bot PM — not anonymously from the main bot.
-# FIX 9:  user→admin skips forwarding if user is in an active deploy session
-#          so deploy flow messages are not intercepted.
-
 @app.on_message(
     filters.private & filters.user(ADMINS_ID) & filters.text & ~filters.regex(r"^/"),
     group=10
@@ -1283,7 +1192,6 @@ async def forward_admin_to_user(client: Client, message: Message):
     if not (session and session.get("message_target")):
         return
     target = session["message_target"]
-    # FIX 12: sends FROM user's deployed bot so it appears in the right PM
     await _send_to_user(
         client, target,
         f"<blockquote>**📨 ᴍᴇssᴀɢᴇ ғʀᴏᴍ sᴜᴘᴘᴏʀᴛ:**\n\n{message.text}</blockquote>"
@@ -1298,7 +1206,6 @@ async def forward_admin_to_user(client: Client, message: Message):
 )
 async def forward_user_to_admin(client: Client, message: Message):
     uid = message.from_user.id
-    # FIX 9: don't intercept while user is in deploy/payment flow
     deploy_session = await get_deploy_session(uid)
     if deploy_session.get("step"):
         return
@@ -1360,7 +1267,7 @@ async def remove_deployed_bot_cmd(client: Client, message: Message):
     BOT_OWNERS.pop(bid, None)
     _iso_cache.pop(bid, None)
     await delete_deployed_bot(bid)
-    await cleanup_bot_data(bid)
+    await cleanup_bot_data(bid)   # ← evict_bot_cache called inside here
     await message.reply_text(
         f"<blockquote>✅ ʙᴏᴛ @{bot['username']} ʀᴇᴍᴏᴠᴇᴅ ᴀɴᴅ ᴀʟʟ ᴅᴀᴛᴀ ᴡɪᴘᴇᴅ.</blockquote>")
 
@@ -1384,11 +1291,15 @@ async def confirm_rmalldeploy_cb(_, cq: CallbackQuery):
             except Exception: pass
         DEPLOYED_CLIENTS.clear(); DEPLOYED_BOTS.clear()
         BOT_ALLOWED_PLUGINS.clear(); BOT_OWNERS.clear(); _iso_cache.clear()
+        # ── PATCH: also wipe the entire settings cache in one shot ────────────
+        from SHASHA_DRUGZ.utils.bot_settings import _cache as _settings_cache
+        _settings_cache.clear()
+        # ─────────────────────────────────────────────────────────────────────
         await deploy_bots_col.delete_many({})
         await raw_mongodb.deploy_chats.delete_many({})
         await raw_mongodb.deploy_users.delete_many({})
         for bid in all_bot_ids:
-            await cleanup_bot_data(bid)
+            await cleanup_bot_data(bid)   # also drops DB collections per-bot
         try: await cq.message.edit_text("✅ All bots removed and all data wiped.")
         except MessageNotModified: pass
     else:
@@ -1466,8 +1377,7 @@ async def restart_bots():
             logging.info(f"Bot {n} started: @{bot.get('username','?')}"); n += 1
             bm = await bc.get_me()
             _register_isolation_handlers(bc, bm.id, bot["owner_id"])
-            # Warm per-bot settings cache so _BotStr proxies resolve DB values
-            await apply_to_config(bm.id)
+            await apply_to_config(bm.id)   # warm cache from DB on startup
             DEPLOYED_CLIENTS[bm.id]    = bc
             DEPLOYED_BOTS.add(bm.id)
             BOT_ALLOWED_PLUGINS[bm.id] = set(ap)
@@ -1479,7 +1389,7 @@ async def restart_bots():
     try: await app.send_message(DEPLOY_LOGGER, "✅ ᴀʟʟ ᴅᴇᴘʟᴏʏᴇᴅ ʙᴏᴛs ʀᴇsᴛᴀʀᴛᴇᴅ!")
     except Exception as e: logging.error(f"Restart log failed: {e}")
 
-# ─── /start deploy callback & param ───────────────────────────────────────────
+# ─── /start deploy ────────────────────────────────────────────────────────────
 @app.on_callback_query(filters.regex("^deploy_start$"))
 async def deploy_start_cb(_, cq: CallbackQuery):
     await save_deploy_session(cq.from_user.id, {"step": "wait_token"})
@@ -1491,7 +1401,7 @@ async def start_deploy(client: Client, message: Message):
     await save_deploy_session(message.from_user.id, {"step": "wait_token"})
     await message.reply_text(DEPLOY_PROMPT, reply_markup=cancel_button_kb())
 
-# ─── Helper for plugin permission checks ──────────────────────────────────────
+# ─── Plugin permission helpers ────────────────────────────────────────────────
 def is_module_allowed(client: Client, module_name: str) -> bool:
     bid = client.me.id if client.me else None
     return module_name in BOT_ALLOWED_PLUGINS.get(bid, set())
