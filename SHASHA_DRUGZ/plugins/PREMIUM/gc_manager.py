@@ -1,6 +1,6 @@
 # ============================================================
 #   GC MANAGER MODULE FOR SHASHA_DRUGZ
-#   Drop this file into: SHASHA_DRUGZ/plugins/gcmanager.py
+#   Drop this file into: SHASHA_DRUGZ/plugins/PREMIUM/gc_manager.py
 #   Single-file — zero extra files needed.
 # ============================================================
 import re
@@ -31,10 +31,9 @@ from config import OWNER_ID
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────
-#  CONFIG  (edit these or pull from env)
+#  CONFIG
 # ─────────────────────────────────────────────────────────────
 import os
-
 MONGODB_URI: str = os.getenv(
     "MONGODB_URI",
     "mongodb+srv://theamanchaudhary:updatesbyaman@cluster0.qda0aop.mongodb.net/?appName=Cluster0",
@@ -49,14 +48,12 @@ ENABLE_FRAUD_DETECTION: bool = os.getenv("ENABLE_FRAUD_DETECTION", "true").lower
 _mongo_client: Optional[AsyncIOMotorClient] = None
 _db = None
 
-
 async def get_db():
     global _mongo_client, _db
     if _db is None:
         _mongo_client = AsyncIOMotorClient(MONGODB_URI)
         _db = _mongo_client[DATABASE_NAME]
     return _db
-
 
 # ── Group helpers ─────────────────────────────────────────────
 async def db_add_allowed_group(chat_id: int, chat_title: str, added_by: int) -> bool:
@@ -73,7 +70,6 @@ async def db_add_allowed_group(chat_id: int, chat_title: str, added_by: int) -> 
         logger.error(f"db_add_allowed_group: {e}")
         return False
 
-
 async def db_remove_allowed_group(chat_id: int) -> bool:
     db = await get_db()
     try:
@@ -83,7 +79,6 @@ async def db_remove_allowed_group(chat_id: int) -> bool:
         logger.error(f"db_remove_allowed_group: {e}")
         return False
 
-
 async def db_is_group_allowed(chat_id: int) -> bool:
     db = await get_db()
     try:
@@ -92,7 +87,6 @@ async def db_is_group_allowed(chat_id: int) -> bool:
         logger.error(f"db_is_group_allowed: {e}")
         return False
 
-
 async def db_get_all_allowed_groups() -> List[Dict]:
     db = await get_db()
     try:
@@ -100,7 +94,6 @@ async def db_get_all_allowed_groups() -> List[Dict]:
     except Exception as e:
         logger.error(f"db_get_all_allowed_groups: {e}")
         return []
-
 
 # ── Session helpers ───────────────────────────────────────────
 async def db_create_session(chat_id: int, created_by: int) -> Optional[str]:
@@ -115,7 +108,6 @@ async def db_create_session(chat_id: int, created_by: int) -> Optional[str]:
         logger.error(f"db_create_session: {e}")
         return None
 
-
 async def db_get_active_session(chat_id: int) -> Optional[Dict]:
     db = await get_db()
     try:
@@ -123,7 +115,6 @@ async def db_get_active_session(chat_id: int) -> Optional[Dict]:
     except Exception as e:
         logger.error(f"db_get_active_session: {e}")
         return None
-
 
 async def db_close_session(chat_id: int) -> bool:
     db = await get_db()
@@ -137,7 +128,6 @@ async def db_close_session(chat_id: int) -> bool:
         logger.error(f"db_close_session: {e}")
         return False
 
-
 async def db_clear_session_data(chat_id: int, session_id: str):
     db = await get_db()
     filt = {"chat_id": chat_id, "session_id": session_id}
@@ -146,7 +136,6 @@ async def db_clear_session_data(chat_id: int, session_id: str):
             await db[col].delete_many(filt)
         except Exception as e:
             logger.error(f"db_clear_session_data [{col}]: {e}")
-
 
 # ── Link helpers ──────────────────────────────────────────────
 async def db_add_link(chat_id: int, user_id: int, username: str,
@@ -161,7 +150,6 @@ async def db_add_link(chat_id: int, user_id: int, username: str,
     except Exception as e:
         logger.error(f"db_add_link: {e}")
 
-
 async def db_get_user_links(chat_id: int, user_id: int, session_id: str) -> List[Dict]:
     db = await get_db()
     try:
@@ -171,7 +159,6 @@ async def db_get_user_links(chat_id: int, user_id: int, session_id: str) -> List
     except Exception as e:
         logger.error(f"db_get_user_links: {e}")
         return []
-
 
 async def db_get_all_users_with_links(chat_id: int, session_id: str) -> List[Dict]:
     db = await get_db()
@@ -190,7 +177,6 @@ async def db_get_all_users_with_links(chat_id: int, session_id: str) -> List[Dic
         logger.error(f"db_get_all_users_with_links: {e}")
         return []
 
-
 async def db_get_users_with_multiple_links(chat_id: int, session_id: str) -> List[Dict]:
     db = await get_db()
     try:
@@ -204,7 +190,6 @@ async def db_get_users_with_multiple_links(chat_id: int, session_id: str) -> Lis
         logger.error(f"db_get_users_with_multiple_links: {e}")
         return []
 
-
 async def db_check_duplicate_link(chat_id: int, user_id: int,
                                    link: str, session_id: str) -> Tuple[bool, List[Dict]]:
     db = await get_db()
@@ -217,7 +202,6 @@ async def db_check_duplicate_link(chat_id: int, user_id: int,
     except Exception as e:
         logger.error(f"db_check_duplicate_link: {e}")
         return False, []
-
 
 async def db_get_session_stats(chat_id: int, session_id: str) -> Dict:
     db = await get_db()
@@ -235,7 +219,6 @@ async def db_get_session_stats(chat_id: int, session_id: str) -> Dict:
         logger.error(f"db_get_session_stats: {e}")
         return {"total_links": 0, "unique_users": 0}
 
-
 async def db_mark_user_links_verified(chat_id: int, user_id: int, session_id: str):
     db = await get_db()
     try:
@@ -245,7 +228,6 @@ async def db_mark_user_links_verified(chat_id: int, user_id: int, session_id: st
         )
     except Exception as e:
         logger.error(f"db_mark_user_links_verified: {e}")
-
 
 # ── Safe list helpers ─────────────────────────────────────────
 async def db_is_user_in_safe_list(chat_id: int, session_id: str, user_id: int) -> bool:
@@ -258,7 +240,6 @@ async def db_is_user_in_safe_list(chat_id: int, session_id: str, user_id: int) -
         logger.error(f"db_is_user_in_safe_list: {e}")
         return False
 
-
 async def db_add_to_safe_list(chat_id: int, session_id: str,
                                user_id: int, username: str, keyword: str):
     db = await get_db()
@@ -270,7 +251,6 @@ async def db_add_to_safe_list(chat_id: int, session_id: str,
     except Exception as e:
         logger.error(f"db_add_to_safe_list: {e}")
 
-
 async def db_get_safe_users(chat_id: int, session_id: str) -> List[Dict]:
     db = await get_db()
     try:
@@ -280,7 +260,6 @@ async def db_get_safe_users(chat_id: int, session_id: str) -> List[Dict]:
     except Exception as e:
         logger.error(f"db_get_safe_users: {e}")
         return []
-
 
 # ── Ad tracking helpers ───────────────────────────────────────
 async def db_enable_ad_tracking(chat_id: int, session_id: str):
@@ -298,7 +277,6 @@ async def db_enable_ad_tracking(chat_id: int, session_id: str):
     except Exception as e:
         logger.error(f"db_enable_ad_tracking: {e}")
 
-
 async def db_is_ad_tracking_enabled(chat_id: int) -> bool:
     db = await get_db()
     try:
@@ -307,7 +285,6 @@ async def db_is_ad_tracking_enabled(chat_id: int) -> bool:
     except Exception as e:
         logger.error(f"db_is_ad_tracking_enabled: {e}")
         return False
-
 
 async def db_add_to_ad_list(chat_id: int, user_id: int, username: str):
     db = await get_db()
@@ -320,7 +297,6 @@ async def db_add_to_ad_list(chat_id: int, user_id: int, username: str):
         )
     except Exception as e:
         logger.error(f"db_add_to_ad_list: {e}")
-
 
 # ── SR list helpers ───────────────────────────────────────────
 async def db_add_to_sr_list(chat_id: int, user_id: int, username: str):
@@ -335,7 +311,6 @@ async def db_add_to_sr_list(chat_id: int, user_id: int, username: str):
     except Exception as e:
         logger.error(f"db_add_to_sr_list: {e}")
 
-
 async def db_get_sr_list(chat_id: int) -> List[Dict]:
     db = await get_db()
     try:
@@ -343,7 +318,6 @@ async def db_get_sr_list(chat_id: int) -> List[Dict]:
     except Exception as e:
         logger.error(f"db_get_sr_list: {e}")
         return []
-
 
 # ── Warning helpers ───────────────────────────────────────────
 async def db_get_warn_limit(chat_id: int) -> int:
@@ -355,7 +329,6 @@ async def db_get_warn_limit(chat_id: int) -> int:
         logger.error(f"db_get_warn_limit: {e}")
         return 3
 
-
 async def db_set_warn_limit(chat_id: int, limit: int):
     db = await get_db()
     try:
@@ -366,7 +339,6 @@ async def db_set_warn_limit(chat_id: int, limit: int):
         )
     except Exception as e:
         logger.error(f"db_set_warn_limit: {e}")
-
 
 # ── Custom pin message helpers ────────────────────────────────
 async def db_set_rs(chat_id: int, slot: int, text: str):
@@ -380,7 +352,6 @@ async def db_set_rs(chat_id: int, slot: int, text: str):
     except Exception as e:
         logger.error(f"db_set_rs: {e}")
 
-
 async def db_get_rs(chat_id: int, slot: int) -> Optional[str]:
     db = await get_db()
     try:
@@ -390,10 +361,8 @@ async def db_get_rs(chat_id: int, slot: int) -> Optional[str]:
         logger.error(f"db_get_rs: {e}")
         return None
 
-
 # ── Anon mode helpers ─────────────────────────────────────────
 async def db_toggle_anon_mode(chat_id: int) -> bool:
-    """Toggle anon admin mode; returns new state."""
     db = await get_db()
     try:
         doc = await db.gc_settings.find_one({"chat_id": chat_id})
@@ -409,13 +378,11 @@ async def db_toggle_anon_mode(chat_id: int) -> bool:
         logger.error(f"db_toggle_anon_mode: {e}")
         return False
 
-
 # ─────────────────────────────────────────────────────────────
 #  UTILITY FUNCTIONS
 # ─────────────────────────────────────────────────────────────
 def encrypt_link(link: str) -> str:
     return hashlib.sha256(link.encode()).hexdigest()[:16]
-
 
 def extract_twitter_links(text: str) -> List[str]:
     if not text:
@@ -435,14 +402,12 @@ def extract_twitter_links(text: str) -> List[str]:
             unique.append(lnk)
     return unique
 
-
 def extract_username_from_link(link: str) -> str:
     for pattern in [r"twitter\.com/([^/\s?]+)", r"x\.com/([^/\s?]+)"]:
         m = re.search(pattern, link)
         if m:
             return m.group(1)
     return "unknown"
-
 
 def parse_duration(duration_str: str) -> timedelta:
     if not duration_str:
@@ -464,10 +429,8 @@ def parse_duration(duration_str: str) -> timedelta:
             total_seconds += v
     return timedelta(seconds=total_seconds) if total_seconds > 0 else timedelta(days=3)
 
-
 def mention(user_id: int, name: str) -> str:
     return f"[{name}](tg://openmessage?user_id={user_id})"
-
 
 async def is_group_admin(client, chat_id: int, user_id: int) -> bool:
     try:
@@ -479,8 +442,6 @@ async def is_group_admin(client, chat_id: int, user_id: int) -> bool:
     except Exception:
         return False
 
-
-# Locked & unlocked ChatPermissions presets
 LOCKED_PERMS = ChatPermissions(
     can_send_messages=False,
     can_send_audios=False,
@@ -513,12 +474,16 @@ OPEN_PERMS = ChatPermissions(
     can_pin_messages=False,
 )
 
-MUTED_PERMS = ChatPermissions()   # all False by default
+MUTED_PERMS = ChatPermissions()
 
 # ─────────────────────────────────────────────────────────────
-#  ALL COMMAND NAMES — used to build the ~filters.command filter
+#  ALL COMMAND NAMES
+#  FIX: includes ALL music.py commands so handle_group_messages
+#       never intercepts them. Group=20 keeps this handler behind
+#       all music handlers (group=0 default).
 # ─────────────────────────────────────────────────────────────
 ALL_COMMANDS = [
+    # ── gc_manager own commands ──────────────────────────────
     "gcstarts", "gcclose", "gcreopen", "gcend", "gcclear", "gcclearall",
     "gcrefresh", "gccheck", "gcsr", "gcadd", "gcsetwarnlimit",
     "muteunsafe", "unmuteunsafe", "gcmute", "gcunmute", "unmuteall",
@@ -527,14 +492,34 @@ ALL_COMMANDS = [
     "p", "gcmanage", "gcpanel", "gcaddgroup", "gcremovegroup", "gclinks",
     "rs1", "rs2", "rs3", "rs4",
     "setrs", "setrs2", "setrs3", "setrs4",
-    "start", "help",
+    # ── music.py / play.py commands ──────────────────────────
+    "play", "vplay", "cplay", "cvplay",
+    "playforce", "vplayforce", "cplayforce", "cvplayforce",
+    "pause", "cpause",
+    "resume", "cresume",
+    "end", "cend",
+    "skip", "cskip", "next", "cnext",
+    "loop", "cloop",
+    "speed", "cspeed", "slow", "cslow", "playback", "cplayback",
+    "seek", "cseek", "seekback", "cseekback",
+    "channelplay",
+    # ── other common bot commands that must not be intercepted ─
+    "start", "help", "ping", "id", "queue", "cqueue",
+    "shuffle", "cshuffle", "volume", "cvolume",
+    "song", "video", "mix",
+    "lyrics", "radio",
+    "auth", "unauth", "authusers",
+    "ban", "unban", "kick", "mute", "unmute", "warn",
+    "promote", "demote", "pin", "unpin",
+    "reload", "broadcast",
+    "stats", "uptime",
+    "setbio", "setname", "setuserpic",
 ]
 
 # ─────────────────────────────────────────────────────────────
 #  RESOLVE TARGET HELPER
 # ─────────────────────────────────────────────────────────────
 async def _resolve_target(client, message: Message) -> Tuple[Optional[int], Optional[str]]:
-    """Resolve target user_id and display_name from reply or first arg."""
     if message.reply_to_message and message.reply_to_message.from_user:
         u = message.reply_to_message.from_user
         return u.id, f"@{u.username}" if u.username else u.first_name
@@ -554,15 +539,11 @@ async def _resolve_target(client, message: Message) -> Tuple[Optional[int], Opti
             return doc["user_id"], f"@{uname}"
     return None, None
 
-
 # ─────────────────────────────────────────────────────────────
 #  ADMIN COMMANDS
 # ─────────────────────────────────────────────────────────────
-
-# ── /gcstarts ─────────────────────────────────────────────────
 @app.on_message(filters.command(["gcstarts"]))
 async def gcstarts_command(client, message: Message):
-    """Start a new group session."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text(
             "👋 **Welcome to GC Manager Bot!**\n\n"
@@ -616,11 +597,8 @@ async def gcstarts_command(client, message: Message):
             "🔓 Group is unlocked — all users can message."
         )
 
-
-# ── /gcclose ─────────────────────────────────────────────────
 @app.on_message(filters.command(["gcclose"]))
 async def gcclose_command(client, message: Message):
-    """Lock the group without ending the session."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("This command is only available in groups!")
     chat_id = message.chat.id
@@ -654,11 +632,8 @@ async def gcclose_command(client, message: Message):
             "Make sure the bot has 'Restrict Members' permission."
         )
 
-
-# ── /gcreopen ─────────────────────────────────────────────────
 @app.on_message(filters.command(["gcreopen"]))
 async def gcreopen_command(client, message: Message):
-    """Unlock the group and continue the session."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("This command is only available in groups!")
     chat_id = message.chat.id
@@ -680,11 +655,8 @@ async def gcreopen_command(client, message: Message):
             "Make sure the bot has 'Restrict Members' permission."
         )
 
-
-# ── /gcend ────────────────────────────────────────────────────
 @app.on_message(filters.command(["gcend"]))
 async def gcend_command(client, message: Message):
-    """End the current session and clear all data."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("This command is only available in groups!")
     chat_id = message.chat.id
@@ -716,11 +688,8 @@ async def gcend_command(client, message: Message):
             "🔒 Group is locked — use /gcstarts to begin a new session."
         )
 
-
-# ── /gcclear ─────────────────────────────────────────────────
 @app.on_message(filters.command(["gcclear"]))
 async def gcclear_command(client, message: Message):
-    """Clear tracked data but keep the session active."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("This command is only available in groups!")
     chat_id = message.chat.id
@@ -735,11 +704,8 @@ async def gcclear_command(client, message: Message):
         "The session is still active but all previous data has been removed."
     )
 
-
-# ── /gcclearall ───────────────────────────────────────────────
 @app.on_message(filters.command(["gcclearall"]))
 async def gcclearall_command(client, message: Message):
-    """Delete recent messages in the group (last ~1 000)."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("This command is only available in groups!")
     chat_id = message.chat.id
@@ -775,11 +741,8 @@ async def gcclearall_command(client, message: Message):
     except Exception:
         pass
 
-
-# ── /gcrefresh ────────────────────────────────────────────────
 @app.on_message(filters.command(["gcrefresh"]))
 async def gcrefresh_command(client, message: Message):
-    """Refresh/verify the admin list for this group."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("This command is only available in groups!")
     chat_id = message.chat.id
@@ -797,15 +760,11 @@ async def gcrefresh_command(client, message: Message):
         logger.error(f"gcrefresh: {e}")
         await message.reply_text(f"❌ Error refreshing admins: {e}")
 
-
 # ─────────────────────────────────────────────────────────────
 #  BOT OWNER COMMANDS
 # ─────────────────────────────────────────────────────────────
-
-# ── /gcmanage ─────────────────────────────────────────────────
 @app.on_message(filters.command(["gcmanage"]) & filters.private)
 async def gcmanage_command(client, message: Message):
-    """Group management panel (bot owner only, PM only)."""
     if message.from_user.id != OWNER_ID and message.from_user.id not in SUDOERS:
         return await message.reply_text("❌ This command is only for the bot owner!")
     keyboard = InlineKeyboardMarkup([
@@ -817,7 +776,6 @@ async def gcmanage_command(client, message: Message):
         "🛠️ **Group Management Panel**\n\nSelect an option:",
         reply_markup=keyboard
     )
-
 
 @app.on_callback_query(filters.regex(r"^gc_(view_groups|add_group_info|remove_group_info)$"))
 async def gcmanage_callback(client, query: CallbackQuery):
@@ -852,8 +810,6 @@ async def gcmanage_callback(client, query: CallbackQuery):
             "Example: `/gcremovegroup -1001234567890`"
         )
 
-
-# ── /gcaddgroup ───────────────────────────────────────────────
 @app.on_message(filters.command(["gcaddgroup"]) & filters.private)
 async def gcaddgroup_command(client, message: Message):
     if message.from_user.id != OWNER_ID and message.from_user.id not in SUDOERS:
@@ -878,8 +834,6 @@ async def gcaddgroup_command(client, message: Message):
     else:
         await message.reply_text("❌ Failed to add group!")
 
-
-# ── /gcremovegroup ────────────────────────────────────────────
 @app.on_message(filters.command(["gcremovegroup"]) & filters.private)
 async def gcremovegroup_command(client, message: Message):
     if message.from_user.id != OWNER_ID and message.from_user.id not in SUDOERS:
@@ -899,11 +853,8 @@ async def gcremovegroup_command(client, message: Message):
     else:
         await message.reply_text("❌ Group not found in the allowed list!")
 
-
-# ── /gcpanel ─────────────────────────────────────────────────
 @app.on_message(filters.command(["gcpanel"]))
 async def gcpanel_command(client, message: Message):
-    """Full admin panel (owner/sudoers)."""
     if message.from_user.id != OWNER_ID and message.from_user.id not in SUDOERS:
         return await message.reply_text("❌ Only the bot owner can use this!")
     groups = await db_get_all_allowed_groups()
@@ -922,11 +873,8 @@ async def gcpanel_command(client, message: Message):
         reply_markup=keyboard,
     )
 
-
-# ── /gclinks ─────────────────────────────────────────────────
 @app.on_message(filters.command(["gclinks"]) & filters.private)
 async def gclinks_command(client, message: Message):
-    """View links by group (PM only, owner/sudoers)."""
     if message.from_user.id != OWNER_ID and message.from_user.id not in SUDOERS:
         return await message.reply_text("❌ Only the bot owner can use this!")
     groups = await db_get_all_allowed_groups()
@@ -947,12 +895,9 @@ async def gclinks_command(client, message: Message):
             text += f"**{g.get('chat_title', cid)}** — no active session\n\n"
     await message.reply_text(text)
 
-
 # ─────────────────────────────────────────────────────────────
 #  MODERATION COMMANDS
 # ─────────────────────────────────────────────────────────────
-
-# ── /unsafe ───────────────────────────────────────────────────
 @app.on_message(filters.command(["unsafe"]))
 async def unsafe_command(client, message: Message):
     if message.chat.type == enums.ChatType.PRIVATE:
@@ -977,8 +922,6 @@ async def unsafe_command(client, message: Message):
         text += f"{idx}. @{uname}\n"
     await message.reply_text(text)
 
-
-# ── /safe ─────────────────────────────────────────────────────
 @app.on_message(filters.command(["safe"]))
 async def safe_command(client, message: Message):
     if message.chat.type == enums.ChatType.PRIVATE:
@@ -1009,11 +952,8 @@ async def safe_command(client, message: Message):
     text += f"\n📊 **Total:** {len(safe_users)} users marked safe"
     await message.reply_text(text, disable_web_page_preview=True)
 
-
-# ── /gccheck ─────────────────────────────────────────────────
 @app.on_message(filters.command(["gccheck"]))
 async def gccheck_command(client, message: Message):
-    """Enable ad/done tracking."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("Groups only!")
     chat_id = message.chat.id
@@ -1028,11 +968,8 @@ async def gccheck_command(client, message: Message):
         "I will now track 'ad', 'all done', 'all dn', 'done' messages and mark users safe."
     )
 
-
-# ── /gcsr ─────────────────────────────────────────────────────
 @app.on_message(filters.command(["gcsr"]))
 async def gcsr_command(client, message: Message):
-    """Request screen recording from a user (reply)."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("Groups only!")
     chat_id = message.chat.id
@@ -1050,11 +987,8 @@ async def gcsr_command(client, message: Message):
         "Make sure your profile is visible and your TL profile is mentioned or pinned as per the post."
     )
 
-
-# ── /gcadd ────────────────────────────────────────────────────
 @app.on_message(filters.command(["gcadd"]))
 async def gcadd_command(client, message: Message):
-    """Manually add a user to the ad/done (safe) list."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("Groups only!")
     chat_id = message.chat.id
@@ -1072,11 +1006,8 @@ async def gcadd_command(client, message: Message):
     name = f"@{u.username}" if u.username else u.first_name
     await message.reply_text(f"✅ {name} added to the ad list!")
 
-
-# ── /gcsetwarnlimit ───────────────────────────────────────────
 @app.on_message(filters.command(["gcsetwarnlimit"]))
 async def gcsetwarnlimit_command(client, message: Message):
-    """Set the warning limit before auto-mute."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("Groups only!")
     chat_id = message.chat.id
@@ -1094,11 +1025,8 @@ async def gcsetwarnlimit_command(client, message: Message):
     await db_set_warn_limit(chat_id, limit)
     await message.reply_text(f"✅ Warning limit set to **{limit}**!")
 
-
-# ── /muteunsafe ───────────────────────────────────────────────
 @app.on_message(filters.command(["muteunsafe"]))
 async def muteunsafe_command(client, message: Message):
-    """Mute all unverified users."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("Groups only!")
     chat_id = message.chat.id
@@ -1130,11 +1058,8 @@ async def muteunsafe_command(client, message: Message):
         f"✅ Muted: {muted}\n❌ Failed: {failed}\n⏱️ Duration: {duration_str}"
     )
 
-
-# ── /unmuteunsafe ─────────────────────────────────────────────
 @app.on_message(filters.command(["unmuteunsafe"]))
 async def unmuteunsafe_command(client, message: Message):
-    """Unmute all unverified users."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("Groups only!")
     chat_id = message.chat.id
@@ -1161,11 +1086,8 @@ async def unmuteunsafe_command(client, message: Message):
         f"🔊 **Unmute Operation Complete**\n\n✅ Unmuted: {unmuted}\n❌ Failed: {failed}"
     )
 
-
-# ── /gcmute ───────────────────────────────────────────────────
 @app.on_message(filters.command(["gcmute"]))
 async def gcmute_command(client, message: Message):
-    """Mute a user. Usage: /gcmute [duration] (reply) or /gcmute @username [duration]"""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("Groups only!")
     chat_id = message.chat.id
@@ -1198,11 +1120,8 @@ async def gcmute_command(client, message: Message):
     except Exception as e:
         await message.reply_text(f"❌ Failed: {e}")
 
-
-# ── /gcunmute ─────────────────────────────────────────────────
 @app.on_message(filters.command(["gcunmute"]))
 async def gcunmute_command(client, message: Message):
-    """Unmute a user. Usage: /gcunmute (reply) or /gcunmute @username"""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("Groups only!")
     chat_id = message.chat.id
@@ -1223,11 +1142,8 @@ async def gcunmute_command(client, message: Message):
     except Exception as e:
         await message.reply_text(f"❌ Failed to unmute: {e}")
 
-
-# ── /unmuteall ────────────────────────────────────────────────
 @app.on_message(filters.command(["unmuteall"]))
 async def unmuteall_command(client, message: Message):
-    """Restore default group permissions (unmute everyone)."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("Groups only!")
     chat_id = message.chat.id
@@ -1242,7 +1158,6 @@ async def unmuteall_command(client, message: Message):
     except Exception as e:
         await message.reply_text(f"❌ Failed to unmute all: {e}")
 
-
 # ─────────────────────────────────────────────────────────────
 #  PIN & CUSTOM MESSAGE COMMANDS
 # ─────────────────────────────────────────────────────────────
@@ -1253,8 +1168,6 @@ DROP_LINK_TEXT = (
     "✅ After sharing, wait for further instructions from admins."
 )
 
-
-# ── /p — Pin the default 'drop link' message ─────────────────
 @app.on_message(filters.command(["p"]))
 async def pin_drop_link_command(client, message: Message):
     if message.chat.type == enums.ChatType.PRIVATE:
@@ -1268,12 +1181,9 @@ async def pin_drop_link_command(client, message: Message):
     except Exception as e:
         logger.warning(f"/p pin failed: {e}")
 
-
-# ── /setrs, /setrs2, /setrs3, /setrs4 ────────────────────────
 for _slot in range(1, 5):
     def _make_setrs(slot):
         cmd = "setrs" if slot == 1 else f"setrs{slot}"
-
         @app.on_message(filters.command([cmd]))
         async def _setrs(client, message: Message, _s=slot):
             if message.chat.type == enums.ChatType.PRIVATE:
@@ -1294,13 +1204,9 @@ for _slot in range(1, 5):
                 text = parts[1]
             await db_set_rs(chat_id, _s, text)
             await message.reply_text(f"✅ Custom pin message **RS{_s}** saved!")
-
         return _setrs
-
     _make_setrs(_slot)
 
-
-# ── /rs1, /rs2, /rs3, /rs4 ───────────────────────────────────
 for _slot in range(1, 5):
     def _make_rs(slot):
         @app.on_message(filters.command([f"rs{slot}"]))
@@ -1322,20 +1228,14 @@ for _slot in range(1, 5):
                 await client.pin_chat_message(chat_id, sent.id)
             except Exception as e:
                 logger.warning(f"/rs{_s} pin failed: {e}")
-
         return _rs
-
     _make_rs(_slot)
-
 
 # ─────────────────────────────────────────────────────────────
 #  SETTINGS COMMANDS
 # ─────────────────────────────────────────────────────────────
-
-# ── /gcsettings ───────────────────────────────────────────────
 @app.on_message(filters.command(["gcsettings"]))
 async def gcsettings_command(client, message: Message):
-    """Show current group settings."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("Groups only!")
     chat_id = message.chat.id
@@ -1358,11 +1258,8 @@ async def gcsettings_command(client, message: Message):
     )
     await message.reply_text(text)
 
-
-# ── /anonmode ─────────────────────────────────────────────────
 @app.on_message(filters.command(["anonmode"]))
 async def anonmode_command(client, message: Message):
-    """Toggle anonymous admin mode."""
     if message.chat.type == enums.ChatType.PRIVATE:
         return await message.reply_text("Groups only!")
     chat_id = message.chat.id
@@ -1376,12 +1273,9 @@ async def anonmode_command(client, message: Message):
     )
     await message.reply_text(f"🕵️ Anonymous Admin Mode: {state_text}")
 
-
 # ─────────────────────────────────────────────────────────────
 #  USER COMMANDS
 # ─────────────────────────────────────────────────────────────
-
-# ── /gchelp ───────────────────────────────────────────────────
 @app.on_message(filters.command(["gchelp"]))
 async def gchelp_command(client, message: Message):
     await message.reply_text(
@@ -1429,8 +1323,6 @@ async def gchelp_command(client, message: Message):
         "⏱️ **Duration Format:** `10s` `5m` `2h` `3d`"
     )
 
-
-# ── /gcrule ───────────────────────────────────────────────────
 @app.on_message(filters.command(["gcrule"]))
 async def gcrule_command(client, message: Message):
     await message.reply_text(
@@ -1455,8 +1347,6 @@ async def gcrule_command(client, message: Message):
         "Powered by @Super_Fasttt_Bot"
     )
 
-
-# ── /gcmulti ─────────────────────────────────────────────────
 @app.on_message(filters.command(["gcmulti"]))
 async def gcmulti_command(client, message: Message):
     if message.chat.type == enums.ChatType.PRIVATE:
@@ -1473,8 +1363,6 @@ async def gcmulti_command(client, message: Message):
         text += f"• @{u.get('username', 'Unknown')} — {u.get('count', 0)} links\n"
     await message.reply_text(text)
 
-
-# ── /gclist ───────────────────────────────────────────────────
 @app.on_message(filters.command(["gclist"]))
 async def gclist_command(client, message: Message):
     if message.chat.type == enums.ChatType.PRIVATE:
@@ -1502,8 +1390,6 @@ async def gclist_command(client, message: Message):
     text += f"\n📊 **Total:** {stats['unique_users']} users | {stats['total_links']} links"
     await message.reply_text(text, disable_web_page_preview=True)
 
-
-# ── /gccount ─────────────────────────────────────────────────
 @app.on_message(filters.command(["gccount"]))
 async def gccount_command(client, message: Message):
     if message.chat.type == enums.ChatType.PRIVATE:
@@ -1517,8 +1403,6 @@ async def gccount_command(client, message: Message):
         f"📊 Total users with submitted links: **{stats['unique_users']}**"
     )
 
-
-# ── /gclink ───────────────────────────────────────────────────
 @app.on_message(filters.command(["gclink"]))
 async def gclink_command(client, message: Message):
     if message.chat.type == enums.ChatType.PRIVATE:
@@ -1538,8 +1422,6 @@ async def gclink_command(client, message: Message):
         text += f"{idx}. 🔐 `{lnk['encrypted_link']}`\n"
     await message.reply_text(text)
 
-
-# ── /srlist ───────────────────────────────────────────────────
 @app.on_message(filters.command(["srlist"]))
 async def srlist_command(client, message: Message):
     if message.chat.type == enums.ChatType.PRIVATE:
@@ -1552,22 +1434,26 @@ async def srlist_command(client, message: Message):
         text += f"• @{u.get('username', 'Unknown')}\n"
     await message.reply_text(text)
 
-
 # ─────────────────────────────────────────────────────────────
 #  MESSAGE HANDLER — track Twitter/X links
-#  FIX: use filters.command(ALL_COMMANDS) instead of bare
-#       filters.command so that ~ (NOT) works correctly.
+#
+#  FIX 1: ALL music commands are in ALL_COMMANDS so ~filters.command
+#          correctly excludes them from this handler.
+#  FIX 2: group=20 means this handler runs AFTER music handlers
+#          (which run at group=0 by default), preventing any
+#          possibility of interference.
 # ─────────────────────────────────────────────────────────────
 @app.on_message(
     filters.group
     & ~filters.command(ALL_COMMANDS)
-    & (filters.text | filters.caption)
+    & (filters.text | filters.caption),
+    group=20,
 )
 async def handle_group_messages(client, message: Message):
     """Track Twitter/X links and ad/done keywords in groups."""
     chat_id = message.chat.id
     if not message.from_user:
-        return  # Channel posts inside groups
+        return  # channel posts inside groups
 
     user_id = message.from_user.id
     username = message.from_user.username or message.from_user.first_name
@@ -1579,6 +1465,7 @@ async def handle_group_messages(client, message: Message):
     if not session or not session.get("is_active"):
         return
     session_id = str(session["_id"])
+
     raw_text = (message.text or message.caption or "").lower().strip()
 
     # ── Ad/done detection ──────────────────────────────────────
@@ -1638,7 +1525,6 @@ async def handle_group_messages(client, message: Message):
         return
 
     for link in links:
-        # Duplicate link check
         if ENABLE_FRAUD_DETECTION:
             is_dup, dup_users = await db_check_duplicate_link(chat_id, user_id, link, session_id)
             if is_dup:
@@ -1662,9 +1548,8 @@ async def handle_group_messages(client, message: Message):
         await db_add_link(chat_id, user_id, username, link, encrypted, session_id)
         logger.info(f"Link stored: {username} ({user_id}) — {encrypted}")
 
-
 # ─────────────────────────────────────────────────────────────
-#  MODULE METADATA (SHASHA_DRUGZ plugin system)
+#  MODULE METADATA
 # ─────────────────────────────────────────────────────────────
 __menu__ = "CMD_MANAGE"
 __mod_name__ = "H_B_87"
