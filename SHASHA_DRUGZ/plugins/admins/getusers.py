@@ -4,8 +4,6 @@ import csv
 from pyrogram import Client, filters
 from SHASHA_DRUGZ import app
 
-print("[hackusers] hackusers, hacklink")
-
 @app.on_message(filters.command("getusers") & admin_filter)
 def user_command(client, message):
     
