@@ -6,7 +6,6 @@ from SHASHA_DRUGZ import app
 from SHASHA_DRUGZ.mongo.readable_time import get_readable_time
 from SHASHA_DRUGZ.mongo.afkdb import add_afk, is_afk, remove_afk
 
-print("[afk] afk")
 
 @app.on_message(filters.command(["afk", "brb"], prefixes=["/", "!"]))
 async def active_afk(_, message: Message):
