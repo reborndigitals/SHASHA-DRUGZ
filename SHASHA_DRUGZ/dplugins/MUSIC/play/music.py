@@ -5,8 +5,7 @@ import os
 from time import time
 from typing import Union
 from random import randint
-
-from pyrogram import Client, filters
+from pyrogram import Client, filters, client
 from pyrogram.types import (
     Message,
     InlineKeyboardButton,
@@ -14,7 +13,6 @@ from pyrogram.types import (
     InputMediaPhoto,
 )
 from pytgcalls.exceptions import NoActiveGroupCall
-
 import config
 from SHASHA_DRUGZ import (
     app,
@@ -41,12 +39,12 @@ from SHASHA_DRUGZ.utils.database import (
     add_served_user,
     get_assistant,
     add_active_video_chat,
-    set_cmode,                 # added for channel.py
+    set_cmode,
 )
 from SHASHA_DRUGZ.utils.decorators import AdminRightsCheck
 from SHASHA_DRUGZ.utils.decorators.language import languageCB, language
 from SHASHA_DRUGZ.utils.decorators.play import PlayWrapper
-from SHASHA_DRUGZ.utils.decorators.admins import AdminActual   # added for channel.py
+from SHASHA_DRUGZ.utils.decorators.admins import AdminActual
 from SHASHA_DRUGZ.utils.inline import (
     close_markup,
     speed_markup,
@@ -72,13 +70,12 @@ from SHASHA_DRUGZ.utils.pastebin import SHASHABin
 from SHASHA_DRUGZ.utils.stream.queue import put_queue, put_queue_index
 from SHASHA_DRUGZ.utils import seconds_to_min, time_to_seconds
 from youtubesearchpython.__future__ import VideosSearch
-
 from config import BANNED_USERS, adminlist, lyrical
 
 # ----------------------------------- GLOBALS -----------------------------------
-checker = []  # from speed.py
-user_last_message_time = {}   # from play.py (spam protection)
-user_command_count = {}       # from play.py
+checker = []
+user_last_message_time = {}
+user_command_count = {}
 SPAM_THRESHOLD = 2
 SPAM_WINDOW_SECONDS = 5
 
@@ -92,7 +89,6 @@ async def playmode_(client, message: Message, _):
     user_id = message.from_user.id
     current_time = time()
     last_message_time = user_last_message_time.get(user_id, 0)
-
     if current_time - last_message_time < SPAM_WINDOW_SECONDS:
         user_last_message_time[user_id] = current_time
         user_command_count[user_id] = user_command_count.get(user_id, 0) + 1
@@ -104,7 +100,6 @@ async def playmode_(client, message: Message, _):
     else:
         user_command_count[user_id] = 1
         user_last_message_time[user_id] = current_time
-
     if len(message.command) < 2:
         return await message.reply_text(_["cplay_1"].format(message.chat.title))
     query = message.text.split(None, 2)[1].lower().strip()
@@ -141,6 +136,7 @@ async def playmode_(client, message: Message, _):
             return await message.reply_text(_["cplay_6"].format(chat.title, cusn))
         await set_cmode(message.chat.id, chat.id)
         return await message.reply_text(_["cplay_3"].format(chat.title, chat.id))
+
 
 # ----------------------------------- loop.py -----------------------------------
 @Client.on_message(filters.command(["loop", "cloop"]) & filters.group & ~BANNED_USERS)
@@ -180,6 +176,7 @@ async def admins(cli, message: Message, _, chat_id):
     else:
         return await message.reply_text(usage)
 
+
 # ----------------------------------- resume.py -----------------------------------
 @Client.on_message(filters.command(["resume", "cresume"]) & filters.group & ~BANNED_USERS)
 @AdminRightsCheck
@@ -202,6 +199,7 @@ async def resume_com(cli, message: Message, _, chat_id):
         reply_markup=InlineKeyboardMarkup(buttons_resume)
     )
 
+
 # ----------------------------------- pause.py -----------------------------------
 @Client.on_message(filters.command(["pause", "cpause"]) & filters.group & ~BANNED_USERS)
 @AdminRightsCheck
@@ -220,6 +218,7 @@ async def pause_admin(cli, message: Message, _, chat_id):
         _["admin_2"].format(message.from_user.mention),
         reply_markup=InlineKeyboardMarkup(buttons)
     )
+
 
 # ----------------------------------- speed.py -----------------------------------
 @Client.on_message(
@@ -244,6 +243,7 @@ async def playback(cli, message: Message, _, chat_id):
         text=_["admin_28"].format(app.mention),
         reply_markup=upl,
     )
+
 
 @Client.on_callback_query(filters.regex("SpeedUP") & ~BANNED_USERS)
 @languageCB
@@ -315,9 +315,10 @@ async def del_back_playlist(client, callback_query, _):
         reply_markup=close_markup(_),
     )
 
+
 # ----------------------------------- stop.py -----------------------------------
 @Client.on_message(
-    filters.command(["end", "cend"], prefixes=["end","/", "!", "%", ",", "", ".", "@", "#"]) & filters.group & ~BANNED_USERS
+    filters.command(["end", "cend"], prefixes=["end", "/", "!", "%", ",", "", ".", "@", "#"]) & filters.group & ~BANNED_USERS
 )
 @AdminRightsCheck
 async def stop_music(cli, message: Message, _, chat_id):
@@ -329,9 +330,10 @@ async def stop_music(cli, message: Message, _, chat_id):
         _["admin_5"].format(message.from_user.mention), reply_markup=close_markup(_)
     )
 
+
 # ----------------------------------- skip.py -----------------------------------
 @Client.on_message(
-    filters.command(["skip", "cskip", "next", "cnext"], prefixes=["skip", "/", "!", "%", ",",  ".", "@", "#"]) & filters.group & ~BANNED_USERS
+    filters.command(["skip", "cskip", "next", "cnext"], prefixes=["skip", "/", "!", "%", ",", ".", "@", "#"]) & filters.group & ~BANNED_USERS
 )
 @AdminRightsCheck
 async def skip(cli, message: Message, _, chat_id):
@@ -548,6 +550,7 @@ async def skip(cli, message: Message, _, chat_id):
             db[chat_id][0]["mystic"] = run
             db[chat_id][0]["markup"] = "stream"
 
+
 # ----------------------------------- seek.py -----------------------------------
 @Client.on_message(
     filters.command(["seek", "cseek", "seekback", "cseekback"])
@@ -614,6 +617,7 @@ async def seek_comm(cli, message: Message, _, chat_id):
         reply_markup=close_markup(_),
     )
 
+
 # ----------------------------------- play.py -----------------------------------
 @Client.on_message(
     filters.command(["play", "vplay", "cplay", "cvplay", "playforce", "vplayforce", "cplayforce", "cvplayforce"], prefixes=["/", "!", "%", "", ".", "@", "#"])
@@ -635,7 +639,6 @@ async def play_commnd(
     user_id = message.from_user.id
     current_time = time()
     last_message_time = user_last_message_time.get(user_id, 0)
-
     if current_time - last_message_time < SPAM_WINDOW_SECONDS:
         user_last_message_time[user_id] = current_time
         user_command_count[user_id] = user_command_count.get(user_id, 0) + 1
@@ -647,7 +650,6 @@ async def play_commnd(
     else:
         user_command_count[user_id] = 1
         user_last_message_time[user_id] = current_time
-
     await add_served_chat(message.chat.id)
     mystic = await message.reply_text(
         _["play_2"].format(channel) if channel else _["play_1"]
@@ -658,7 +660,6 @@ async def play_commnd(
     spotify = None
     user_id = message.from_user.id
     user_name = message.from_user.first_name
-
     audio_telegram = (
         (message.reply_to_message.audio or message.reply_to_message.voice)
         if message.reply_to_message
@@ -678,7 +679,7 @@ async def play_commnd(
                 _["play_6"].format(config.DURATION_LIMIT_MIN, app.mention)
             )
         file_path = await Telegram.get_filepath(audio=audio_telegram)
-        if await Telegram.download(client, message, mystic, file_path):
+        if await Telegram.download(_, message, mystic, file_path):
             message_link = await Telegram.get_link(message)
             file_name = await Telegram.get_filename(audio_telegram, audio=True)
             dur = await Telegram.get_duration(audio_telegram, file_path)
@@ -722,7 +723,7 @@ async def play_commnd(
         if video_telegram.file_size > config.TG_VIDEO_FILESIZE_LIMIT:
             return await mystic.edit_text(_["play_8"])
         file_path = await Telegram.get_filepath(video=video_telegram)
-        if await Telegram.download(client, message, mystic, file_path):
+        if await Telegram.download(_, message, mystic, file_path):
             message_link = await Telegram.get_link(message)
             file_name = await Telegram.get_filename(video_telegram)
             dur = await Telegram.get_duration(video_telegram, file_path)
@@ -910,13 +911,14 @@ async def play_commnd(
                 return await mystic.edit_text(e)
             return await mystic.delete()
         elif await Instagram.valid(url):
+            # ── FIX: use "instagram" streamtype, not "youtube" ──────────────
             try:
                 details, track_id = await Instagram.track(url)
             except Exception as e:
                 print(e)
                 return await mystic.edit_text(_["play_3"])
-            streamtype = "youtube"
-            img = details["thumb"]
+            streamtype = "instagram"
+            img = details.get("thumb") or config.STREAM_IMG_URL
             cap = _["play_11"].format(details["title"], details["duration_min"])
         else:
             try:
@@ -1067,6 +1069,7 @@ async def play_commnd(
                 )
                 return await play_logs(message, streamtype=f"URL Searched Inline")
 
+
 # ----------------------------------- play callbacks -----------------------------------
 @Client.on_callback_query(filters.regex("MusicStream") & ~BANNED_USERS)
 @languageCB
@@ -1137,6 +1140,7 @@ async def play_music(client, CallbackQuery, _):
         return await mystic.edit_text(e)
     return await mystic.delete()
 
+
 @Client.on_callback_query(filters.regex("SHASHAmousAdmin") & ~BANNED_USERS)
 async def SHASHAmous_check(client, CallbackQuery):
     try:
@@ -1146,6 +1150,7 @@ async def SHASHAmous_check(client, CallbackQuery):
         )
     except:
         pass
+
 
 @Client.on_callback_query(filters.regex("SHASHAPlaylists") & ~BANNED_USERS)
 @languageCB
@@ -1234,6 +1239,7 @@ async def play_playlists_command(client, CallbackQuery, _):
         return await mystic.edit_text(e)
     return await mystic.delete()
 
+
 @Client.on_callback_query(filters.regex("slider") & ~BANNED_USERS)
 @languageCB
 async def slider_queries(client, CallbackQuery, _):
@@ -1272,8 +1278,7 @@ async def slider_queries(client, CallbackQuery, _):
                 duration_min,
             ),
         )
-        # Note: the original code seems incomplete after this line; we preserve it as is.
-        # (The rest of the callback might be missing, but we keep the existing lines.)
+
 
 # ----------------------------------- STREAM FUNCTION -----------------------------------
 async def stream(
@@ -1459,6 +1464,91 @@ async def stream(
             )
             db[chat_id][0]["mystic"] = run
             db[chat_id][0]["markup"] = "stream"
+    # ── FIX: new instagram streamtype block ────────────────────────────────
+    elif streamtype == "instagram":
+        ig_url = result["link"]
+        vidid = result["vidid"]
+        title = (result["title"]).title()
+        duration_min = result["duration_min"]
+        duration_sec = result.get("duration_sec", 0)
+        thumbnail = result.get("thumb") or config.STREAM_IMG_URL
+        status = True if video else None
+
+        # Check duration limit
+        if duration_sec > config.DURATION_LIMIT:
+            raise AssistantErr(_["play_6"].format(config.DURATION_LIMIT_MIN, app.mention))
+
+        # Download the Instagram reel/video via InstagramAPI
+        try:
+            ig_result, file_path = await Instagram.download(
+                ig_url,
+                mystic,
+                video=video,
+                audio=not video,
+            )
+        except Exception:
+            raise AssistantErr(_["play_14"])
+
+        if not file_path or not ig_result:
+            raise AssistantErr(_["play_14"])
+
+        if await is_active_chat(chat_id):
+            await put_queue(
+                chat_id,
+                original_chat_id,
+                file_path,
+                title,
+                duration_min,
+                user_name,
+                vidid,
+                user_id,
+                "video" if video else "audio",
+            )
+            position = len(db.get(chat_id)) - 1
+            button = aq_markup(_, chat_id)
+            await app.send_photo(
+                chat_id=original_chat_id,
+                photo=thumbnail,
+                caption=_["queue_4"].format(position, title[:11], duration_min, user_name),
+                reply_markup=InlineKeyboardMarkup(button),
+            )
+        else:
+            if not forceplay:
+                db[chat_id] = []
+            await SHASHA.join_call(
+                chat_id,
+                original_chat_id,
+                file_path,
+                video=status,
+                image=thumbnail,
+            )
+            await put_queue(
+                chat_id,
+                original_chat_id,
+                file_path,
+                title,
+                duration_min,
+                user_name,
+                vidid,
+                user_id,
+                "video" if video else "audio",
+                forceplay=forceplay,
+            )
+            button = stream_markup2(_, chat_id)
+            run = await app.send_photo(
+                original_chat_id,
+                photo=thumbnail,
+                caption=_["stream_1"].format(
+                    ig_url,
+                    title[:11],
+                    duration_min,
+                    user_name,
+                ),
+                reply_markup=InlineKeyboardMarkup(button),
+            )
+            db[chat_id][0]["mystic"] = run
+            db[chat_id][0]["markup"] = "tg"
+    # ── end instagram block ────────────────────────────────────────────────
     elif streamtype == "soundcloud":
         file_path = result["filepath"]
         title = result["title"]
@@ -1679,6 +1769,7 @@ async def stream(
             db[chat_id][0]["markup"] = "tg"
             await mystic.delete()
 
+
 # ----------------------------------- HELP TEXT -----------------------------------
 __menu__ = "CMD_MUSIC"
 __mod_name__ = "H_B_22"
@@ -1692,27 +1783,21 @@ __help__ = """
 🔻 /vplayforce ➠ ᴠɪᴅᴇᴏ ꜰᴏʀᴄᴇ
 🔻 /cplayforce ➠ ᴄʜᴀɴɴᴇʟ ᴀᴜᴅɪᴏ ꜰᴏʀᴄᴇ
 🔻 /cvplayforce ➠ ᴄʜᴀɴɴᴇʟ ᴠɪᴅᴇᴏ ꜰᴏʀᴄᴇ
-
 ⏸ ᴘᴀᴜꜱᴇ/ʀᴇꜱᴜᴍᴇ
 🔻 /pause / /resume
 🔻 /cpause / /cresume
-
 ⏹ ꜱᴛᴏᴘ
 🔻 /end / /cend
-
 ⏭ ꜱᴋɪᴘ/ɴᴇxᴛ
 🔻 /skip / /next
 🔻 /cskip / /cnext
-
 🔁 ʟᴏᴏᴘ
 🔻 /loop 1-10 / enable / disable
 🔻 /cloop
-
 ⏩ ꜱᴘᴇᴇᴅ
 🔻 /speed / /cspeed
 🔻 /slow / /cslow
 🔻 /playback / /cplayback
-
 📢 ᴄʜᴀɴɴᴇʟ ᴘʟᴀʏ
 🔻 /channelplay [channel username/id or linked or disable]
 """
