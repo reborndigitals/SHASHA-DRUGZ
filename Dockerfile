@@ -39,10 +39,14 @@ RUN git clone --single-branch --depth 1 \
         https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git \
         /app/bgutil-ytdlp-pot-provider \
     && cd /app/bgutil-ytdlp-pot-provider/server \
-    && npm ci \
-    && npx tsc --noEmitOnError \
+    && echo "=== package.json ===" && cat package.json \
+    && npm ci --ignore-scripts \
+    && echo "=== Running npm run build ===" \
+    && npm run build \
+    && echo "=== build/ contents ===" && ls -la build/ \
     && test -f build/index.js \
-        || (echo "❌ ERROR: build/index.js missing after tsc compile!" && exit 1) \
+        || (echo "❌ ERROR: build/index.js still missing!" && exit 1) \
+    && echo "✅ build/index.js confirmed." \
     && npm prune --production \
     && rm -rf src ../.git /root/.npm /tmp/*
 
