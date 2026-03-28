@@ -1,26 +1,27 @@
 #!/usr/bin/env bash
 set -e
 
-echo "🔍 Checking Chromium installation..."
-
+echo "Checking Chromium installation..."
 if [ ! -d "/ms-playwright" ]; then
-echo "⬇️ Chromium not found. Installing..."
-playwright install chromium
+    echo "Chromium not found. Installing..."
+    playwright install chromium
 else
-echo "✅ Chromium already installed. Skipping download."
+    echo "Chromium already installed. Skipping."
 fi
 
-echo "🚀 Starting bgutil server..."
-node "$BGUTIL_SERVER_HOME/build/index.js" &
+echo "Starting bgutil server (src/main.ts via swc-node)..."
+# v1.3.1+ runs src/main.ts directly — there is no build/index.js
+node \
+    --require @swc-node/register/esm \
+    "$BGUTIL_SERVER_HOME/src/main.ts" &
 BGUTIL_PID=$!
 
-echo "⏳ Waiting for bgutil to be ready..."
-sleep 3
+echo "Waiting for bgutil to be ready..."
+sleep 5
 
-echo "🤖 Starting bot..."
+echo "Starting bot..."
 python3 -m SHASHA_DRUGZ
 
-echo "🛑 Stopping bgutil server..."
+echo "Stopping bgutil server..."
 kill $BGUTIL_PID 2>/dev/null || true
-
-wait $BGUTIL_PID
+wait $BGUTIL_PID 2>/dev/null || true
