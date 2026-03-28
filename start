@@ -9,10 +9,10 @@ else
     echo "Chromium already installed. Skipping."
 fi
 
-echo "Starting bgutil server (src/main.ts via swc-node)..."
-# v1.3.1+ runs src/main.ts directly — there is no build/index.js
-node \
-    --require @swc-node/register/esm \
+echo "Starting bgutil server (src/main.ts via tsx)..."
+# v1.3.1+ is a pure-ESM TypeScript project with no compile step.
+# tsx handles ESM TypeScript natively without any register flags.
+"$BGUTIL_SERVER_HOME/node_modules/.bin/tsx" \
     "$BGUTIL_SERVER_HOME/src/main.ts" &
 BGUTIL_PID=$!
 
