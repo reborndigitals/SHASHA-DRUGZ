@@ -13,12 +13,10 @@ SHASHA_DRUGZ/plugins/PREMIUM/chatbot.py  — v4 FINAL (Claude AI Edition)
 ║    3. ChatGPT / OpenAI (random key from pool)                        ║
 ║    4. Local learned replies (MongoDB cache)                          ║
 ╚══════════════════════════════════════════════════════════════════════╝
-
 FloodWait Fix:
   • bot_me cached globally — no repeated get_me() calls
   • asyncio.sleep(wait_time) on FloodWait before retry
   • All Telegram API calls wrapped with flood-safe helper
-
 Claude System Prompt:
   • Friendly, warm, romantic-friendly, close tone
   • Professional — no wrong/illegal content
