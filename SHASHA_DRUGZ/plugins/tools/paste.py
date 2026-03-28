@@ -12,8 +12,6 @@ import aiohttp
 import asyncio
 from io import BytesIO
 
-print("[paste] paste")
-
 async def make_carbon(code):
     url = "https://carbonara.solopov.dev/api/cook"
     async with aiohttp.ClientSession() as session:
