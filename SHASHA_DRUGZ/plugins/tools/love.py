@@ -2,8 +2,6 @@ from pyrogram import Client, filters
 import random
 from SHASHA_DRUGZ import app
 
-print("[love] love")
-
 def get_random_message(love_percentage):
     if love_percentage <= 30:
         return random.choice([
