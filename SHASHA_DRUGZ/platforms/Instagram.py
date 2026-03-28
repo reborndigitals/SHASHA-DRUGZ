@@ -8,9 +8,11 @@ import asyncio
 import logging
 import datetime
 from typing import Optional, Union, Tuple
+
 import aiohttp
 import yt_dlp
 from playwright.async_api import async_playwright
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  LOGGER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -27,10 +29,12 @@ except Exception:
         ))
         logger.addHandler(h)
     logger.setLevel(logging.INFO)
+
 try:
     from config import LOG_GROUP_ID
 except Exception:
     LOG_GROUP_ID = None
+
 try:
     from pyrogram.enums import MessageEntityType
     from pyrogram.types import Message
@@ -39,6 +43,7 @@ except Exception:
     PYROGRAM_AVAILABLE = False
     Message = None
     MessageEntityType = None
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  ENVIRONMENT / PATHS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -49,16 +54,20 @@ IG_PLAYWRIGHT_PROXY  = os.getenv("IG_PLAYWRIGHT_PROXY", "")
 IG_USERNAME          = os.getenv("IG_USERNAME", "onixxghostt")
 IG_PASSWORD          = os.getenv("IG_PASSWORD", "143@Frnds")
 IG_TOTP_SECRET       = os.getenv("IG_TOTP_SECRET", "3IGFI5H7SACGQQVP7W7VCTCX76O6NDME")
+
 DOWNLOAD_DIR   = os.path.join(os.getcwd(), "downloads");   os.makedirs(DOWNLOAD_DIR,   exist_ok=True)
 COOKIES_DIR    = os.path.join(os.getcwd(), "cookies");     os.makedirs(COOKIES_DIR,    exist_ok=True)
 COOKIE_FILE    = os.path.join(COOKIES_DIR, "instagram_cookies.txt")
 IG_PROFILE_DIR = os.path.join(os.getcwd(), "ig_playwright_profile"); os.makedirs(IG_PROFILE_DIR, exist_ok=True)
 IG_CACHE_DIR   = os.path.join(os.getcwd(), "igcache");     os.makedirs(IG_CACHE_DIR,   exist_ok=True)
 SCREENSHOT_DIR = os.path.join(os.getcwd(), "ig_screenshots"); os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(3)
 _COOKIE_LOCK       = asyncio.Lock()
+
 # Required by several Instagram API endpoints
 IG_APP_ID = "936619743392459"
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  URL PATTERNS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -69,6 +78,7 @@ INSTAGRAM_REGEX = re.compile(
 SHORTCODE_REGEX = re.compile(
     r"instagram\.com/(?:p|reel|reels|tv|stories)/([A-Za-z0-9_\-]+)"
 )
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  USER-AGENT POOL  (Chrome 131-134, early 2026)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -90,26 +100,32 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6_4) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
 ]
+
 _SEC_CH_UA = {
     "131": '"Chromium";v="131", "Not(A:Brand";v="99", "Google Chrome";v="131"',
     "132": '"Chromium";v="132", "Not(A:Brand";v="99", "Google Chrome";v="132"',
     "133": '"Chromium";v="133", "Not(A:Brand";v="99", "Google Chrome";v="133"',
     "134": '"Chromium";v="134", "Not(A:Brand";v="99", "Google Chrome";v="134"',
 }
+
 def _ua_sec_ch(ua: str) -> str:
     for ver in ("134", "133", "132", "131"):
         if f"Chrome/{ver}" in ua:
             return _SEC_CH_UA[ver]
     return _SEC_CH_UA["131"]
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  PROXY HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 def _parse_proxy_list(env: str):
     return [p.strip() for p in env.split(",") if p.strip()] if env else []
+
 IG_PROXY_POOL            = _parse_proxy_list(IG_PROXIES)
 IG_PLAYWRIGHT_PROXY_POOL = _parse_proxy_list(IG_PLAYWRIGHT_PROXY)
+
 def choose_random_proxy(pool):
     return random.choice(pool) if pool else None
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  LOG-GROUP HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -123,6 +139,7 @@ async def send_to_log_group(text: str = None, file_obj=None):
             await app.send_message(chat_id=LOG_GROUP_ID, text=text)
     except Exception as e:
         logger.error(f"send_to_log_group: {e}")
+
 async def send_cookie_file_to_log_group(reason: str = ""):
     if not os.path.exists(COOKIE_FILE):
         return
@@ -148,6 +165,7 @@ async def send_cookie_file_to_log_group(reason: str = ""):
                 await send_to_log_group(text=caption, file_obj=f)
         except Exception as e:
             logger.error(f"send_cookie_file_to_log_group: {e}")
+
 async def _send_screenshot(path: str, caption: str):
     if not LOG_GROUP_ID or not app or not os.path.exists(path):
         return
@@ -156,6 +174,7 @@ async def _send_screenshot(path: str, caption: str):
         logger.info(f"📸 Debug screenshot sent to log group: {path}")
     except Exception as e:
         logger.error(f"_send_screenshot: {e}")
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  PUBLIC IP INFO
 # ══════════════════════════════════════════════════════════════════════════════
@@ -170,6 +189,7 @@ async def get_public_ip_info() -> dict:
     except Exception as e:
         logger.error(f"get_public_ip_info: {e}")
     return {}
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE / PROFILE CLEANUP
 # ══════════════════════════════════════════════════════════════════════════════
@@ -183,6 +203,7 @@ def clear_old_cookies():
             except Exception: pass
     except Exception as e:
         logger.error(f"clear_old_cookies: {e}")
+
 def wipe_playwright_profile():
     try:
         if os.path.exists(IG_PROFILE_DIR):
@@ -191,12 +212,14 @@ def wipe_playwright_profile():
         os.makedirs(IG_PROFILE_DIR, exist_ok=True)
     except Exception as e:
         logger.warning(f"wipe_playwright_profile: {e}")
+
 def cleanup_playwright_profile():
     for fname in ("SingletonLock", "SingletonCookie", "SingletonSocket", "DevToolsActivePort"):
         fpath = os.path.join(IG_PROFILE_DIR, fname)
         if os.path.exists(fpath):
             try: os.remove(fpath)
             except Exception: pass
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  NETSCAPE COOKIE WRITER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -228,6 +251,7 @@ def _write_netscape_cookies(cookies: list, filepath: str) -> bool:
     except Exception as e:
         logger.error(f"_write_netscape_cookies: {e}")
         return False
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  STEALTH INIT SCRIPT
 # ══════════════════════════════════════════════════════════════════════════════
@@ -236,6 +260,7 @@ STEALTH_SCRIPT = """
   // 1. Erase webdriver flag
   Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true });
   try { delete navigator.__proto__.webdriver; } catch(e) {}
+
   // 2. Realistic plugin list
   const _plugins = [
     {name:'Chrome PDF Plugin',   filename:'internal-pdf-viewer', description:'Portable Document Format'},
@@ -250,8 +275,10 @@ STEALTH_SCRIPT = """
       refresh:   () => {},
     }),
   });
+
   // 3. Language / locale
   Object.defineProperty(navigator, 'languages', { get: () => ['en-US','en'] });
+
   // 4. Chrome runtime object
   if (!window.chrome) {
     window.chrome = {
@@ -268,6 +295,7 @@ STEALTH_SCRIPT = """
       csi: () => ({}),
     };
   }
+
   // 5. Permissions – hide notification prompt state
   const _origPerms = navigator.permissions?.query?.bind(navigator.permissions);
   if (_origPerms) {
@@ -276,12 +304,14 @@ STEALTH_SCRIPT = """
         ? Promise.resolve({ state: Notification.permission })
         : _origPerms(p);
   }
+
   // 6. Hardware fingerprint
   Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
   Object.defineProperty(navigator, 'deviceMemory',        { get: () => 8 });
   Object.defineProperty(navigator, 'maxTouchPoints',      { get: () => 0 });
   Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
   Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
+
   // 7. WebGL vendor/renderer spoof
   const _getParam = WebGLRenderingContext.prototype.getParameter;
   WebGLRenderingContext.prototype.getParameter = function(param) {
@@ -291,6 +321,7 @@ STEALTH_SCRIPT = """
   };
 })();
 """
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  PAGE HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -308,11 +339,13 @@ async def _log_page_state(page, label: str) -> str:
     except Exception as e:
         logger.warning(f"_log_page_state [{label}]: {e}")
         return ""
+
 async def _body_len(page) -> int:
     try:
         return len(await page.inner_text("body"))
     except Exception:
         return 0
+
 async def _dismiss_popups(page) -> None:
     targets = [
         ("save login",    "button:has-text('Save info'), button:has-text('Save Info')"),
@@ -329,6 +362,7 @@ async def _dismiss_popups(page) -> None:
                 await page.wait_for_timeout(random.randint(1000, 2000))
         except Exception:
             pass
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  HUMAN-LIKE TYPING
 # ══════════════════════════════════════════════════════════════════════════════
@@ -350,6 +384,7 @@ async def _human_type(page, locator, text: str) -> None:
             await locator.fill(text)
         except Exception as e2:
             logger.error(f"_human_type fill failed: {e2}")
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  CHECKPOINT / 2FA
 # ══════════════════════════════════════════════════════════════════════════════
@@ -369,6 +404,7 @@ async def _check_for_checkpoint(page) -> bool:
     except Exception:
         pass
     return False
+
 async def _check_for_2fa(page) -> str:
     """Returns 'sms', 'totp', or 'none'."""
     try:
@@ -393,6 +429,7 @@ async def _check_for_2fa(page) -> str:
     except Exception as e:
         logger.debug(f"_check_for_2fa: {e}")
     return "none"
+
 async def _handle_2fa(page) -> bool:
     fa = await _check_for_2fa(page)
     if fa == "none":
@@ -436,6 +473,7 @@ async def _handle_2fa(page) -> bool:
     except Exception as e:
         logger.error(f"_handle_2fa TOTP error: {e}")
         return False
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  LOGIN VERIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -460,6 +498,7 @@ async def _verify_login(context, page) -> bool:
     except Exception as e:
         logger.error(f"_verify_login: {e}")
         return False
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  WAIT-FOR-LOGIN-RESULT HELPER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -472,15 +511,19 @@ async def _wait_for_login_result(page, timeout_ms: int = 25_000) -> str:
     while time.monotonic() < deadline:
         await page.wait_for_timeout(800)
         url = page.url.lower()
+
         # ── Navigated away from login → success ──────────────────────────────
         if "instagram.com" in url and "login" not in url and "accounts" not in url:
             return "success"
+
         # ── 2FA page ─────────────────────────────────────────────────────────
         if "two_factor" in url or "2fa" in url:
             return "2fa"
+
         # ── Checkpoint ───────────────────────────────────────────────────────
         if "challenge" in url or "checkpoint" in url:
             return "checkpoint"
+
         # ── Inline error messages ─────────────────────────────────────────────
         try:
             body = (await page.inner_text("body")).lower()
@@ -504,7 +547,9 @@ async def _wait_for_login_result(page, timeout_ms: int = 25_000) -> str:
                 return "checkpoint"
         except Exception:
             pass
+
     return "timeout"
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  FIND USERNAME / PASSWORD FIELDS  (handles both old and new IG layouts)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -530,6 +575,7 @@ async def _find_username_input(page):
         except Exception:
             continue
     return None
+
 async def _find_password_input(page):
     """Try multiple selectors to locate the password input."""
     selectors = [
@@ -548,11 +594,13 @@ async def _find_password_input(page):
         except Exception:
             continue
     return None
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  FILL CREDENTIALS + SUBMIT
 # ══════════════════════════════════════════════════════════════════════════════
 async def _fill_and_submit(page, context) -> bool:
     """Find fields, type credentials, click submit, wait for result."""
+
     # ── find username field ───────────────────────────────────────────────────
     username_input = await _find_username_input(page)
     if not username_input:
@@ -560,6 +608,7 @@ async def _fill_and_submit(page, context) -> bool:
         shot = await _log_page_state(page, "no_username_field")
         await _send_screenshot(shot, "❌ **IG: Username field not found**")
         return False
+
     # ── find password field ───────────────────────────────────────────────────
     password_input = await _find_password_input(page)
     if not password_input:
@@ -567,13 +616,16 @@ async def _fill_and_submit(page, context) -> bool:
         shot = await _log_page_state(page, "no_password_field")
         await _send_screenshot(shot, "❌ **IG: Password field not found**")
         return False
+
     # ── type credentials ──────────────────────────────────────────────────────
     logger.info(f"✍️  Entering username: {IG_USERNAME}")
     await _human_type(page, username_input, IG_USERNAME)
     await page.wait_for_timeout(random.randint(400, 900))
+
     logger.info("✍️  Entering password")
     await _human_type(page, password_input, IG_PASSWORD)
     await page.wait_for_timeout(random.randint(600, 1100))
+
     # ── find and click submit ─────────────────────────────────────────────────
     # IMPORTANT: On the new Instagram React login, the button starts as
     # aria-disabled="true" and becomes clickable only after credentials are typed.
@@ -599,6 +651,7 @@ async def _fill_and_submit(page, context) -> bool:
                     break
         except Exception:
             continue
+
     if submit_btn:
         try:
             # Use JavaScript click to bypass aria-disabled blocking
@@ -616,9 +669,11 @@ async def _fill_and_submit(page, context) -> bool:
         # Fallback: press Enter on password field
         await password_input.press("Enter")
         logger.info("🖱️  Enter pressed on password field (no button found)")
+
     # ── wait for result ───────────────────────────────────────────────────────
     result = await _wait_for_login_result(page)
     logger.info(f"📊 Login result signal: {result}")
+
     if result == "wrong_password":
         logger.error(
             "❌ Instagram rejected credentials.\n"
@@ -634,20 +689,25 @@ async def _fill_and_submit(page, context) -> bool:
             )
         )
         return False
+
     if result == "2fa":
         fa_ok = await _handle_2fa(page)
         if not fa_ok:
             return False
         await page.wait_for_timeout(5000)
+
     if result == "checkpoint":
         if await _check_for_checkpoint(page):
             shot = await _log_page_state(page, "checkpoint")
             await _send_screenshot(shot, "🚨 **IG: Checkpoint after login**")
             return False
+
     if result == "timeout":
         # Timeout — check if we somehow got logged in anyway
         logger.warning("⚠️  Login result timeout — verifying via cookies ...")
+
     return await _verify_login(context, page)
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  CLASSIC LOGIN  (navigates directly to /accounts/login/)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -664,6 +724,7 @@ async def _try_classic_login(page, context) -> bool:
     except Exception as e:
         logger.warning(f"Classic goto warning: {e}")
         await page.wait_for_timeout(6000)
+
     bl = await _body_len(page)
     logger.info(f"📄 Login page body: {bl} chars")
     if bl < 200:
@@ -671,10 +732,13 @@ async def _try_classic_login(page, context) -> bool:
         shot = await _log_page_state(page, "blank_classic_login")
         await _send_screenshot(shot, "🚨 **IG: Blank login page (classic)**")
         return False
+
     # Dismiss cookie consent banners if present
     await _dismiss_popups(page)
     await page.wait_for_timeout(1000)
+
     return await _fill_and_submit(page, context)
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  CLASSIC LOGIN ON CURRENT PAGE  (already navigated via click from homepage)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -687,9 +751,12 @@ async def _try_classic_login_on_current_page(page, context) -> bool:
         shot = await _log_page_state(page, "blank_click_nav")
         await _send_screenshot(shot, "🚨 **IG: Blank login page (click-nav)**")
         return False
+
     await _dismiss_popups(page)
     await page.wait_for_timeout(1000)
+
     return await _fill_and_submit(page, context)
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  MOBILE LOGIN  (fallback – smaller viewport, simpler DOM)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -708,9 +775,11 @@ async def _try_mobile_login(page, context) -> bool:
         if bl < 200:
             logger.error("❌ Mobile login page blank – bot-blocked")
             return False
+
         # Accept cookie banner
         await _dismiss_popups(page)
         await page.wait_for_timeout(1000)
+
         result = await _fill_and_submit(page, context)
         await page.set_viewport_size({"width": 1920, "height": 1080})
         return result
@@ -721,6 +790,7 @@ async def _try_mobile_login(page, context) -> bool:
         except Exception:
             pass
         return False
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAIN PLAYWRIGHT COOKIE GENERATION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -736,6 +806,7 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
             text="❌ **Instagram: credentials not set**\nSet IG_USERNAME + IG_PASSWORD.\n#InstagramCookies"
         )
         return False
+
     logger.info(
         f"🌐 Launching Playwright [{reason}] ...\n"
         f"   Username    : {IG_USERNAME}\n"
@@ -749,11 +820,13 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
             f"⏳ Launching Chromium ...\n#InstagramCookies"
         )
     )
+
     wipe_playwright_profile()
     proxy      = choose_random_proxy(IG_PLAYWRIGHT_PROXY_POOL)
     user_agent = random.choice(USER_AGENTS)
     context    = None
     login_ok   = False
+
     try:
         async with async_playwright() as p:
             context = await p.chromium.launch_persistent_context(
@@ -800,8 +873,10 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                     "sec-ch-ua-platform": '"Windows"',
                 },
             )
+
             page = await context.new_page()
             await page.add_init_script(STEALTH_SCRIPT)
+
             # ── Step 1: Warm up ───────────────────────────────────────────────
             logger.info("🔗 Step 1/4 – Warming up: visiting instagram.com ...")
             try:
@@ -820,8 +895,10 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                 await page.wait_for_timeout(random.randint(1000, 2500))
             except Exception as e:
                 logger.warning(f"Warmup non-fatal: {e}")
+
             # ── Step 2: Login ─────────────────────────────────────────────────
             logger.info(f"🔗 Step 2/4 – Logging in as: {IG_USERNAME} ...")
+
             # Try clicking the Log In link from homepage first (less bot-like)
             login_clicked = False
             try:
@@ -835,6 +912,7 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                     login_clicked = True
             except Exception as e:
                 logger.warning(f"Click-to-login failed: {e}")
+
             try:
                 if login_clicked and "login" in page.url.lower():
                     login_ok = await _try_classic_login_on_current_page(page, context)
@@ -843,6 +921,7 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
             except Exception as e:
                 logger.warning(f"Classic login exception: {e}")
                 login_ok = False
+
             if not login_ok:
                 logger.warning("⚠️ Classic login failed – trying mobile path ...")
                 try:
@@ -850,12 +929,14 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                 except Exception as e:
                     logger.warning(f"Mobile login exception: {e}")
                     login_ok = False
+
             # ── Post-login ────────────────────────────────────────────────────
             if login_ok:
                 if await _check_for_checkpoint(page):
                     shot = await _log_page_state(page, "step2_checkpoint")
                     await _send_screenshot(shot, "🚨 **IG: Checkpoint after login**")
                     login_ok = False
+
             if login_ok:
                 await _dismiss_popups(page)
                 await page.wait_for_timeout(random.randint(2000, 3500))
@@ -894,6 +975,7 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                 await context.close()
                 context = None
                 return False
+
             # ── Step 3: Simulate natural browsing ─────────────────────────────
             logger.info("🔗 Step 3/4 – Natural browsing ...")
             try:
@@ -910,26 +992,32 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                 await _log_page_state(page, "step3_feed")
             except Exception as e:
                 logger.debug(f"Natural browsing non-fatal: {e}")
+
             # ── Step 4: Export cookies ─────────────────────────────────────────
             logger.info("🔗 Step 4/4 – Exporting cookies ...")
             all_cookies = await context.cookies()
             await context.close()
             context = None
+
             ig_cookies   = [c for c in all_cookies if "instagram.com" in c.get("domain", "")
                                                     or "facebook.com"  in c.get("domain", "")]
             cookie_names = {c["name"] for c in ig_cookies}
             auth_present = {"sessionid", "ds_user_id"} & cookie_names
+
             logger.info(f"🍪 Collected {len(ig_cookies)} cookies | auth: {auth_present or 'NONE'}")
+
             if not auth_present:
                 logger.error("❌ sessionid/ds_user_id missing – NOT writing cookie file")
                 await send_to_log_group(
                     text="❌ **Instagram: no auth cookies after login**\nFile NOT written.\n#InstagramCookies"
                 )
                 return False
+
             ok = _write_netscape_cookies(ig_cookies, COOKIE_FILE)
             if ok:
                 logger.info(f"✅ Cookies saved | auth={auth_present} | total={len(ig_cookies)}")
             return ok
+
     except Exception as e:
         logger.error(f"❌ Playwright session crashed: {type(e).__name__}: {str(e)[:400]}")
         if context:
@@ -949,6 +1037,7 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
             )
         )
         return False
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE REFRESH  (with lock)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -959,17 +1048,21 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
                 and not is_cookie_file_expired(COOKIE_FILE)):
             logger.info("✅ Cookies already refreshed by another coroutine – reusing")
             return COOKIE_FILE
+
         ok = await generate_cookies_via_playwright(reason=reason)
         if not ok or not os.path.exists(COOKIE_FILE):
             logger.error("Cookie generation failed or file missing")
             return None
+
         if not verify_cookies_file(COOKIE_FILE):
             logger.error("Cookie file failed verification")
             if os.path.exists(COOKIE_FILE):
                 os.remove(COOKIE_FILE)
             return None
+
         if is_cookie_file_expired(COOKIE_FILE):
             logger.warning("Cookie file appears expired immediately after generation – proceeding anyway")
+
         logger.info("✅ Cookies verified successfully")
         ip   = await get_public_ip_info()
         ts   = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -985,6 +1078,7 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
         )
         await send_cookie_file_to_log_group(reason=reason)
         return COOKIE_FILE
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE VERIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1017,6 +1111,7 @@ def verify_cookies_file(filename: str) -> bool:
     except Exception as e:
         logger.error(f"verify_cookies_file: {e}")
         return False
+
 def get_cookie_min_expiry(filepath: str) -> Optional[int]:
     try:
         min_exp = None
@@ -1038,6 +1133,7 @@ def get_cookie_min_expiry(filepath: str) -> Optional[int]:
     except Exception as e:
         logger.error(f"get_cookie_min_expiry: {e}")
         return None
+
 def is_cookie_file_expired(filepath: str) -> bool:
     if not os.path.exists(filepath):
         return True
@@ -1051,6 +1147,7 @@ def is_cookie_file_expired(filepath: str) -> bool:
     rem = min_exp - now
     logger.info(f"✅ Cookie valid for {rem // 3600}h {(rem % 3600) // 60}m")
     return False
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  AUTH-ERROR DETECTION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1065,6 +1162,7 @@ def is_auth_error(exc: Exception) -> bool:
         "bad credentials", "challenge required",
         "content is not available",
     ))
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAIN COOKIE GETTER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1078,6 +1176,7 @@ async def get_cookies(force_refresh: bool = False) -> Optional[str]:
             os.remove(COOKIE_FILE)
     reason = "Force refresh – auth/rate-limit" if force_refresh else "Initial / expired"
     return await refresh_cookies_from_browser(reason=reason)
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  YT-DLP OPTIONS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1103,12 +1202,15 @@ def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict
         base["cookiefile"] = use_cookie_file
     else:
         logger.warning("No cookie file for yt-dlp")
+
     proxy = choose_random_proxy(IG_PROXY_POOL)
     if proxy:
         base["proxy"] = proxy
+
     if extra_opts:
         base.update(extra_opts)
     return base
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  FILE HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1118,9 +1220,11 @@ def _seconds_to_min(seconds) -> str:
         return f"{m:02d}:{s:02d}"
     except Exception:
         return "00:00"
+
 def _extract_shortcode(url: str) -> Optional[str]:
     m = SHORTCODE_REGEX.search(url)
     return m.group(1) if m else None
+
 def _find_downloaded_file(identifier: str) -> Optional[str]:
     if not identifier:
         return None
@@ -1130,34 +1234,23 @@ def _find_downloaded_file(identifier: str) -> Optional[str]:
             if os.path.isfile(fp):
                 return fp
     return None
-# ══════════════════════════════════════════════════════════════════════════════
-#  URL VALIDATION HELPER
-# ══════════════════════════════════════════════════════════════════════════════
-def _is_instagram_url(url: str) -> bool:
-    """Return True only if the URL is actually an Instagram URL."""
-    return bool(re.search(r"instagram\.com/", url or ""))
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  CORE DOWNLOAD
 # ══════════════════════════════════════════════════════════════════════════════
 async def download_with_ytdlp(url: str, is_audio: bool = False) -> Optional[str]:
-    # ── Guard: reject non-Instagram URLs ─────────────────────────────────────
-    if not _is_instagram_url(url):
-        logger.error(
-            f"❌ download_with_ytdlp (Instagram) received a non-Instagram URL: {url}\n"
-            f"   This URL was likely mis-routed from the YouTube handler.\n"
-            f"   Aborting to prevent a failed yt-dlp call."
-        )
-        return None
     shortcode = _extract_shortcode(url)
     if shortcode:
         existing = _find_downloaded_file(shortcode)
         if existing:
             logger.info(f"📁 Reusing cached: {existing}")
             return existing
+
     cookie_file = await get_cookies()
     if not cookie_file:
         logger.error("❌ No valid cookies – login must succeed first")
         return None
+
     def _build_opts(cf):
         extra = (
             {
@@ -1169,8 +1262,10 @@ async def download_with_ytdlp(url: str, is_audio: bool = False) -> Optional[str]
             else {"format": "bestvideo+bestaudio/best", "merge_output_format": "mp4"}
         )
         return get_ytdlp_opts(extra, use_cookie_file=cf)
+
     ydl_opts = _build_opts(cookie_file)
     loop     = asyncio.get_event_loop()
+
     for attempt in range(2):
         try:
             await asyncio.sleep(random.uniform(0.5, 2.5))
@@ -1179,6 +1274,7 @@ async def download_with_ytdlp(url: str, is_audio: bool = False) -> Optional[str]
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         return ydl.extract_info(url, download=True)
                 info = await loop.run_in_executor(None, _run)
+
             video_id = (info or {}).get("id") or shortcode or ""
             filepath = None
             if info and info.get("requested_downloads"):
@@ -1186,11 +1282,13 @@ async def download_with_ytdlp(url: str, is_audio: bool = False) -> Optional[str]
             if not filepath or not os.path.exists(filepath):
                 filepath = (_find_downloaded_file(video_id)
                             or _find_downloaded_file(shortcode or ""))
+
             if filepath and os.path.exists(filepath):
                 logger.info(f"✅ Download OK: {filepath}")
                 return filepath
             logger.error("Download finished but file not found on disk")
             return None
+
         except Exception as e:
             if is_auth_error(e) and AUTO_REFRESH_COOKIES and attempt == 0:
                 logger.warning(f"🔒 Auth/rate-limit (attempt {attempt+1}) – refreshing cookies ...")
@@ -1206,7 +1304,9 @@ async def download_with_ytdlp(url: str, is_audio: bool = False) -> Optional[str]
                 return None
             logger.error(f"Download error (attempt {attempt+1}): {str(e)[:300]}")
             return None
+
     return None
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  METADATA  (no download)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1225,6 +1325,7 @@ async def _fetch_info(url: str) -> Optional[dict]:
     except Exception as e:
         logger.error(f"_fetch_info: {str(e)[:300]}")
         return None
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  STARTUP
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1232,6 +1333,7 @@ async def startup_services():
     if not ENABLE_IG_COOKIES:
         logger.info("Instagram cookie handling disabled.")
         return
+
     if not IG_USERNAME or not IG_PASSWORD:
         logger.error(
             "❌ IG_USERNAME / IG_PASSWORD not set.\n"
@@ -1244,13 +1346,16 @@ async def startup_services():
             )
         )
         return
+
     logger.info("🚀 Instagram cookie service starting ...")
     cleanup_playwright_profile()
+
     need_refresh = (
         not os.path.exists(COOKIE_FILE)
         or not verify_cookies_file(COOKIE_FILE)
         or is_cookie_file_expired(COOKIE_FILE)
     )
+
     if need_refresh:
         logger.info("🔄 No valid cookies – generating ...")
         cf = await get_cookies(force_refresh=True)
@@ -1271,6 +1376,7 @@ async def startup_services():
             )
     else:
         logger.info("✅ Existing cookies valid – skipping regeneration.")
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  InstagramAPI CLASS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1278,10 +1384,13 @@ class InstagramAPI:
     def __init__(self):
         self.regex    = INSTAGRAM_REGEX
         self.base_url = "https://www.instagram.com/"
+
     async def valid(self, link: str) -> bool:
         return bool(re.search(self.regex, link))
+
     async def exists(self, link: str) -> bool:
         return await self.valid(link)
+
     async def info(self, url: str) -> dict:
         raw       = await _fetch_info(url)
         shortcode = _extract_shortcode(url) or ""
@@ -1303,6 +1412,7 @@ class InstagramAPI:
             "thumbnail": "", "thumb": "",
             "webpage_url": url, "ext": "mp4", "id": shortcode,
         }
+
     async def track(self, link: str) -> Tuple[dict, str]:
         """
         Fetch metadata for an Instagram reel / post.
@@ -1312,13 +1422,16 @@ class InstagramAPI:
         meta = await _fetch_info(link)
         if not meta:
             raise Exception("Could not fetch Instagram metadata")
+
         shortcode = _extract_shortcode(link) or meta.get("id", link)
         duration_sec = meta.get("duration") or 0
+
         thumb = meta.get("thumbnail") or ""
         if not thumb:
             thumbs = meta.get("thumbnails") or []
             if thumbs:
                 thumb = thumbs[-1].get("url", "")
+
         details = {
             "title":        meta.get("title") or meta.get("uploader") or "Instagram Video",
             "link":         meta.get("webpage_url") or link,
@@ -1329,6 +1442,7 @@ class InstagramAPI:
             "uploader":     meta.get("uploader") or "Instagram",
         }
         return details, details["vidid"]
+
     async def url(self, message_1) -> Optional[str]:
         if not PYROGRAM_AVAILABLE or message_1 is None:
             return None
@@ -1346,6 +1460,7 @@ class InstagramAPI:
                     if entity.type == MessageEntityType.TEXT_LINK:
                         return entity.url
         return None
+
     async def download(self, url: str, mystic=None,
                        video: Union[bool, str] = None,
                        audio: Union[bool, str] = None) -> tuple:
@@ -1368,6 +1483,7 @@ class InstagramAPI:
         except Exception as e:
             logger.error(f"InstagramAPI.download: {e}")
             return False, None
+
     async def download_audio(self, url: str) -> tuple:
         try:
             filepath = await download_with_ytdlp(url, is_audio=True)
@@ -1385,5 +1501,6 @@ class InstagramAPI:
         except Exception as e:
             logger.error(f"InstagramAPI.download_audio: {e}")
             return False, None
+
     async def thumbnail(self, url: str) -> str:
         return (await self.info(url))["thumb"]
