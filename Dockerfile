@@ -56,3 +56,4 @@ RUN chmod +x start \
     && find . -name "*.pyc" -delete 2>/dev/null || true
 
 CMD ["bash", "start"]
+
