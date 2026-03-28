@@ -24,7 +24,6 @@ from config import (
     ADMINS_ID, UPI_ID, DEFAULT_QR_PATH, BOT_TOKEN
 )
 from SHASHA_DRUGZ.misc import SUDOERS
-# ── PATCH: import evict_bot_cache alongside apply_to_config ───────────────────
 from SHASHA_DRUGZ.utils.bot_settings import apply_to_config, evict_bot_cache
 from SHASHA_DRUGZ.mongo.deploydb import (
     ensure_indexes,
@@ -58,6 +57,7 @@ BOT_OWNERS: Dict[int, int] = {}
 # ─── Constants ────────────────────────────────────────────────────────────────
 MODULES_PATH = "SHASHA_DRUGZ/dplugins"
 COMMON_PATH  = "COMMON"
+
 AUTO_BOT_TYPES = {
     "MANAGEMENT": {"path": "MANAGE",   "price": 650, "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ ʙᴏᴛ"},
     "MUSIC":      {"path": "MUSIC",    "price": 450, "display": "ᴍᴜsɪᴄ ʙᴏᴛ"},
@@ -66,6 +66,7 @@ AUTO_BOT_TYPES = {
     "GAME":       {"path": "GAMES",    "price": 300, "display": "ɢᴀᴍᴇ ʙᴏᴛ"},
     "PRO-BOTS":   {"path": "PRO-BOTS", "price": 350, "display": "ᴘʀᴏ ʙᴏᴛs"},
 }
+
 AUTO_COMBOS = {
     "MANAGEMENT+MUSIC":    {"bots": ["MANAGEMENT","MUSIC"],    "price": 999,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴍᴜsɪᴄ"},
     "MUSIC+CHAT":          {"bots": ["MUSIC","CHAT"],          "price": 599,  "display": "ᴍᴜsɪᴄ+ᴄʜᴀᴛ"},
@@ -136,8 +137,7 @@ def get_plugins_for_manual_modules(module_names: List[str]) -> List[str]:
 async def cleanup_bot_data(bot_id: int):
     """
     Drop ALL bot_{id}_* collections and wipe chats/users rows.
-
-    PATCH: also calls evict_bot_cache(bot_id) so stale settings never
+    Also calls evict_bot_cache(bot_id) so stale settings never
     leak to a future redeploy of the same bot_id.
     """
     try:
@@ -153,7 +153,7 @@ async def cleanup_bot_data(bot_id: int):
         await raw_mongodb.deploy_users.delete_many({"bot_id": bot_id})
     except Exception as e:
         logging.error(f"[cleanup] chats/users wipe failed for {bot_id}: {e}")
-    # ── PATCH: evict settings cache so stale data never leaks ────────────────
+    # evict settings cache so stale data never leaks
     evict_bot_cache(bot_id)
 
 # ─── ISOLATION ────────────────────────────────────────────────────────────────
@@ -573,6 +573,7 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
             ]))
         await cq.answer(); return
 
+    # admin_connect / disconnect / message BEFORE admin_ catch-all
     if data.startswith("admin_connect_"):
         await connect_admin_to_user(client, cq, user_id, int(data.split("_")[2])); return
     if data.startswith("admin_disconnect_"):
@@ -697,6 +698,7 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
     if data.startswith("num_"):
         await handle_numeric_keypad(client, cq, user_id, session); return
 
+    # admin_ catch-all LAST — approve/reject/refund only
     if data.startswith("admin_"):
         await handle_admin_callback(client, cq, user_id); return
 
@@ -821,6 +823,7 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
         is_renewal = payment.get("is_renewal", False)
         mode       = payment.get("type", "manual")
 
+        # RENEWAL — only extend expiry, NEVER re-deploy
         if is_renewal:
             bot_id  = payment["bot_id"]
             old_bot = await get_deployed_bot_by_id(bot_id)
@@ -863,6 +866,7 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             await clear_deploy_session(payment["user_id"])
             return
 
+        # Validate token (update + fresh deploy)
         try:
             resp = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=5)
             if resp.status_code != 200: raise AccessTokenInvalid
@@ -918,6 +922,7 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
                 f"✅ ᴜᴘᴅᴀᴛᴇᴅ @{bot_username} | ʀᴇɴᴇᴡᴀʟ=₹{new_renewal_amt}"
             )
         else:
+            # FRESH DEPLOY PATH
             if mode == "auto":
                 ap     = list(set(payment.get("modules_plugins", []) + COMMON_PLUGINS))
                 dm     = []
@@ -1024,7 +1029,7 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             BOT_OWNERS.pop(bid, None)
             _iso_cache.pop(bid, None)
             await delete_deployed_bot(bid)
-            await cleanup_bot_data(bid)   # ← evict_bot_cache called inside here
+            await cleanup_bot_data(bid)   # evict_bot_cache called inside here
         await _send_to_user(client, payment["user_id"],
             f"<blockquote>💸 ʀᴇғᴜɴᴅ ₹{payment['amount']} ᴘʀᴏᴄᴇssᴇᴅ.</blockquote>")
         await _edit_approval_msg(cq.message, "💸 Refunded.")
@@ -1046,7 +1051,7 @@ async def expiry_checker():
                 BOT_OWNERS.pop(bid, None)
                 _iso_cache.pop(bid, None)
                 await cleanup_expired_bot(bid)
-                await cleanup_bot_data(bid)   # ← evict_bot_cache called inside here
+                await cleanup_bot_data(bid)   # evict_bot_cache called inside here
                 await app.send_message(bot["owner_id"],
                     f"<blockquote>⚠️ ʙᴏᴛ @{bot['username']} ᴇxᴘɪʀᴇᴅ ᴀɴᴅ ʀᴇᴍᴏᴠᴇᴅ.\n"
                     f"ᴅᴇᴘʟᴏʏ ᴀɢᴀɪɴ ᴛᴏ ʀᴇsᴛᴀʀᴛ ғʀᴇsʜ.</blockquote>")
@@ -1267,7 +1272,7 @@ async def remove_deployed_bot_cmd(client: Client, message: Message):
     BOT_OWNERS.pop(bid, None)
     _iso_cache.pop(bid, None)
     await delete_deployed_bot(bid)
-    await cleanup_bot_data(bid)   # ← evict_bot_cache called inside here
+    await cleanup_bot_data(bid)   # evict_bot_cache called inside here
     await message.reply_text(
         f"<blockquote>✅ ʙᴏᴛ @{bot['username']} ʀᴇᴍᴏᴠᴇᴅ ᴀɴᴅ ᴀʟʟ ᴅᴀᴛᴀ ᴡɪᴘᴇᴅ.</blockquote>")
 
@@ -1291,15 +1296,14 @@ async def confirm_rmalldeploy_cb(_, cq: CallbackQuery):
             except Exception: pass
         DEPLOYED_CLIENTS.clear(); DEPLOYED_BOTS.clear()
         BOT_ALLOWED_PLUGINS.clear(); BOT_OWNERS.clear(); _iso_cache.clear()
-        # ── PATCH: also wipe the entire settings cache in one shot ────────────
+        # wipe the entire settings cache in one shot
         from SHASHA_DRUGZ.utils.bot_settings import _cache as _settings_cache
         _settings_cache.clear()
-        # ─────────────────────────────────────────────────────────────────────
         await deploy_bots_col.delete_many({})
         await raw_mongodb.deploy_chats.delete_many({})
         await raw_mongodb.deploy_users.delete_many({})
         for bid in all_bot_ids:
-            await cleanup_bot_data(bid)   # also drops DB collections per-bot
+            await cleanup_bot_data(bid)
         try: await cq.message.edit_text("✅ All bots removed and all data wiped.")
         except MessageNotModified: pass
     else:
@@ -1377,7 +1381,7 @@ async def restart_bots():
             logging.info(f"Bot {n} started: @{bot.get('username','?')}"); n += 1
             bm = await bc.get_me()
             _register_isolation_handlers(bc, bm.id, bot["owner_id"])
-            await apply_to_config(bm.id)   # warm cache from DB on startup
+            await apply_to_config(bm.id)
             DEPLOYED_CLIENTS[bm.id]    = bc
             DEPLOYED_BOTS.add(bm.id)
             BOT_ALLOWED_PLUGINS[bm.id] = set(ap)
