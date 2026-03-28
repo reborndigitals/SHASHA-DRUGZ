@@ -40,7 +40,9 @@ RUN git clone --single-branch --depth 1 \
         /app/bgutil-ytdlp-pot-provider \
     && cd /app/bgutil-ytdlp-pot-provider/server \
     && npm ci \
-    && npx tsc \
+    && npx tsc --noEmitOnError \
+    && test -f build/index.js \
+        || (echo "❌ ERROR: build/index.js missing after tsc compile!" && exit 1) \
     && npm prune --production \
     && rm -rf src ../.git /root/.npm /tmp/*
 
