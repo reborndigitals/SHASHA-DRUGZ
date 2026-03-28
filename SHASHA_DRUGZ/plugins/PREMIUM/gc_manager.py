@@ -1667,10 +1667,10 @@ async def handle_group_messages(client, message: Message):
 #  MODULE METADATA (SHASHA_DRUGZ plugin system)
 # ─────────────────────────────────────────────────────────────
 __menu__ = "CMD_MANAGE"
-__mod_name__ = "GC_MANAGER"
+__mod_name__ = "H_B_87"
 __help__ = """
 **GC Manager** — Full group session & link tracking module.
-
+/gchelp - Get All Commands
 🔧 **Session:**
 /gcstarts — Start session / unlock group
 /gcclose — Lock group (session stays)
@@ -1679,40 +1679,33 @@ __help__ = """
 /gcclear — Clear data, keep session
 /gcclearall — Delete recent messages
 /gcrefresh — Refresh admin list
-
 ✅ **Check & Verify:**
 /gccheck — Enable ad/done tracking
 /unsafe — List unverified users
 /safe — List verified users
-
 🔇 **Mute:**
 /muteunsafe [dur] — Mute unverified
 /unmuteunsafe — Unmute unverified
 /gcmute [dur] — Mute user (reply / @user)
 /gcunmute — Unmute user (reply / @user)
 /unmuteall — Restore group permissions
-
 📹 **SR / Ad:**
 /gcsr — Request screen recording (reply)
 /gcadd — Add user to ad list (reply)
 /srlist — Pending SR list
-
 📌 **Pin:**
 /p — Pin 'drop link' message
 /setrs [/setrs2-4] — Save custom pin text
 /rs1-4 — Send & pin custom message
-
 👥 **Users:**
 /gclist — All submitted links
 /gcmulti — Users with multiple links
 /gccount — Unique user count
 /gclink — Links of a user (reply)
-
 ⚙️ **Settings:**
 /gcsettings — View current settings
 /anonmode — Toggle anon admin mode
 /gcsetwarnlimit <n> — Set warn limit
-
 👑 **Owner (PM):**
 /gcpanel — Admin panel
 /gcmanage — Group management
