@@ -9,8 +9,6 @@ from SHASHA_DRUGZ.utils.decorators import AdminRightsCheck
 from SHASHA_DRUGZ.utils.inline import close_markup
 from config import BANNED_USERS
 
-print("[shuffle] shuffle, cshuffle")
-
 @app.on_message(
     filters.command(["shuffle", "cshuffle"]) & filters.group & ~BANNED_USERS
 )
