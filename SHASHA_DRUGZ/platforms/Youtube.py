@@ -30,14 +30,14 @@ USER_AGENTS = [
 # ══════════════════════════════════════════════════════════════════════════════
 #  ENVIRONMENT
 # ══════════════════════════════════════════════════════════════════════════════
-PLAY_URL               = os.getenv("PLAY_URL", "https://youtu.be/ip8o5hDFLhI?si=jCdWYdBAEulr2b49")
-ENABLE_YT_COOKIES      = os.getenv("ENABLE_YT_COOKIES", "true").lower() == "true"
-AUTO_REFRESH_COOKIES   = True
-YTDLP_PROXIES          = os.getenv("YTDLP_PROXIES", "")
-PLAYWRIGHT_PROXIES     = os.getenv("PLAYWRIGHT_PROXIES", "")
+PLAY_URL             = os.getenv("PLAY_URL", "https://youtu.be/ip8o5hDFLhI?si=jCdWYdBAEulr2b49")
+ENABLE_YT_COOKIES    = os.getenv("ENABLE_YT_COOKIES", "true").lower() == "true"
+AUTO_REFRESH_COOKIES = True
+YTDLP_PROXIES        = os.getenv("YTDLP_PROXIES", "")
+PLAYWRIGHT_PROXIES   = os.getenv("PLAYWRIGHT_PROXIES", "")
 PLAYWRIGHT_PROFILE_DIR = os.path.join(os.getcwd(), "playwright_profile")
 os.makedirs(PLAYWRIGHT_PROFILE_DIR, exist_ok=True)
-COOKIES_DIR  = os.path.join(os.getcwd(), "cookies")
+COOKIES_DIR = os.path.join(os.getcwd(), "cookies")
 os.makedirs(COOKIES_DIR, exist_ok=True)
 COOKIE_FILE  = os.path.join(COOKIES_DIR, "youtube_cookies.txt")
 YT_CACHE_DIR = os.path.join(os.getcwd(), "ytcache")
@@ -45,41 +45,7 @@ os.makedirs(YT_CACHE_DIR, exist_ok=True)
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(3)
-_COOKIE_LOCK       = asyncio.Lock()
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  COOKIE FILE PICKER
-#  Picks a random .txt from the cookies folder.
-#  Supports both manually uploaded cookies (Cookie-Editor) and
-#  auto-generated cookies (Playwright/yt-dlp extraction).
-#  Falls back to the primary COOKIE_FILE if the folder has no .txt files.
-# ══════════════════════════════════════════════════════════════════════════════
-def cookie_txt_file() -> Optional[str]:
-    """
-    Return a random valid .txt cookie file from the cookies folder.
-    Validates each candidate before returning so a corrupt file is skipped.
-    Returns None if no valid cookie file is found anywhere.
-    """
-    candidates = []
-    if os.path.isdir(COOKIES_DIR):
-        candidates = [
-            os.path.join(COOKIES_DIR, f)
-            for f in os.listdir(COOKIES_DIR)
-            if f.endswith(".txt") and os.path.isfile(os.path.join(COOKIES_DIR, f))
-        ]
-    if not candidates:
-        return None
-    # Shuffle so we don't always hammer the same file
-    random.shuffle(candidates)
-    for candidate in candidates:
-        if os.path.getsize(candidate) > 0 and verify_cookies_file(candidate):
-            return candidate
-    # Nothing passed verification — return the first non-empty file anyway
-    # (yt-dlp will fail gracefully rather than crashing on None)
-    for candidate in candidates:
-        if os.path.getsize(candidate) > 0:
-            return candidate
-    return None
+_COOKIE_LOCK = asyncio.Lock()
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PO_TOKEN PLUGIN DETECTION
@@ -140,17 +106,18 @@ logger = get_logger("SHASHA_DRUGZ/platforms/Youtube.py")
 logger.info(f"po_token plugin detected at startup: {_POT_PLUGIN_PRESENT}")
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  COOKIE CLEANUP  (only removes the primary auto-generated file)
+#  COOKIE CLEANUP
 # ══════════════════════════════════════════════════════════════════════════════
 def clear_old_cookies():
-    """
-    Remove only the primary auto-generated cookie file (youtube_cookies.txt).
-    Manually uploaded cookies in the same folder are preserved.
-    """
     try:
         if os.path.exists(COOKIE_FILE):
             os.remove(COOKIE_FILE)
-            logger.warning(f"🧹 Removed auto-generated cookie: {COOKIE_FILE}")
+            logger.warning("🧹 Old YouTube cookies removed")
+        for f in glob.glob(os.path.join(COOKIES_DIR, "*")):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
     except Exception as e:
         logger.error(f"Failed to clear cookies: {e}")
 
@@ -177,7 +144,7 @@ async def send_cookie_file_to_log_group(reason: str = ""):
     caption = (
         f"🍪 **YouTube Cookie Regenerated**\n\n"
         f"📅 Time   : `{timestamp}`\n"
-        f"📄 File   : `youtube_cookies.txt`\n"
+        f"📄 File   : `youtube_cookie.txt`\n"
         f"📝 Reason : {reason or 'On-demand refresh'}\n\n"
         f"#YouTubeCookies"
     )
@@ -186,7 +153,7 @@ async def send_cookie_file_to_log_group(reason: str = ""):
         with open(COOKIE_FILE, "rb") as f:
             await app.send_document(
                 chat_id=LOG_GROUP_ID,
-                document=pyrogram.types.InputFile(f, file_name="youtube_cookies.txt"),
+                document=pyrogram.types.InputFile(f, file_name="youtube_cookie.txt"),
                 caption=caption,
             )
         logger.info(f"✅ Cookie sent to log group | reason={reason}")
@@ -237,7 +204,7 @@ def cleanup_playwright_profile():
                 logger.warning(f"Could not remove {fname}: {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  BROWSER PROFILE COOKIE GENERATION  (Playwright)
+#  BROWSER PROFILE COOKIE GENERATION
 # ══════════════════════════════════════════════════════════════════════════════
 async def generate_cookies_via_playwright(reason: str = "Profile cookie generation") -> bool:
     logger.info(f"🌐 Launching browser profile to generate cookies [{reason}] ...")
@@ -335,7 +302,6 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
 # ══════════════════════════════════════════════════════════════════════════════
 async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Optional[str]:
     async with _COOKIE_LOCK:
-        # Re-check inside lock: another coroutine may have just refreshed
         if (
             os.path.exists(COOKIE_FILE)
             and verify_cookies_file(COOKIE_FILE)
@@ -387,7 +353,7 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
                     logger.error("❌ Extracted cookies failed verification or are expired")
                     if os.path.exists(COOKIE_FILE):
                         os.remove(COOKIE_FILE)
-                    logger.info("🔁 Retrying with a fresh browser session ...")
+                    logger.info("🔁 Retrying cookie extraction with a fresh browser session ...")
                     ok2 = await generate_cookies_via_playwright(reason=f"{reason} (retry)")
                     if not ok2:
                         return None
@@ -424,9 +390,12 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE VERIFICATION
-#  Accepts BOTH manual Cookie-Editor exports AND auto-generated yt-dlp cookies.
-#  Manual  → needs ≥1 auth cookie  (SAPISID, SID, LOGIN_INFO …)
-#  Auto    → needs ≥2 visitor cookies (VISITOR_INFO1_LIVE, YSC, NID, SOCS …)
+#  Supports BOTH manually exported cookies (Cookie-Editor) and
+#  auto-generated cookies (yt-dlp browser profile extraction).
+#
+#  Manual cookies have full auth tokens: SAPISID, SID, LOGIN_INFO, etc.
+#  Auto-generated cookies have only visitor tokens: VISITOR_INFO1_LIVE,
+#  YSC, SOCS, NID, PREF, etc.  Both are valid — we accept either.
 # ══════════════════════════════════════════════════════════════════════════════
 def verify_cookies_file(filename: str) -> bool:
     try:
@@ -435,6 +404,7 @@ def verify_cookies_file(filename: str) -> bool:
             return False
         with open(filename, "r", encoding="utf-8") as f:
             content = f.read()
+        # Must contain youtube.com or google.com entries
         if (
             "youtube.com" not in content
             and ".youtube.com" not in content
@@ -445,10 +415,12 @@ def verify_cookies_file(filename: str) -> bool:
         if content.strip().startswith("{") or '"domain"' in content:
             logger.error("Cookies file is JSON format, not Netscape")
             return False
+        # ── Auth cookies (manual export) ──────────────────────────────────────
         auth_cookies = [
             "SAPISID", "LOGIN_INFO", "__Secure-1PAPISID",
             "__Secure-3PAPISID", "SID", "HSID", "SSID", "APISID",
         ]
+        # ── Visitor/session cookies (auto-generated) ──────────────────────────
         visitor_cookies = [
             "VISITOR_INFO1_LIVE", "YSC", "PREF", "SOCS",
             "__Secure-ROLLOUT_TOKEN", "VISITOR_PRIVACY_METADATA",
@@ -456,6 +428,8 @@ def verify_cookies_file(filename: str) -> bool:
         ]
         found_auth    = [c for c in auth_cookies    if c in content]
         found_visitor = [c for c in visitor_cookies if c in content]
+        # Accept if we have at least 1 auth cookie OR at least 2 visitor cookies
+        # This allows both manual and auto-generated cookies to pass verification.
         has_auth    = len(found_auth)    >= 1
         has_visitor = len(found_visitor) >= 2
         if not has_auth and not has_visitor:
@@ -558,6 +532,7 @@ def is_auth_error(exception: Exception) -> bool:
     return any(ind in error_str for ind in auth_indicators)
 
 def is_format_error(exception: Exception) -> bool:
+    """Detect format-not-available errors (not auth-related)."""
     error_str = str(exception).lower()
     return (
         "requested format is not available" in error_str
@@ -569,26 +544,17 @@ def is_format_error(exception: Exception) -> bool:
 #  MAIN COOKIE GETTER
 # ══════════════════════════════════════════════════════════════════════════════
 async def get_cookies(force_refresh: bool = False) -> Optional[str]:
-    """
-    Returns the best available cookie file path.
-    Priority:
-      1. Any valid manually-uploaded cookie from the cookies folder.
-      2. The primary auto-generated COOKIE_FILE (if valid & unexpired).
-      3. Regenerate via Playwright.
-    """
     if force_refresh:
         cleanup_playwright_profile()
-        # Even on force refresh, keep manually uploaded cookies
-        if os.path.exists(COOKIE_FILE):
-            os.remove(COOKIE_FILE)
-    else:
-        # Check if any cookie in the folder is usable (includes manual ones)
-        best = cookie_txt_file()
-        if best and not is_cookie_file_expired(best):
-            logger.info(f"✅ Using existing cookie: {os.path.basename(best)}")
-            return best
-        logger.warning("No valid/unexpired cookie found – regenerating ...")
-    reason = "Force refresh" if force_refresh else "Initial / expired"
+    if not force_refresh and os.path.exists(COOKIE_FILE):
+        if verify_cookies_file(COOKIE_FILE) and not is_cookie_file_expired(COOKIE_FILE):
+            logger.info("✅ Using existing (non-expired) cookies")
+            return COOKIE_FILE
+        else:
+            logger.warning("Existing cookies invalid or expired – regenerating ...")
+            if os.path.exists(COOKIE_FILE):
+                os.remove(COOKIE_FILE)
+    reason = "Force refresh – robot/auth detected" if force_refresh else "Initial / expired"
     return await refresh_cookies_from_browser(reason=reason)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -614,6 +580,17 @@ def extract_video_id(url: str) -> Optional[str]:
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  YT-DLP OPTIONS
+#
+#  Cookie handling:
+#    - If a valid .txt cookie file exists → use cookiefile (supports both
+#      manual Cookie-Editor exports and auto-generated yt-dlp cookies).
+#    - If no valid file → proceed without any cookie option (no crash).
+#      Never fall back to cookiesfrombrowser with an unknown profile state.
+#
+#  player_client:
+#    - When no po_token plugin is present → set explicit broad client list
+#      (ios + android give format 140/251 without needing po_token).
+#    - When po_token plugin is present → omit override so the plugin chooses.
 # ══════════════════════════════════════════════════════════════════════════════
 def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict:
     ua = random.choice(USER_AGENTS)
@@ -637,7 +614,10 @@ def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict
                 "player_client": ["ios", "android", "web", "tv_embedded"],
             }
         }
-    # Safe cookie injection — never pass None or a missing path
+        logger.debug("No po_token plugin — using explicit player_client list")
+    else:
+        logger.debug("po_token plugin active — skipping player_client override")
+    # Safe cookie handling — never pass a None or missing path
     if use_cookie_file and os.path.isfile(use_cookie_file):
         base["cookiefile"] = use_cookie_file
         logger.debug(f"Using cookiefile: {use_cookie_file}")
@@ -670,6 +650,14 @@ def _get_downloaded_file(video_id: str, prefer_m4a: bool = False) -> Optional[st
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  FORMAT STRINGS
+#
+#  Audio: prefer m4a (format 140, always available on ios/android clients),
+#         then any audio stream, then any format.  FFmpeg converts to mp3.
+#
+#  Video: bv*+ba selects the best video + best audio regardless of container,
+#         falling back to any single-file best.
+#
+#  Stream: same m4a-first priority as audio.
 # ══════════════════════════════════════════════════════════════════════════════
 def _audio_format_opts() -> dict:
     return {
@@ -687,11 +675,14 @@ def _video_format_opts() -> dict:
         "merge_output_format": "mp4",
     }
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  STREAMING FORMAT
+# ══════════════════════════════════════════════════════════════════════════════
 STREAM_MIN_SIZE = 500_000
 STREAM_FORMAT   = "bestaudio[ext=m4a]/bestaudio/best"
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  CORE DOWNLOAD  (yt-dlp with random cookie picker + auth retry)
+#  CORE DOWNLOAD
 # ══════════════════════════════════════════════════════════════════════════════
 async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
     video_id = extract_video_id(link)
@@ -704,10 +695,10 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
         logger.info(f"📁 File already exists: {existing}")
         return existing
 
-    # Use cookie_txt_file() — picks the best available cookie (manual or auto)
-    cookie_file = cookie_txt_file()
-    if not cookie_file:
-        logger.warning("No cookie file found – attempting download without cookies")
+    cookie_file = await get_cookies()
+    if not cookie_file or not os.path.isfile(cookie_file):
+        logger.warning("No valid cookie file – attempting download without cookies")
+        cookie_file = None
 
     def _build_opts(cf: Optional[str]) -> dict:
         extra = _audio_format_opts() if is_audio else _video_format_opts()
@@ -727,9 +718,10 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                         None, lambda: ydl.extract_info(link, download=True)
                     )
 
-            # Primary: scan downloads dir
+            # Primary: scan downloads dir by video_id
             file_path = _get_downloaded_file(video_id)
-            # Secondary: yt-dlp reported filename
+
+            # Secondary: use _filename reported by yt-dlp itself
             if not file_path and info:
                 possible = info.get("_filename")
                 if possible and os.path.exists(possible):
@@ -745,7 +737,7 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
             err_str = str(e)
             logger.error(f"Download error (attempt {attempt + 1}): {err_str[:300]}")
 
-            # Format not available → retry with broad "best"
+            # ── Format not available → retry with "best" ──────────────────────
             if is_format_error(e) and attempt == 0:
                 logger.warning("⚠️ Format not available — retrying with 'best' fallback ...")
                 fallback: dict = {"format": "best"}
@@ -760,24 +752,15 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                 ydl_opts = get_ytdlp_opts(fallback, use_cookie_file=cookie_file)
                 continue
 
-            # Auth / robot → try a different cookie first, then regenerate
+            # ── Auth / robot error → regenerate cookies and retry ─────────────
             if is_auth_error(e) and AUTO_REFRESH_COOKIES and attempt == 0:
-                logger.warning("🤖 Auth/robot detected – trying a different cookie ...")
-                # Try picking a different cookie from the pool
-                alt_cookie = cookie_txt_file()
-                if alt_cookie and alt_cookie != cookie_file:
-                    logger.info(f"↩️ Switching cookie to: {os.path.basename(alt_cookie)}")
-                    cookie_file = alt_cookie
-                    ydl_opts    = _build_opts(cookie_file)
-                    continue
-                # No alternative → regenerate via Playwright
-                logger.warning("No alternative cookie – regenerating via Playwright ...")
+                logger.warning("🤖 Robot/auth detected – regenerating cookies ...")
                 clear_old_cookies()
                 await send_to_log_group(
                     text=(
                         "⚠️ **YouTube: Robot/Auth Detected**\n\n"
-                        "🧹 Auto-generated cookie cleared\n"
-                        "🔄 Regenerating via Browser Profile ...\n\n"
+                        "🧹 Old cookies cleared\n"
+                        "🔄 Regenerating cookies via Browser Profile ...\n\n"
                         "#YouTubeCookies"
                     )
                 )
@@ -786,8 +769,8 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                 )
                 if new_cookie and os.path.isfile(new_cookie):
                     logger.info("✅ Fresh cookies obtained – retrying download ...")
-                    cookie_file = new_cookie
                     ydl_opts    = _build_opts(new_cookie)
+                    cookie_file = new_cookie
                     continue
                 else:
                     logger.error("Cookie regeneration failed – aborting download")
@@ -796,20 +779,6 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
             return None
 
     return None
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  AUDIO DOWNLOAD  (yt-dlp only — clean wrapper used by YouTubeAPI)
-# ══════════════════════════════════════════════════════════════════════════════
-async def download_song(link: str) -> Optional[str]:
-    logger.info(f"🎵 Downloading audio: {link}")
-    return await download_with_ytdlp(link, is_audio=True)
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  VIDEO DOWNLOAD  (yt-dlp only — clean wrapper used by YouTubeAPI)
-# ══════════════════════════════════════════════════════════════════════════════
-async def download_video(link: str) -> Optional[str]:
-    logger.info(f"🎬 Downloading video: {link}")
-    return await download_with_ytdlp(link, is_audio=False)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  STREAMING HELPER
@@ -833,7 +802,10 @@ async def download_song_stream(link: str) -> Tuple[Optional[str], Optional[async
     if existing and os.path.exists(existing):
         return existing, None
 
-    cookie_file   = cookie_txt_file()
+    cookie_file = await get_cookies()
+    if cookie_file and not os.path.isfile(cookie_file):
+        cookie_file = None
+
     ydl_opts      = get_ytdlp_opts({"format": STREAM_FORMAT}, use_cookie_file=cookie_file)
     expected_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.m4a")
     loop          = asyncio.get_event_loop()
@@ -853,6 +825,17 @@ async def download_song_stream(link: str) -> Tuple[Optional[str], Optional[async
         logger.error(f"Streaming wait error: {e}")
         task.cancel()
         return None, None
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  DOWNLOAD WRAPPERS
+# ══════════════════════════════════════════════════════════════════════════════
+async def download_song(link: str) -> Optional[str]:
+    logger.info(f"🎵 Downloading audio: {link}")
+    return await download_with_ytdlp(link, is_audio=True)
+
+async def download_video(link: str) -> Optional[str]:
+    logger.info(f"🎬 Downloading video: {link}")
+    return await download_with_ytdlp(link, is_audio=False)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PLAY_URL AUTO-TEST
@@ -875,14 +858,13 @@ async def test_cookie_with_playurl(retries: int = 2):
     logger.info(f"🎬 Auto-testing cookies with PLAY_URL (retries left: {retries}) ...")
     test_dir = os.path.join(os.getcwd(), "cookie_test")
     os.makedirs(test_dir, exist_ok=True)
-    video_id  = extract_video_id(PLAY_URL)
-    cf        = cookie_txt_file()
+    video_id = extract_video_id(PLAY_URL)
     test_opts = get_ytdlp_opts(
         {
             "outtmpl": os.path.join(test_dir, "%(id)s.%(ext)s"),
             "format":  "bestaudio[ext=m4a]/bestaudio/best",
         },
-        use_cookie_file=cf,
+        use_cookie_file=COOKIE_FILE if os.path.isfile(COOKIE_FILE) else None,
     )
     try:
         loop = asyncio.get_event_loop()
@@ -929,9 +911,9 @@ async def test_cookie_with_playurl(retries: int = 2):
                 text=(
                     f"❌ **Cookie Auto-Test: FAILED**\n\n"
                     f"🎬 URL: `{PLAY_URL}`\n\n"
-                    "Download appeared to complete but no file was found.\n"
-                    "Triggering cookie regeneration ...\n\n"
-                    "#CookieTest"
+                    f"Download appeared to complete but no file was found.\n"
+                    f"Triggering cookie regeneration ...\n\n"
+                    f"#CookieTest"
                 )
             )
             clear_old_cookies()
@@ -951,9 +933,9 @@ async def test_cookie_with_playurl(retries: int = 2):
                     f"⚠️ **Robot/Auth Detected During PLAY_URL Cookie Test**\n\n"
                     f"🔗 URL    : `{PLAY_URL}`\n"
                     f"⚠️ Error  : `{err_str[:200]}`\n\n"
-                    "🧹 Auto-generated cookie cleared\n"
-                    "🔄 Regenerating via Browser Profile ...\n\n"
-                    "#YouTubeCookies"
+                    f"🧹 Old cookies cleared\n"
+                    f"🔄 Regenerating via Browser Profile ...\n\n"
+                    f"#YouTubeCookies"
                 )
             )
             new_cookie = await refresh_cookies_from_browser(
@@ -967,8 +949,8 @@ async def test_cookie_with_playurl(retries: int = 2):
                     f"❌ **Cookie Auto-Test: ERROR**\n\n"
                     f"🎬 URL   : `{PLAY_URL}`\n"
                     f"⚠️ Error : `{err_str[:300]}`\n\n"
-                    "Cookies will regenerate automatically on next download.\n\n"
-                    "#CookieTest"
+                    f"Cookies will regenerate automatically on next download.\n\n"
+                    f"#CookieTest"
                 )
             )
 
@@ -991,9 +973,11 @@ async def shell_cmd(cmd):
 
 async def check_file_size(link):
     try:
-        cf       = cookie_txt_file()
-        ydl_opts = get_ytdlp_opts({"quiet": True}, use_cookie_file=cf)
-        loop     = asyncio.get_event_loop()
+        ydl_opts = get_ytdlp_opts(
+            {"quiet": True},
+            use_cookie_file=COOKIE_FILE if os.path.isfile(COOKIE_FILE) else None,
+        )
+        loop = asyncio.get_event_loop()
         def _get_size():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info  = ydl.extract_info(link, download=False)
@@ -1104,13 +1088,9 @@ class YouTubeAPI:
             link = self.listbase + link
         if "&" in link:
             link = link.split("&")[0]
-        cf = cookie_txt_file()
-        if not cf:
-            logger.warning("No cookie for playlist fetch")
-            return []
         ydl_opts = get_ytdlp_opts(
             {"quiet": True, "extract_flat": True, "playlistend": limit},
-            use_cookie_file=cf,
+            use_cookie_file=COOKIE_FILE if os.path.isfile(COOKIE_FILE) else None,
         )
         loop = asyncio.get_event_loop()
         try:
@@ -1154,9 +1134,11 @@ class YouTubeAPI:
             link = self.base + link
         if "&" in link:
             link = link.split("&")[0]
-        cf       = cookie_txt_file()
-        ydl_opts = get_ytdlp_opts({"quiet": True}, use_cookie_file=cf)
-        loop     = asyncio.get_event_loop()
+        ydl_opts = get_ytdlp_opts(
+            {"quiet": True},
+            use_cookie_file=COOKIE_FILE if os.path.isfile(COOKIE_FILE) else None,
+        )
+        loop = asyncio.get_event_loop()
         try:
             def _get_formats():
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -1218,6 +1200,7 @@ class YouTubeAPI:
                 downloaded_file = await download_video(link)
             else:
                 downloaded_file = await download_song(link)
+            # FIX 4 — guard None / missing path
             if not downloaded_file or not os.path.exists(downloaded_file):
                 logger.error(
                     f"Downloaded file path invalid or missing: {downloaded_file!r} "
@@ -1236,24 +1219,22 @@ async def startup_services():
     if not ENABLE_YT_COOKIES:
         logger.info("YouTube cookie handling disabled (ENABLE_YT_COOKIES=false).")
         return
-    logger.info("🚀 Starting YouTube services ...")
+    logger.info("🚀 Starting YouTube services (Browser Profile) ...")
     cleanup_playwright_profile()
-    # Check if any cookie (manual or auto) is already usable
-    best = cookie_txt_file()
-    if best and not is_cookie_file_expired(best):
-        logger.info(
-            f"✅ Found valid existing cookie: {os.path.basename(best)} — "
-            "skipping Playwright generation."
-        )
-    else:
-        logger.info("🔄 No valid cookie found – generating via Browser Profile ...")
+    need_refresh = (
+        not os.path.exists(COOKIE_FILE)
+        or not verify_cookies_file(COOKIE_FILE)
+        or is_cookie_file_expired(COOKIE_FILE)
+    )
+    if need_refresh:
+        logger.info("🔄 No valid cookies found – generating via Browser Profile ...")
         cookie_file = await get_cookies(force_refresh=True)
         if cookie_file:
             logger.info(f"✅ Cookies ready: {cookie_file}")
         else:
             logger.warning(
                 "⚠️ Cookie generation failed on startup.\n"
-                "   Bot will retry automatically on first download."
+                "   The bot will retry automatically on the first download request."
             )
             await send_to_log_group(
                 text=(
@@ -1263,5 +1244,7 @@ async def startup_services():
                     "#YouTubeCookies"
                 )
             )
+    else:
+        logger.info("✅ Existing cookies are valid and unexpired – skipping regeneration.")
     logger.info("🎬 Running PLAY_URL startup test ...")
     await test_cookie_with_playurl(retries=2)
