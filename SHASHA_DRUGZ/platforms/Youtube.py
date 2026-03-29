@@ -7,7 +7,6 @@ import datetime
 import glob
 import logging
 from typing import Union, Optional, Tuple
-
 import yt_dlp
 import aiohttp
 from pyrogram.enums import MessageEntityType
@@ -19,7 +18,7 @@ from SHASHA_DRUGZ.utils.formatters import time_to_seconds
 from config import LOG_GROUP_ID
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ANDROID DEVICE PROFILES  (replaces browser UA pool)
+#  ANDROID DEVICE PROFILES
 # ══════════════════════════════════════════════════════════════════════════════
 ANDROID_PROFILES = [
     {
@@ -54,11 +53,14 @@ ANDROID_PROFILES = [
     },
 ]
 
-# Keep a small browser UA pool for Playwright warmup only
 _BROWSER_USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
 ]
 
@@ -67,7 +69,7 @@ def _generate_visitor_id() -> str:
     return "".join(random.choice(chars) for _ in range(11))
 
 def get_android_profile() -> dict:
-    p = dict(random.choice(ANDROID_PROFILES))   # shallow copy
+    p = dict(random.choice(ANDROID_PROFILES))
     p["visitor_id"] = _generate_visitor_id()
     return p
 
@@ -77,16 +79,17 @@ def get_android_profile() -> dict:
 PLAY_URL             = os.getenv("PLAY_URL", "https://youtu.be/ip8o5hDFLhI?si=jCdWYdBAEulr2b49")
 ENABLE_YT_COOKIES    = os.getenv("ENABLE_YT_COOKIES", "true").lower() == "true"
 AUTO_REFRESH_COOKIES = True
-
-YTDLP_PROXIES      = os.getenv("YTDLP_PROXIES", "")
-PLAYWRIGHT_PROXIES = os.getenv("PLAYWRIGHT_PROXIES", "")
+YT_GOOGLE_EMAIL      = os.getenv("YT_GOOGLE_EMAIL", "")
+YT_GOOGLE_PASSWORD   = os.getenv("YT_GOOGLE_PASSWORD", "")
+YTDLP_PROXIES        = os.getenv("YTDLP_PROXIES", "")
+PLAYWRIGHT_PROXIES   = os.getenv("PLAYWRIGHT_PROXIES", "")
 
 PLAYWRIGHT_PROFILE_DIR = os.path.join(os.getcwd(), "playwright_profile")
 os.makedirs(PLAYWRIGHT_PROFILE_DIR, exist_ok=True)
 
 COOKIES_DIR  = os.path.join(os.getcwd(), "cookies");  os.makedirs(COOKIES_DIR,  exist_ok=True)
 COOKIE_FILE  = os.path.join(COOKIES_DIR, "youtube_cookies.txt")
-YT_CACHE_DIR = os.path.join(os.getcwd(), "ytcache"); os.makedirs(YT_CACHE_DIR, exist_ok=True)
+YT_CACHE_DIR = os.path.join(os.getcwd(), "ytcache");  os.makedirs(YT_CACHE_DIR, exist_ok=True)
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads"); os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(3)
@@ -120,7 +123,7 @@ def get_logger(name: str):
         log.setLevel(logging.INFO)
         return log
 
-logger = get_logger("HeartBeat/platforms/Youtube.py")
+logger = get_logger("SHASHA_DRUGZ/platforms/Youtube.py")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE CLEANUP
@@ -131,8 +134,10 @@ def clear_old_cookies():
             os.remove(COOKIE_FILE)
             logger.warning("🧹 Old YouTube cookies removed")
         for f in glob.glob(os.path.join(COOKIES_DIR, "youtube*")):
-            try: os.remove(f)
-            except Exception: pass
+            try:
+                os.remove(f)
+            except Exception:
+                pass
     except Exception as e:
         logger.error(f"clear_old_cookies: {e}")
 
@@ -189,8 +194,12 @@ async def get_public_ip_info() -> dict:
             ) as r:
                 if r.status == 200:
                     d = await r.json()
-                    return {"ip": d.get("ip"), "city": d.get("city"),
-                            "country": d.get("country_name"), "org": d.get("org")}
+                    return {
+                        "ip":      d.get("ip"),
+                        "city":    d.get("city"),
+                        "country": d.get("country_name"),
+                        "org":     d.get("org"),
+                    }
     except Exception as e:
         logger.error(f"get_public_ip_info: {e}")
     return {}
@@ -202,11 +211,54 @@ def cleanup_playwright_profile():
     for fname in ("SingletonLock", "SingletonCookie", "SingletonSocket", "DevToolsActivePort"):
         fpath = os.path.join(PLAYWRIGHT_PROFILE_DIR, fname)
         if os.path.exists(fpath):
-            try: os.remove(fpath)
-            except Exception: pass
+            try:
+                os.remove(fpath)
+            except Exception:
+                pass
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  BROWSER PROFILE COOKIE GENERATION  (Playwright — for cookie extraction)
+#  GOOGLE LOGIN INSIDE PLAYWRIGHT  (optional — only if credentials are set)
+# ══════════════════════════════════════════════════════════════════════════════
+async def _google_login(page) -> bool:
+    if not YT_GOOGLE_EMAIL or not YT_GOOGLE_PASSWORD:
+        return False
+    logger.info(f"🔐 Attempting Google login as: {YT_GOOGLE_EMAIL}")
+    try:
+        await page.goto(
+            "https://accounts.google.com/signin/v2/identifier"
+            "?service=youtube&hl=en&flowName=GlifWebSignIn",
+            wait_until="domcontentloaded", timeout=60_000,
+        )
+        await page.wait_for_timeout(random.randint(2000, 4000))
+
+        email_input = page.locator("input[type='email']")
+        await email_input.wait_for(state="visible", timeout=15_000)
+        await email_input.fill(YT_GOOGLE_EMAIL)
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(random.randint(2500, 4000))
+
+        pwd_input = page.locator("input[type='password']")
+        await pwd_input.wait_for(state="visible", timeout=15_000)
+        await pwd_input.fill(YT_GOOGLE_PASSWORD)
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(random.randint(5000, 8000))
+
+        cookies = await page.context.cookies()
+        auth = [c["name"] for c in cookies if c["name"] in (
+            "SAPISID", "LOGIN_INFO", "__Secure-1PAPISID",
+            "__Secure-3PAPISID", "SID", "HSID", "SSID",
+        )]
+        if auth:
+            logger.info(f"✅ Google login successful | auth cookies: {auth}")
+            return True
+        logger.warning("⚠️ Google login: no auth cookies found (captcha / 2FA / wrong creds?)")
+        return False
+    except Exception as e:
+        logger.error(f"_google_login: {e}")
+        return False
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  BROWSER PROFILE COOKIE GENERATION  (Playwright)
 # ══════════════════════════════════════════════════════════════════════════════
 async def generate_cookies_via_playwright(reason: str = "Profile cookie generation") -> bool:
     logger.info(f"🌐 Launching browser profile [{reason}] ...")
@@ -244,20 +296,26 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                 Object.defineProperty(navigator, 'plugins',   { get: () => [1, 2, 3, 4, 5] });
                 window.chrome = { runtime: {} };
             """)
-            for url, label in [
-                ("https://accounts.google.com", "accounts.google.com"),
-                ("https://www.youtube.com",     "youtube.com"),
-            ]:
-                try:
-                    logger.info(f"🔗 Visiting {label} ...")
-                    await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-                    await page.wait_for_timeout(random.randint(3000, 6000))
-                    await page.mouse.move(random.randint(100, 600), random.randint(100, 400))
-                    await page.wait_for_timeout(random.randint(500, 1500))
-                    await page.mouse.wheel(0, random.randint(200, 600))
-                    await page.wait_for_timeout(random.randint(500, 1000))
-                except Exception as e:
-                    logger.warning(f"{label} warning: {e}")
+
+            # ── Optional Google login (sets real auth cookies) ────────────────
+            if YT_GOOGLE_EMAIL and YT_GOOGLE_PASSWORD:
+                await _google_login(page)
+            else:
+                # Anonymous warm-up only
+                for url, label in [
+                    ("https://accounts.google.com", "accounts.google.com"),
+                    ("https://www.youtube.com",     "youtube.com"),
+                ]:
+                    try:
+                        logger.info(f"🔗 Visiting {label} ...")
+                        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+                        await page.wait_for_timeout(random.randint(3000, 6000))
+                        await page.mouse.move(random.randint(100, 600), random.randint(100, 400))
+                        await page.wait_for_timeout(random.randint(500, 1500))
+                        await page.mouse.wheel(0, random.randint(200, 600))
+                        await page.wait_for_timeout(random.randint(500, 1000))
+                    except Exception as e:
+                        logger.warning(f"{label} warning: {e}")
 
             if PLAY_URL:
                 try:
@@ -277,12 +335,13 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
             await context.close()
             logger.info("✅ Browser profile cookies refreshed")
             return True
-
     except Exception as e:
         logger.error(f"❌ Playwright error: {str(e)[:300]}")
         if context:
-            try: await context.close()
-            except Exception: pass
+            try:
+                await context.close()
+            except Exception:
+                pass
         await send_to_log_group(
             text=(
                 f"❌ **Browser Cookie Generation Failed**\n"
@@ -323,7 +382,6 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
                 stderr=asyncio.subprocess.PIPE,
             )
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-
             if proc.returncode == 0 and os.path.exists(COOKIE_FILE):
                 if verify_cookies_file(COOKIE_FILE) and not is_cookie_file_expired(COOKIE_FILE):
                     logger.info("✅ Cookies extracted and verified")
@@ -342,7 +400,6 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
                     await send_cookie_file_to_log_group(reason=reason)
                     return COOKIE_FILE
 
-                # Extraction succeeded but cookies failed verify → retry once
                 logger.warning("⚠️ Extracted cookies failed verify – retrying ...")
                 if os.path.exists(COOKIE_FILE):
                     os.remove(COOKIE_FILE)
@@ -365,7 +422,6 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
             err = stderr.decode()[:300] if stderr else "unknown"
             logger.warning(f"yt-dlp extraction failed: {err}")
             return None
-
         except asyncio.TimeoutError:
             logger.error("Cookie extraction timed out")
             return None
@@ -374,7 +430,7 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
             return None
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  COOKIE VERIFICATION
+#  COOKIE VERIFICATION  — requires real auth cookies, not just visitor tokens
 # ══════════════════════════════════════════════════════════════════════════════
 def verify_cookies_file(filename: str) -> bool:
     try:
@@ -382,20 +438,38 @@ def verify_cookies_file(filename: str) -> bool:
             return False
         with open(filename, "r", encoding="utf-8") as f:
             content = f.read()
-        if "youtube.com" not in content:
-            logger.error("No youtube.com in cookie file")
+
+        if "youtube.com" not in content and "google.com" not in content:
+            logger.error("No youtube.com / google.com in cookie file")
             return False
-        important = [
+
+        # FIX: require at least one real auth cookie
+        # Visitor-only cookies (VISITOR_INFO1_LIVE, YSC, etc.) do NOT bypass bot detection
+        AUTH_COOKIES = [
+            "SAPISID", "LOGIN_INFO", "__Secure-1PAPISID",
+            "__Secure-3PAPISID", "SID", "HSID", "SSID", "APISID",
+        ]
+        found_auth = [c for c in AUTH_COOKIES if c in content]
+        if not found_auth:
+            logger.warning(
+                "⚠️ Cookie file contains only visitor/anonymous tokens. "
+                "These will NOT bypass YouTube bot detection. "
+                "Set YT_GOOGLE_EMAIL + YT_GOOGLE_PASSWORD for authenticated cookies, "
+                "or rely on Android client mode (ENABLE_YT_COOKIES=false)."
+            )
+            # Return False so the system knows cookies are not usable for auth
+            return False
+
+        visitor_cookies = [
             "VISITOR_INFO1_LIVE", "PREF", "GPS", "YSC",
             "SOCS", "__Secure-ROLLOUT_TOKEN", "VISITOR_PRIVACY_METADATA",
         ]
-        found = [c for c in important if c in content]
-        if len(found) < 2:
-            logger.warning(f"Too few important cookies: {found}")
-            return False
+        found_visitor = [c for c in visitor_cookies if c in content]
+
         if content.strip().startswith("{") or '"domain"' in content:
             logger.error("Cookie file is JSON not Netscape")
             return False
+
         valid = sum(
             1 for line in content.strip().split("\n")
             if line and not line.startswith("#") and "\t" in line
@@ -403,7 +477,11 @@ def verify_cookies_file(filename: str) -> bool:
         if valid < 3:
             logger.error(f"Too few valid lines: {valid}")
             return False
-        logger.info(f"✅ Cookies verified: {filename} | lines={valid} | found={found}")
+
+        logger.info(
+            f"✅ Cookies verified: {filename} | lines={valid} "
+            f"| auth={found_auth} | visitor={found_visitor}"
+        )
         return True
     except Exception as e:
         logger.error(f"verify_cookies_file: {e}")
@@ -477,9 +555,14 @@ async def get_cookies(force_refresh: bool = False) -> Optional[str]:
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  VIDEO ID EXTRACTION
+#  FIX: rejects Instagram URLs — shortcodes look identical to YouTube video IDs
 # ══════════════════════════════════════════════════════════════════════════════
 def extract_video_id(url: str) -> Optional[str]:
     if not url:
+        return None
+    # Hard reject: instagram.com shortcodes are 11-char strings identical to YT IDs
+    if "instagram.com" in url.lower():
+        logger.warning(f"extract_video_id: rejected Instagram URL: {url}")
         return None
     for pattern in [
         r"(?:v=|youtu\.be/|shorts/|embed/)([A-Za-z0-9_-]{11})",
@@ -496,61 +579,78 @@ def extract_video_id(url: str) -> Optional[str]:
     return None
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  YT-DLP OPTIONS  (Android client, no cookies, IPv4)
+#  YT-DLP OPTIONS
+#  Strategy A (no cookie_file): Android innertube — bypasses bot check, no cookies needed
+#  Strategy B (with cookie_file): Desktop web client — for age-gated / auth content
 # ══════════════════════════════════════════════════════════════════════════════
 def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict:
-    profile = get_android_profile()
-    ua      = profile["ua"]
-
-    base = {
-        "outtmpl":            os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s"),
-        "quiet":              True,
-        "no_warnings":        True,
-        "geo_bypass":         True,
-        "nocheckcertificate": True,
-        "source_address":     "0.0.0.0",          # Force IPv4 (Railway fix)
-        "retries":            5,
-        "fragment_retries":   5,
-        "concurrent_fragment_downloads": 1,
-        "sleep_interval":     random.uniform(1, 3),
-        "max_sleep_interval": 5,
-        "noplaylist":         True,
-        "cachedir":           YT_CACHE_DIR,
-
-        # ── Android innertube client ──────────────────────────────────────────
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "android_music"],
-                "player_skip":   ["webpage", "configs"],
-            }
-        },
-
-        # ── Spoof Android app headers ─────────────────────────────────────────
-        "http_headers": {
-            "User-Agent":               ua,
-            "Accept-Language":          "en-US,en;q=0.9",
-            "X-YouTube-Client-Name":    "3",
-            "X-YouTube-Client-Version": profile["client_version"],
-            "X-Goog-Visitor-Id":        profile["visitor_id"],
-            "Origin":                   "https://www.youtube.com",
-            "Referer":                  "https://www.youtube.com/",
-        },
-
-        # ── Manifest preferences ──────────────────────────────────────────────
-        "youtube_include_dash_manifest": False,
-        "youtube_include_hls_manifest":  True,
-    }
-
-    # Cookies: use file if provided, else fall back to browser profile
-    if use_cookie_file and os.path.exists(use_cookie_file):
-        base["cookiefile"] = use_cookie_file
-    else:
-        base["cookiesfrombrowser"] = ("chrome", PLAYWRIGHT_PROFILE_DIR)
-
     proxy = choose_random_proxy(YTDLP_PROXY_POOL)
+
+    if use_cookie_file and os.path.exists(use_cookie_file):
+        # Strategy B: authenticated desktop web client + cookie file
+        # Desktop UA must match the desktop cookie jar — do NOT mix Android UA with cookies
+        base = {
+            "outtmpl":            os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s"),
+            "quiet":              True,
+            "no_warnings":        True,
+            "geo_bypass":         True,
+            "nocheckcertificate": True,
+            "source_address":     "0.0.0.0",
+            "retries":            5,
+            "fragment_retries":   5,
+            "noplaylist":         True,
+            "cachedir":           YT_CACHE_DIR,
+            "cookiefile":         use_cookie_file,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["web", "web_safari"],
+                }
+            },
+            "http_headers": {
+                "User-Agent":      random.choice(_BROWSER_USER_AGENTS),
+                "Accept-Language": "en-US,en;q=0.9",
+                "Origin":          "https://www.youtube.com",
+                "Referer":         "https://www.youtube.com/",
+            },
+        }
+    else:
+        # Strategy A: anonymous Android innertube client — no cookies needed
+        profile = get_android_profile()
+        base = {
+            "outtmpl":            os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s"),
+            "quiet":              True,
+            "no_warnings":        True,
+            "geo_bypass":         True,
+            "nocheckcertificate": True,
+            "source_address":     "0.0.0.0",
+            "retries":            5,
+            "fragment_retries":   5,
+            "concurrent_fragment_downloads": 1,
+            "sleep_interval":     random.uniform(1, 3),
+            "max_sleep_interval": 5,
+            "noplaylist":         True,
+            "cachedir":           YT_CACHE_DIR,
+            # Android innertube bypasses bot detection without cookies
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android", "android_music", "ios"],
+                    "player_skip":   ["webpage", "configs"],
+                }
+            },
+            "http_headers": {
+                "User-Agent":               profile["ua"],
+                "Accept-Language":          "en-US,en;q=0.9",
+                "X-YouTube-Client-Name":    "3",
+                "X-YouTube-Client-Version": profile["client_version"],
+                "X-Goog-Visitor-Id":        profile["visitor_id"],
+            },
+            "youtube_include_dash_manifest": False,
+            "youtube_include_hls_manifest":  True,
+        }
+        # NOTE: Never pass cookiesfrombrowser with Android UA — causes bot detection
+
     if proxy:
         base["proxy"] = proxy
-
     if extra_opts:
         base.update(extra_opts)
     return base
@@ -574,8 +674,16 @@ def _get_downloaded_file(video_id: str, prefer_m4a: bool = False) -> Optional[st
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CORE DOWNLOAD
+#  Attempt order:
+#    1. Android client  (no cookies) — works for most public videos
+#    2. Cookie file + web client     — fallback for age-gated / restricted
 # ══════════════════════════════════════════════════════════════════════════════
 async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
+    # Hard guard — never process Instagram URLs through this module
+    if "instagram.com" in link.lower():
+        logger.error(f"❌ Rejected Instagram URL in YouTube downloader: {link}")
+        return None
+
     video_id = extract_video_id(link)
     if not video_id:
         logger.error(f"Cannot extract video ID from: {link}")
@@ -586,11 +694,9 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
         logger.info(f"📁 Reusing cached: {existing}")
         return existing
 
-    cookie_file = await get_cookies()
-
-    def _build_opts(cf):
-        extra = (
-            {
+    def _format_extra(audio: bool) -> dict:
+        if audio:
+            return {
                 "format": "bestaudio[ext=m4a]/bestaudio",
                 "postprocessors": [{
                     "key":              "FFmpegExtractAudio",
@@ -598,35 +704,49 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                     "preferredquality": "192",
                 }],
             }
-            if is_audio
-            else {
-                "format":              "best[ext=mp4]/best",
-                "merge_output_format": "mp4",
-            }
-        )
-        return get_ytdlp_opts(extra, use_cookie_file=cf)
+        return {"format": "best[ext=mp4]/best", "merge_output_format": "mp4"}
 
-    ydl_opts = _build_opts(cookie_file)
-    loop     = asyncio.get_event_loop()
+    loop = asyncio.get_event_loop()
 
+    # ── Attempt 1: Android client, no cookies ────────────────────────────────
+    logger.info(f"🎵 Downloading {'audio' if is_audio else 'video'} (Android client): {link}")
+    ydl_opts = get_ytdlp_opts(_format_extra(is_audio), use_cookie_file=None)
+    try:
+        await asyncio.sleep(random.uniform(0.5, 2.0))
+        async with DOWNLOAD_SEMAPHORE:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                await loop.run_in_executor(None, lambda: ydl.extract_info(link, download=True))
+        fp = _get_downloaded_file(video_id)
+        if fp:
+            logger.info(f"✅ Download OK (Android client): {fp}")
+            return fp
+        logger.warning("Android client: finished but file not found — trying cookie fallback")
+    except Exception as e:
+        logger.warning(f"Android client attempt failed: {str(e)[:200]}")
+
+    # ── Attempt 2: Cookie file + desktop web client ───────────────────────────
+    logger.info("⚙️  Falling back to cookie-based web client ...")
+    cookie_file = await get_cookies()
+    if not cookie_file:
+        logger.warning("No valid cookies available – cannot use cookie fallback")
+        return None
+
+    ydl_opts = get_ytdlp_opts(_format_extra(is_audio), use_cookie_file=cookie_file)
     for attempt in range(2):
         try:
-            await asyncio.sleep(random.uniform(0.5, 2.5))
+            await asyncio.sleep(random.uniform(1.0, 3.0))
             async with DOWNLOAD_SEMAPHORE:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    await loop.run_in_executor(
-                        None, lambda: ydl.extract_info(link, download=True)
-                    )
+                    await loop.run_in_executor(None, lambda: ydl.extract_info(link, download=True))
             fp = _get_downloaded_file(video_id)
             if fp:
-                logger.info(f"✅ Download OK: {fp}")
+                logger.info(f"✅ Download OK (cookie fallback): {fp}")
                 return fp
-            logger.error("Download finished but file not found on disk")
+            logger.error("Cookie fallback: file not found after download")
             return None
-
         except Exception as e:
             if is_auth_error(e) and AUTO_REFRESH_COOKIES and attempt == 0:
-                logger.warning(f"🤖 Auth/robot detected (attempt {attempt+1}) – refreshing ...")
+                logger.warning(f"🤖 Auth/robot detected (cookie attempt {attempt+1}) – refreshing ...")
                 clear_old_cookies()
                 await send_to_log_group(
                     text=(
@@ -638,11 +758,11 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                 new_cf = await refresh_cookies_from_browser(reason="Robot/auth during download")
                 if new_cf:
                     logger.info("✅ Fresh cookies – retrying ...")
-                    ydl_opts = _build_opts(new_cf)
+                    ydl_opts = get_ytdlp_opts(_format_extra(is_audio), use_cookie_file=new_cf)
                     continue
                 logger.error("Cookie regen failed – aborting")
                 return None
-            logger.error(f"Download error (attempt {attempt+1}): {str(e)[:300]}")
+            logger.error(f"Download error (cookie attempt {attempt+1}): {str(e)[:300]}")
             return None
 
     return None
@@ -664,6 +784,8 @@ async def wait_for_partial_file(
         await asyncio.sleep(check_interval)
 
 async def download_song_stream(link: str) -> Tuple[Optional[str], Optional[asyncio.Task]]:
+    if "instagram.com" in link.lower():
+        return None, None
     video_id = extract_video_id(link)
     if not video_id:
         return None, None
@@ -672,8 +794,8 @@ async def download_song_stream(link: str) -> Tuple[Optional[str], Optional[async
     if existing:
         return existing, None
 
-    cookie_file   = await get_cookies()
-    ydl_opts      = get_ytdlp_opts({"format": STREAM_FORMAT}, use_cookie_file=cookie_file)
+    # Try Android client first for streaming
+    ydl_opts      = get_ytdlp_opts({"format": STREAM_FORMAT}, use_cookie_file=None)
     expected_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.m4a")
     loop          = asyncio.get_event_loop()
 
@@ -720,12 +842,14 @@ async def test_cookie_with_playurl(retries: int = 2):
     test_dir = os.path.join(os.getcwd(), "cookie_test")
     os.makedirs(test_dir, exist_ok=True)
     video_id  = extract_video_id(PLAY_URL)
+
+    # Test with Android client first (no cookies needed)
     test_opts = get_ytdlp_opts(
         {
             "outtmpl": os.path.join(test_dir, "%(id)s.%(ext)s"),
             "format":  "bestaudio[ext=m4a]/bestaudio",
         },
-        use_cookie_file=COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
+        use_cookie_file=None,
     )
     try:
         loop = asyncio.get_event_loop()
@@ -758,34 +882,21 @@ async def test_cookie_with_playurl(retries: int = 2):
                     f"📦 Size : `{size_kb} KB`\n#CookieTest"
                 )
             )
-            try: os.remove(file_path)
-            except Exception: pass
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
         else:
             logger.error("❌ Cookie test FAILED – file not found")
-            clear_old_cookies()
-            new_cf = await refresh_cookies_from_browser(reason="PLAY_URL test: file not found")
-            if new_cf:
-                await test_cookie_with_playurl(retries=retries - 1)
-
+            await send_to_log_group(
+                text=f"❌ **Cookie Auto-Test: File Not Found**\nURL: `{PLAY_URL}`\n#CookieTest"
+            )
     except Exception as e:
         err = str(e)
         logger.error(f"Cookie auto-test error: {err}")
-        if is_auth_error(e):
-            clear_old_cookies()
-            await send_to_log_group(
-                text=(
-                    f"⚠️ **Robot/Auth During PLAY_URL Test**\n"
-                    f"⚠️ Error : `{err[:200]}`\n"
-                    f"🔄 Regenerating ...\n#YouTubeCookies"
-                )
-            )
-            new_cf = await refresh_cookies_from_browser(reason="Robot during PLAY_URL test")
-            if new_cf:
-                await test_cookie_with_playurl(retries=retries - 1)
-        else:
-            await send_to_log_group(
-                text=f"❌ **Cookie Auto-Test Error**\n⚠️ `{err[:300]}`\n#CookieTest"
-            )
+        await send_to_log_group(
+            text=f"❌ **Cookie Auto-Test Error**\n⚠️ `{err[:300]}`\n#CookieTest"
+        )
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  UTILITY
@@ -805,11 +916,10 @@ async def shell_cmd(cmd):
     return out.decode("utf-8")
 
 async def check_file_size(link: str) -> Optional[int]:
+    if "instagram.com" in link.lower():
+        return None
     try:
-        ydl_opts = get_ytdlp_opts(
-            {"quiet": True},
-            use_cookie_file=COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
-        )
+        ydl_opts = get_ytdlp_opts({"quiet": True}, use_cookie_file=None)
         loop = asyncio.get_event_loop()
         def _get():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -838,9 +948,19 @@ class YouTubeAPI:
         )
         self.reg = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-9?]*[ -/]*[@-~])")
 
+    def _is_youtube(self, link: str) -> bool:
+        """Reject non-YouTube links at the class level."""
+        if not link:
+            return False
+        if "instagram.com" in link.lower():
+            return False
+        return True
+
     async def exists(self, link: str, videoid: Union[bool, str] = None):
         if videoid:
             link = self.base + link
+        if not self._is_youtube(link):
+            return False
         return bool(re.search(self.regex, link))
 
     async def url(self, message_1: Message) -> Union[str, None]:
@@ -860,34 +980,55 @@ class YouTubeAPI:
         return None
 
     async def details(self, link: str, videoid: Union[bool, str] = None):
-        if videoid: link = self.base + link
-        if "&" in link: link = link.split("&")[0]
+        if videoid:
+            link = self.base + link
+        if not self._is_youtube(link):
+            return None
+        if "&" in link:
+            link = link.split("&")[0]
         results = VideosSearch(link, limit=1)
         for r in (await results.next())["result"]:
             duration_sec = int(time_to_seconds(r["duration"])) if r["duration"] else 0
-            return r["title"], r["duration"], duration_sec, \
-                   r["thumbnails"][0]["url"].split("?")[0], r["id"]
+            return (
+                r["title"], r["duration"], duration_sec,
+                r["thumbnails"][0]["url"].split("?")[0], r["id"]
+            )
 
     async def title(self, link: str, videoid: Union[bool, str] = None):
-        if videoid: link = self.base + link
-        if "&" in link: link = link.split("&")[0]
+        if videoid:
+            link = self.base + link
+        if not self._is_youtube(link):
+            return None
+        if "&" in link:
+            link = link.split("&")[0]
         for r in (await VideosSearch(link, limit=1).next())["result"]:
             return r["title"]
 
     async def duration(self, link: str, videoid: Union[bool, str] = None):
-        if videoid: link = self.base + link
-        if "&" in link: link = link.split("&")[0]
+        if videoid:
+            link = self.base + link
+        if not self._is_youtube(link):
+            return None
+        if "&" in link:
+            link = link.split("&")[0]
         for r in (await VideosSearch(link, limit=1).next())["result"]:
             return r["duration"]
 
     async def thumbnail(self, link: str, videoid: Union[bool, str] = None):
-        if videoid: link = self.base + link
-        if "&" in link: link = link.split("&")[0]
+        if videoid:
+            link = self.base + link
+        if not self._is_youtube(link):
+            return None
+        if "&" in link:
+            link = link.split("&")[0]
         for r in (await VideosSearch(link, limit=1).next())["result"]:
             return r["thumbnails"][0]["url"].split("?")[0]
 
     async def video(self, link: str, videoid: Union[bool, str] = None):
-        if videoid: link = self.base + link
+        if videoid:
+            link = self.base + link
+        if not self._is_youtube(link):
+            return 0, "Not a YouTube URL"
         try:
             f = await download_video(link)
             return (1, f) if f else (0, "Video download failed")
@@ -895,11 +1036,13 @@ class YouTubeAPI:
             return 0, f"Video failed: {str(e)[:100]}"
 
     async def playlist(self, link, limit, user_id, videoid: Union[bool, str] = None):
-        if videoid: link = self.listbase + link
-        if "&" in link: link = link.split("&")[0]
+        if videoid:
+            link = self.listbase + link
+        if "&" in link:
+            link = link.split("&")[0]
         ydl_opts = get_ytdlp_opts(
             {"quiet": True, "extract_flat": True, "playlistend": limit},
-            use_cookie_file=COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
+            use_cookie_file=None,
         )
         loop = asyncio.get_event_loop()
         try:
@@ -913,8 +1056,12 @@ class YouTubeAPI:
             return []
 
     async def track(self, link: str, videoid: Union[bool, str] = None):
-        if videoid: link = self.base + link
-        if "&" in link: link = link.split("&")[0]
+        if videoid:
+            link = self.base + link
+        if not self._is_youtube(link):
+            return None, None
+        if "&" in link:
+            link = link.split("&")[0]
         for r in (await VideosSearch(link, limit=1).next())["result"]:
             return {
                 "title":        r["title"],
@@ -925,12 +1072,13 @@ class YouTubeAPI:
             }, r["id"]
 
     async def formats(self, link: str, videoid: Union[bool, str] = None):
-        if videoid: link = self.base + link
-        if "&" in link: link = link.split("&")[0]
-        ydl_opts = get_ytdlp_opts(
-            {"quiet": True},
-            use_cookie_file=COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
-        )
+        if videoid:
+            link = self.base + link
+        if not self._is_youtube(link):
+            return [], link
+        if "&" in link:
+            link = link.split("&")[0]
+        ydl_opts = get_ytdlp_opts({"quiet": True}, use_cookie_file=None)
         loop = asyncio.get_event_loop()
         try:
             def _get():
@@ -955,8 +1103,10 @@ class YouTubeAPI:
             return [], link
 
     async def slider(self, link: str, query_type: int, videoid: Union[bool, str] = None):
-        if videoid: link = self.base + link
-        if "&" in link: link = link.split("&")[0]
+        if videoid:
+            link = self.base + link
+        if "&" in link:
+            link = link.split("&")[0]
         result = (await VideosSearch(link, limit=10).next()).get("result")
         r = result[query_type]
         return r["title"], r["duration"], r["thumbnails"][0]["url"].split("?")[0], r["id"]
@@ -974,6 +1124,8 @@ class YouTubeAPI:
     ) -> tuple:
         if videoid:
             link = self.base + link
+        if not self._is_youtube(link):
+            return None, False
         try:
             if video:
                 f = await download_video(link)
@@ -989,7 +1141,7 @@ class YouTubeAPI:
 # ══════════════════════════════════════════════════════════════════════════════
 async def startup_services():
     if not ENABLE_YT_COOKIES:
-        logger.info("YouTube cookie handling disabled.")
+        logger.info("YouTube cookie handling disabled – using Android client only.")
         return
 
     logger.info("🚀 Starting YouTube services ...")
@@ -1006,11 +1158,18 @@ async def startup_services():
         if cf:
             logger.info(f"✅ Cookies ready: {cf}")
         else:
-            logger.warning("⚠️ Startup cookie generation failed – will retry on first download")
+            logger.warning(
+                "⚠️ Startup cookie generation failed.\n"
+                "   Downloads will use Android innertube client (no cookies).\n"
+                "   Set YT_GOOGLE_EMAIL + YT_GOOGLE_PASSWORD for authenticated cookies,\n"
+                "   or set ENABLE_YT_COOKIES=false to suppress this warning."
+            )
             await send_to_log_group(
                 text=(
-                    "⚠️ **Startup Cookie Generation Failed**\n"
-                    "Will retry automatically on first download.\n#YouTubeCookies"
+                    "⚠️ **YouTube Startup: Cookie Generation Failed**\n"
+                    "Downloads will use Android client (no auth cookies).\n"
+                    "Set `YT_GOOGLE_EMAIL` + `YT_GOOGLE_PASSWORD` for full auth.\n"
+                    "#YouTubeCookies"
                 )
             )
     else:
