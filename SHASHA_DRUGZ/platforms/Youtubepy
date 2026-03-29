@@ -1,17 +1,3 @@
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  Youtube.py — SHASHA_DRUGZ                                                  ║
-# ║                                                                              ║
-# ║  BASE: Reference working code (VIPMUSIC) — proven stable                   ║
-# ║  ADAPTED: SHASHA_DRUGZ imports + improvements                               ║
-# ║                                                                              ║
-# ║  KEY FIX: Cookie generation LOCK                                            ║
-# ║    • _COOKIE_LOCK ensures only ONE generation at a time                    ║
-# ║  PATCHES APPLIED:                                                           ║
-# ║    • is_cookie_file_expired — pure expiry check (no buffer/timer)          ║
-# ║    • get_cookies — strict & clean with force_refresh support               ║
-# ║    • download auth fallback — preserved exactly                             ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
-
 import asyncio
 import os
 import re
@@ -66,10 +52,12 @@ os.makedirs(YT_CACHE_DIR, exist_ok=True)
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(3)
 
 # KEY FIX: Only ONE cookie generation at a time
+# Without this, multiple simultaneous song requests each trigger
+# their own Playwright launch → profile corruption → all fail
 _COOKIE_LOCK = asyncio.Lock()
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PROXY HELPERS
+#  PROXY HELPERS (reference code style — simple random choice)
 # ══════════════════════════════════════════════════════════════════════════════
 def _parse_proxy_list(proxy_env: str):
     if not proxy_env:
@@ -140,7 +128,7 @@ async def send_cookie_file_to_log_group(reason: str = ""):
     caption = (
         f"🍪 **YouTube Cookie Regenerated**\n\n"
         f"📅 Time   : `{timestamp}`\n"
-        f"📄 File   : `youtube_cookies.txt`\n"
+        f"📄 File   : `youtube_cookie.txt`\n"
         f"📝 Reason : {reason or 'On-demand refresh'}\n\n"
         f"#YouTubeCookies"
     )
@@ -149,7 +137,7 @@ async def send_cookie_file_to_log_group(reason: str = ""):
         with open(COOKIE_FILE, "rb") as f:
             await app.send_document(
                 chat_id=LOG_GROUP_ID,
-                document=pyrogram.types.InputFile(f, file_name="youtube_cookies.txt"),
+                document=pyrogram.types.InputFile(f, file_name="youtube_cookie.txt"),
                 caption=caption,
             )
         logger.info(f"✅ Cookie sent to log group | reason={reason}")
@@ -300,11 +288,14 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  EXTRACT COOKIES FROM BROWSER PROFILE
-#  _COOKIE_LOCK prevents parallel generation
+#  Uses _COOKIE_LOCK to prevent parallel generation (the main fix)
 # ══════════════════════════════════════════════════════════════════════════════
 async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Optional[str]:
+    # KEY FIX: acquire lock before generation
+    # If another coroutine is already generating, wait for it to finish
+    # then check if the cookie file is now valid (avoid double generation)
     async with _COOKIE_LOCK:
-        # After acquiring lock — check if another coroutine already refreshed
+        # After waiting for the lock, check if cookies are already fresh
         if os.path.exists(COOKIE_FILE) and verify_cookies_file(COOKIE_FILE) \
                 and not is_cookie_file_expired(COOKIE_FILE):
             logger.info("✅ Cookies already refreshed by another coroutine — reusing")
@@ -463,27 +454,19 @@ def get_cookie_min_expiry(filepath: str) -> Optional[int]:
         return None
 
 
-# PATCH 1: Pure expiry check — no buffer, no timer
 def is_cookie_file_expired(filepath: str) -> bool:
     if not os.path.exists(filepath):
-        logger.info("❌ Cookie file missing → expired")
         return True
     min_exp = get_cookie_min_expiry(filepath)
     if min_exp is None:
-        logger.warning("⚠️ Could not determine expiry → treating as expired")
+        logger.warning("Could not determine cookie expiry – treating as expired.")
         return True
     now = int(time.time())
     if min_exp < now:
-        logger.info(
-            f"🕐 Cookie EXPIRED at "
-            f"{datetime.datetime.utcfromtimestamp(min_exp).isoformat()}Z"
-        )
+        logger.info(f"🕐 Cookie expired at {datetime.datetime.utcfromtimestamp(min_exp).isoformat()}Z")
         return True
     remaining = min_exp - now
-    logger.info(
-        f"✅ Cookie VALID → expires in "
-        f"{remaining // 3600}h {(remaining % 3600) // 60}m"
-    )
+    logger.info(f"✅ Cookie valid for {remaining // 3600}h {(remaining % 3600) // 60}m")
     return False
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -514,27 +497,18 @@ def is_auth_error(exception: Exception) -> bool:
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAIN COOKIE GETTER
-#  PATCH 2: Strict & clean with proper force_refresh support
 # ══════════════════════════════════════════════════════════════════════════════
 async def get_cookies(force_refresh: bool = False) -> Optional[str]:
-    # Force refresh — used when bot detected / manual trigger
-    if force_refresh:
-        logger.warning("🔄 Force refreshing cookies...")
-        clear_old_cookies()
-        return await refresh_cookies_from_browser(
-            reason="Force refresh – auth/robot/manual"
-        )
-
-    # Normal flow
-    if os.path.exists(COOKIE_FILE):
+    if not force_refresh and os.path.exists(COOKIE_FILE):
         if verify_cookies_file(COOKIE_FILE) and not is_cookie_file_expired(COOKIE_FILE):
-            logger.info("✅ Using existing valid cookies")
+            logger.info("✅ Using existing (non-expired) cookies")
             return COOKIE_FILE
-        logger.warning("⚠️ Cookies invalid or expired → regenerating")
-        clear_old_cookies()
-
-    # Generate fresh cookies
-    return await refresh_cookies_from_browser(reason="Initial / expired")
+        else:
+            logger.warning("Existing cookies invalid or expired – regenerating ...")
+            if os.path.exists(COOKIE_FILE):
+                os.remove(COOKIE_FILE)
+    reason = "Force refresh – robot/auth detected" if force_refresh else "Initial / expired"
+    return await refresh_cookies_from_browser(reason=reason)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  VIDEO ID EXTRACTION
@@ -615,7 +589,6 @@ def _get_downloaded_file(video_id: str, prefer_m4a: bool = False) -> Optional[st
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CORE DOWNLOAD
-#  PATCH 3: Auth fallback preserved exactly
 # ══════════════════════════════════════════════════════════════════════════════
 async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
     video_id = extract_video_id(link)
@@ -673,7 +646,6 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
             return None
 
         except Exception as e:
-            # PATCH 3: Auth fallback — preserved exactly as requested
             if is_auth_error(e) and AUTO_REFRESH_COOKIES and attempt == 0:
                 logger.warning(
                     f"🤖 Robot/auth detected on attempt {attempt + 1} – "
