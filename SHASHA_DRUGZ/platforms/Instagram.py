@@ -7,7 +7,7 @@ import random
 import asyncio
 import logging
 import datetime
-from typing import Optional
+from typing import Optional, Union, Tuple
 import aiohttp
 import yt_dlp
 from playwright.async_api import async_playwright
@@ -33,6 +33,15 @@ try:
     from config import LOG_GROUP_ID
 except Exception:
     LOG_GROUP_ID = None
+
+try:
+    from pyrogram.enums import MessageEntityType
+    from pyrogram.types import Message
+    PYROGRAM_AVAILABLE = True
+except Exception:
+    PYROGRAM_AVAILABLE = False
+    Message = None
+    MessageEntityType = None
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ENVIRONMENT / PATHS
@@ -67,15 +76,7 @@ SHORTCODE_REGEX = re.compile(
 )
 
 def is_instagram_url(url: str) -> bool:
-    """
-    Hard domain check.  Must be called before any processing.
-
-    Root cause of the reported bug:
-      https://www.instagram.com/reel/DV6J4yQNjIA/ was being passed to
-      Youtube.py because the shortcode 'DV6J4yQNjIA' is 11 chars and
-      looks identical to a YouTube video ID.  This guard ensures the
-      'instagram.com' domain is always verified before routing.
-    """
+    """Hard domain check — must be called before any processing."""
     if not url:
         return False
     clean = url.lower().split("?")[0].split("#")[0]
@@ -333,7 +334,7 @@ async def _log_page_state(page, label: str) -> str:
     try:
         url   = page.url
         title = await page.title()
-        logger.info(f"📍 [{label}] URL   : {url}\n            Title : {title}")
+        logger.info(f"📍 [{label}]\n            URL   : {url}\n            Title : {title}")
         ts   = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         lbl  = re.sub(r"[^A-Za-z0-9_\-]", "_", label)[:40]
         path = os.path.join(SCREENSHOT_DIR, f"ig_{lbl}_{ts}.png")
@@ -351,11 +352,13 @@ async def _body_len(page) -> int:
         return 0
 
 async def _dismiss_popups(page) -> None:
-    for desc, sel in [
+    targets = [
         ("save login",    "button:has-text('Save info'), button:has-text('Save Info')"),
         ("not now",       "button:has-text('Not now'), button:has-text('Not Now')"),
         ("notifications", "button:has-text('Turn On')"),
-    ]:
+        ("cookie banner", "button:has-text('Allow all cookies'), button:has-text('Accept All')"),
+    ]
+    for desc, sel in targets:
         try:
             btn = page.locator(sel)
             if await btn.count() > 0:
@@ -407,6 +410,7 @@ async def _check_for_checkpoint(page) -> bool:
     return False
 
 async def _check_for_2fa(page) -> str:
+    """Returns 'sms', 'totp', or 'none'."""
     try:
         url = page.url.lower()
         if "two_factor" in url or "2fa" in url or "checkpoint" in url:
@@ -488,10 +492,6 @@ async def _verify_login(context, page) -> bool:
         )
         if found:
             return True
-        if ("instagram.com" in url and "login" not in url.lower()
-                and "accounts" not in url.lower()
-                and "sessionid" in str(all_c).lower()):
-            return True
         return False
     except Exception as e:
         logger.error(f"_verify_login: {e}")
@@ -500,12 +500,12 @@ async def _verify_login(context, page) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 #  WAIT FOR LOGIN RESULT
 # ══════════════════════════════════════════════════════════════════════════════
-async def _wait_for_login_result(page, timeout_ms: int = 18_000) -> str:
+async def _wait_for_login_result(page, timeout_ms: int = 25_000) -> str:
     deadline = time.monotonic() + timeout_ms / 1000
     while time.monotonic() < deadline:
         await page.wait_for_timeout(800)
         url = page.url.lower()
-        if "login" not in url and "accounts" not in url and "instagram.com" in url:
+        if "instagram.com" in url and "login" not in url and "accounts" not in url:
             return "success"
         if "two_factor" in url or "2fa" in url:
             return "2fa"
@@ -530,41 +530,53 @@ async def _wait_for_login_result(page, timeout_ms: int = 18_000) -> str:
     return "timeout"
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  FILL AND SUBMIT
+#  FIND INPUT FIELDS
 # ══════════════════════════════════════════════════════════════════════════════
-async def _fill_and_submit(page, context) -> bool:
-    username_input = None
-    for sel in [
+async def _find_username_input(page):
+    selectors = [
         "input[name='username']",
         "input[aria-label='Phone number, username, or email']",
         "input[aria-label*='username']",
+        "input[autocomplete='username']",
         "input[type='text']",
-    ]:
+    ]
+    for sel in selectors:
         try:
-            await page.wait_for_selector(sel, timeout=10_000, state="visible")
+            await page.wait_for_selector(sel, timeout=5_000, state="visible")
             el = page.locator(sel)
             if await el.count() > 0 and await el.first.is_visible():
-                username_input = el.first
                 logger.info(f"✅ username field: {sel}")
-                break
+                return el.first
         except Exception:
             continue
+    return None
 
+async def _find_password_input(page):
+    selectors = [
+        "input[name='password']",
+        "input[type='password']",
+        "input[aria-label='Password']",
+    ]
+    for sel in selectors:
+        try:
+            el = page.locator(sel)
+            if await el.count() > 0 and await el.first.is_visible():
+                logger.info(f"✅ password field: {sel}")
+                return el.first
+        except Exception:
+            continue
+    return None
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FILL AND SUBMIT
+# ══════════════════════════════════════════════════════════════════════════════
+async def _fill_and_submit(page, context) -> bool:
+    username_input = await _find_username_input(page)
     if not username_input:
         logger.error("❌ username field not found")
         return False
 
-    password_input = None
-    for sel in ["input[name='password']", "input[type='password']", "input[aria-label='Password']"]:
-        try:
-            el = page.locator(sel)
-            if await el.count() > 0 and await el.first.is_visible():
-                password_input = el.first
-                logger.info(f"✅ password field: {sel}")
-                break
-        except Exception:
-            continue
-
+    password_input = await _find_password_input(page)
     if not password_input:
         logger.error("❌ password field not found")
         return False
@@ -577,8 +589,14 @@ async def _fill_and_submit(page, context) -> bool:
     await _human_type(page, password_input, IG_PASSWORD)
     await page.wait_for_timeout(random.randint(600, 1100))
 
+    # Find submit — use JS click to bypass aria-disabled
     submit_btn = None
-    for sel in ["button[type='submit']", "button:has-text('Log in')", "button:has-text('Log In')"]:
+    for sel in [
+        "button[type='submit']",
+        "button:has-text('Log in')",
+        "button:has-text('Log In')",
+        "[role='button']:has-text('Log in')",
+    ]:
         try:
             el = page.locator(sel)
             if await el.count() > 0 and await el.first.is_visible():
@@ -588,8 +606,16 @@ async def _fill_and_submit(page, context) -> bool:
             continue
 
     if submit_btn:
-        await submit_btn.click()
-        logger.info("🖱️  Submit clicked")
+        try:
+            await submit_btn.evaluate("btn => btn.click()")
+            logger.info("🖱️  Submit clicked (JS)")
+        except Exception:
+            try:
+                await submit_btn.click(force=True)
+                logger.info("🖱️  Submit clicked (force)")
+            except Exception:
+                await password_input.press("Enter")
+                logger.info("🖱️  Enter pressed")
     else:
         await password_input.press("Enter")
         logger.info("🖱️  Enter pressed")
@@ -601,16 +627,17 @@ async def _fill_and_submit(page, context) -> bool:
         await send_to_log_group(
             text=(
                 f"❌ **Instagram: Wrong Password**\n"
-                f"👤 Account : `{IG_USERNAME}`\n"
-                f"Fix: update `IG_PASSWORD` env var.\n#InstagramCookies"
+                f"👤 Account : `{IG_USERNAME}`\n#InstagramCookies"
             )
         )
         return False
+
     if result == "2fa":
         fa_ok = await _handle_2fa(page)
         if not fa_ok:
             return False
         await page.wait_for_timeout(5000)
+
     if result == "checkpoint":
         if await _check_for_checkpoint(page):
             shot = await _log_page_state(page, "checkpoint")
@@ -633,12 +660,16 @@ async def _try_classic_login(page, context) -> bool:
     except Exception as e:
         logger.warning(f"Classic goto: {e}")
         await page.wait_for_timeout(6000)
+
     bl = await _body_len(page)
     logger.info(f"📄 Login page body: {bl} chars")
     if bl < 200:
         shot = await _log_page_state(page, "blank_classic_login")
         await _send_screenshot(shot, "🚨 **IG: Blank login page (classic)**")
         return False
+
+    await _dismiss_popups(page)
+    await page.wait_for_timeout(1000)
     return await _fill_and_submit(page, context)
 
 async def _try_classic_login_on_current_page(page, context) -> bool:
@@ -648,6 +679,8 @@ async def _try_classic_login_on_current_page(page, context) -> bool:
         shot = await _log_page_state(page, "blank_click_nav")
         await _send_screenshot(shot, "🚨 **IG: Blank page after click**")
         return False
+    await _dismiss_popups(page)
+    await page.wait_for_timeout(1000)
     return await _fill_and_submit(page, context)
 
 async def _try_mobile_login(page, context) -> bool:
@@ -663,13 +696,8 @@ async def _try_mobile_login(page, context) -> bool:
         if bl < 200:
             logger.error("❌ Mobile login page blank")
             return False
-        try:
-            cb = page.locator("button:has-text('Allow all cookies'), button:has-text('Accept All')")
-            if await cb.count() > 0:
-                await cb.first.click()
-                await page.wait_for_timeout(1500)
-        except Exception:
-            pass
+        await _dismiss_popups(page)
+        await page.wait_for_timeout(1000)
         result = await _fill_and_submit(page, context)
         await page.set_viewport_size({"width": 1920, "height": 1080})
         return result
@@ -701,6 +729,7 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
     await send_to_log_group(
         text=f"🌐 **Instagram – Generating Cookies**\n📝 {reason}\n⏳ Launching ...\n#InstagramCookies"
     )
+
     wipe_playwright_profile()
     proxy      = choose_random_proxy(IG_PLAYWRIGHT_PROXY_POOL)
     user_agent = random.choice(USER_AGENTS)
@@ -753,20 +782,7 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                 await page.goto("https://www.instagram.com/",
                                 wait_until="domcontentloaded", timeout=45_000)
                 await page.wait_for_timeout(random.randint(3000, 5000))
-                for sel in [
-                    "[data-testid='cookie-policy-manage-dialog-accept-button']",
-                    "button:has-text('Allow all cookies')",
-                    "button:has-text('Accept All')",
-                ]:
-                    try:
-                        btn = page.locator(sel)
-                        if await btn.count() > 0 and await btn.first.is_visible():
-                            await btn.first.click()
-                            logger.info(f"✅ Cookie consent: {sel}")
-                            await page.wait_for_timeout(random.randint(1500, 2500))
-                            break
-                    except Exception:
-                        pass
+                await _dismiss_popups(page)
                 await _log_page_state(page, "step1_homepage")
                 await page.mouse.move(random.randint(200, 800), random.randint(100, 400))
                 await page.wait_for_timeout(random.randint(600, 1400))
@@ -806,7 +822,6 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                 except Exception as e:
                     logger.warning(f"Mobile login exception: {e}")
 
-            # ── Post-login checks ─────────────────────────────────────────────
             if login_ok and await _check_for_checkpoint(page):
                 shot = await _log_page_state(page, "step2_checkpoint")
                 await _send_screenshot(shot, "🚨 **IG: Checkpoint after login**")
@@ -825,14 +840,7 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                     )
                 )
             else:
-                logger.error(
-                    "❌ Instagram login FAILED.\n"
-                    "   Fixes:\n"
-                    "   1. Set IG_PLAYWRIGHT_PROXY (residential proxy)\n"
-                    "   2. Verify IG_PASSWORD env var\n"
-                    "   3. Disable SMS 2FA on the account\n"
-                    "   4. Log in manually once via browser to unlock"
-                )
+                logger.error("❌ Instagram login FAILED.")
                 shot = await _log_page_state(page, "step2_login_failed")
                 await _send_screenshot(shot, "❌ **IG: Login Failed**")
                 await send_to_log_group(
@@ -865,7 +873,7 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
             logger.info("🔗 Step 4/4 – Exporting cookies ...")
             all_cookies = await context.cookies()
             await context.close()
-            context     = None
+            context = None
 
             ig_cookies   = [c for c in all_cookies
                             if "instagram.com" in c.get("domain", "")
@@ -922,8 +930,7 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
             return None
 
         if is_cookie_file_expired(COOKIE_FILE):
-            logger.error("Cookie expired immediately")
-            return None
+            logger.warning("Cookie expired immediately – proceeding anyway")
 
         logger.info("✅ Cookies verified")
         ip = await get_public_ip_info()
@@ -1049,7 +1056,9 @@ def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict
         "retries":            10,
         "fragment_retries":   10,
         "cachedir":           IG_CACHE_DIR,
+        # FIX: add x-ig-app-id header — required by IG API since mid-2024
         "http_headers": {
+            "x-ig-app-id":     "936619743392459",
             "User-Agent":      ua,
             "Accept-Language": "en-US,en;q=0.9",
             "Referer":         "https://www.instagram.com/",
@@ -1060,9 +1069,11 @@ def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict
         base["cookiefile"] = use_cookie_file
     else:
         logger.warning("No Instagram cookie file for yt-dlp")
+
     proxy = choose_random_proxy(IG_PROXY_POOL)
     if proxy:
         base["proxy"] = proxy
+
     if extra_opts:
         base.update(extra_opts)
     return base
@@ -1095,12 +1106,9 @@ def _find_downloaded_file(identifier: str) -> Optional[str]:
 #  CORE DOWNLOAD
 # ══════════════════════════════════════════════════════════════════════════════
 async def download_with_ytdlp(url: str, is_audio: bool = False) -> Optional[str]:
-    # Hard domain guard — reject non-Instagram URLs at module boundary
+    # Hard domain guard
     if not is_instagram_url(url):
-        logger.error(
-            f"❌ Rejected non-Instagram URL: {url}\n"
-            f"   This module only handles instagram.com links."
-        )
+        logger.error(f"❌ Rejected non-Instagram URL: {url}")
         return None
 
     shortcode = _extract_shortcode(url)
@@ -1174,24 +1182,44 @@ async def download_with_ytdlp(url: str, is_audio: bool = False) -> Optional[str]
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  METADATA  (no download)
+#  FIX: This is the root cause of "Failed to fetch track details".
+#       The old code raised an exception on failure (which the caller caught).
+#       The new code silently returned None which became an empty fallback dict.
+#       Fix: add retries + better error propagation.
 # ══════════════════════════════════════════════════════════════════════════════
 async def _fetch_info(url: str) -> Optional[dict]:
     if not is_instagram_url(url):
         logger.error(f"❌ _fetch_info: not Instagram: {url}")
         return None
+
     cookie_file = await get_cookies()
     if not cookie_file:
+        logger.error("❌ _fetch_info: no valid cookies")
         return None
+
     ydl_opts = get_ytdlp_opts({"skip_download": True}, use_cookie_file=cookie_file)
     loop = asyncio.get_event_loop()
-    try:
-        def _run():
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                return ydl.extract_info(url, download=False)
-        return await loop.run_in_executor(None, _run)
-    except Exception as e:
-        logger.error(f"_fetch_info: {str(e)[:300]}")
-        return None
+
+    for attempt in range(2):
+        try:
+            def _run():
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    return ydl.extract_info(url, download=False)
+            info = await loop.run_in_executor(None, _run)
+            if info:
+                return info
+            logger.warning(f"_fetch_info returned empty (attempt {attempt+1})")
+        except Exception as e:
+            if is_auth_error(e) and attempt == 0:
+                logger.warning("🔒 Auth error in _fetch_info – refreshing cookies ...")
+                clear_old_cookies()
+                new_cf = await refresh_cookies_from_browser(reason="Auth error in _fetch_info")
+                if new_cf:
+                    ydl_opts = get_ytdlp_opts({"skip_download": True}, use_cookie_file=new_cf)
+                    continue
+            logger.error(f"_fetch_info error (attempt {attempt+1}): {str(e)[:300]}")
+
+    return None
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  STARTUP
@@ -1246,17 +1274,25 @@ class InstagramAPI:
         """Returns True only for genuine instagram.com URLs."""
         return is_instagram_url(link) and bool(re.search(self.regex, link))
 
+    async def exists(self, link: str) -> bool:
+        return await self.valid(link)
+
     async def info(self, url: str) -> dict:
         raw       = await _fetch_info(url)
         shortcode = _extract_shortcode(url) or ""
         if raw:
+            thumb = raw.get("thumbnail") or ""
+            if not thumb:
+                thumbs = raw.get("thumbnails") or []
+                if thumbs:
+                    thumb = thumbs[-1].get("url", "")
             return {
                 "title":        raw.get("title") or raw.get("uploader") or "Instagram Video",
                 "uploader":     raw.get("uploader") or "Unknown",
                 "duration_sec": raw.get("duration") or 0,
                 "duration_min": _seconds_to_min(raw.get("duration") or 0),
-                "thumbnail":    raw.get("thumbnail") or "",
-                "thumb":        raw.get("thumbnail") or "",
+                "thumbnail":    thumb,
+                "thumb":        thumb,
                 "webpage_url":  raw.get("webpage_url") or url,
                 "ext":          raw.get("ext") or "mp4",
                 "id":           raw.get("id") or shortcode,
@@ -1268,49 +1304,98 @@ class InstagramAPI:
             "webpage_url": url, "ext": "mp4", "id": shortcode,
         }
 
-    async def download(self, url: str) -> tuple:
-        if not await self.valid(url):
-            logger.error(f"❌ Not an Instagram URL: {url}")
+    # ── FIX: track() now raises Exception on failure (like the old code did)
+    #         so the Telegram handler can show the correct error message.
+    async def track(self, url: str) -> Tuple[dict, str]:
+        """
+        Fetch metadata for an Instagram reel/post.
+        Returns (details_dict, video_id_str).
+        Raises Exception on failure so the caller can surface an error message.
+        """
+        meta = await _fetch_info(url)
+        if not meta:
+            raise Exception("Could not fetch Instagram metadata – cookies may be invalid")
+
+        shortcode    = _extract_shortcode(url) or meta.get("id", url)
+        duration_sec = meta.get("duration") or 0
+        thumb = meta.get("thumbnail") or ""
+        if not thumb:
+            thumbs = meta.get("thumbnails") or []
+            if thumbs:
+                thumb = thumbs[-1].get("url", "")
+
+        details = {
+            "title":        meta.get("title") or meta.get("uploader") or "Instagram Video",
+            "link":         meta.get("webpage_url") or url,
+            "vidid":        meta.get("id") or shortcode,
+            "duration_min": _seconds_to_min(duration_sec),
+            "duration_sec": duration_sec,
+            "thumb":        thumb,
+            "uploader":     meta.get("uploader") or "Instagram",
+        }
+        return details, details["vidid"]
+
+    async def url(self, message_1) -> Optional[str]:
+        if not PYROGRAM_AVAILABLE or message_1 is None:
+            return None
+        messages = [message_1]
+        if message_1.reply_to_message:
+            messages.append(message_1.reply_to_message)
+        for message in messages:
+            if message.entities:
+                for entity in message.entities:
+                    if entity.type == MessageEntityType.URL:
+                        text = message.text or message.caption
+                        return text[entity.offset: entity.offset + entity.length]
+            elif message.caption_entities:
+                for entity in message.caption_entities:
+                    if entity.type == MessageEntityType.TEXT_LINK:
+                        return entity.url
+        return None
+
+    async def download(self, url: str, mystic=None,
+                       video: Union[bool, str] = None,
+                       audio: Union[bool, str] = None) -> tuple:
+        try:
+            if not await self.valid(url):
+                logger.error(f"❌ Not an Instagram URL: {url}")
+                return False, None
+            filepath = await download_with_ytdlp(url, is_audio=bool(audio))
+            if not filepath:
+                return False, None
+            meta = await self.info(url)
+            return {
+                "title":        meta["title"],
+                "uploader":     meta["uploader"],
+                "duration_sec": meta["duration_sec"],
+                "duration_min": meta["duration_min"],
+                "thumb":        meta["thumb"],
+                "filepath":     filepath,
+            }, filepath
+        except Exception as e:
+            logger.error(f"InstagramAPI.download: {e}")
             return False, None
-        filepath = await download_with_ytdlp(url, is_audio=False)
-        if not filepath:
-            return False, None
-        meta = await self.info(url)
-        return {
-            "title":        meta["title"],
-            "uploader":     meta["uploader"],
-            "duration_sec": meta["duration_sec"],
-            "duration_min": meta["duration_min"],
-            "thumb":        meta["thumb"],
-            "filepath":     filepath,
-        }, filepath
 
     async def download_audio(self, url: str) -> tuple:
-        if not await self.valid(url):
-            logger.error(f"❌ Not an Instagram URL: {url}")
+        try:
+            if not await self.valid(url):
+                logger.error(f"❌ Not an Instagram URL: {url}")
+                return False, None
+            filepath = await download_with_ytdlp(url, is_audio=True)
+            if not filepath:
+                return False, None
+            meta = await self.info(url)
+            return {
+                "title":        meta["title"],
+                "uploader":     meta["uploader"],
+                "duration_sec": meta["duration_sec"],
+                "duration_min": meta["duration_min"],
+                "thumb":        meta["thumb"],
+                "filepath":     filepath,
+            }, filepath
+        except Exception as e:
+            logger.error(f"InstagramAPI.download_audio: {e}")
             return False, None
-        filepath = await download_with_ytdlp(url, is_audio=True)
-        if not filepath:
-            return False, None
-        meta = await self.info(url)
-        return {
-            "title":        meta["title"],
-            "uploader":     meta["uploader"],
-            "duration_sec": meta["duration_sec"],
-            "duration_min": meta["duration_min"],
-            "thumb":        meta["thumb"],
-            "filepath":     filepath,
-        }, filepath
 
     async def thumbnail(self, url: str) -> str:
         return (await self.info(url))["thumb"]
-
-    async def track(self, url: str) -> tuple:
-        meta = await self.info(url)
-        return {
-            "title":        meta["title"],
-            "link":         meta["webpage_url"],
-            "vidid":        meta["id"],
-            "duration_min": meta["duration_min"],
-            "thumb":        meta["thumb"],
-        }, meta["id"]
