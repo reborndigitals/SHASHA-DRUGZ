@@ -8,7 +8,6 @@ import asyncio
 import logging
 import datetime
 from typing import Optional
-
 import aiohttp
 import yt_dlp
 from playwright.async_api import async_playwright
@@ -40,18 +39,17 @@ except Exception:
 # ══════════════════════════════════════════════════════════════════════════════
 ENABLE_IG_COOKIES    = os.getenv("ENABLE_IG_COOKIES", "true").lower() == "true"
 AUTO_REFRESH_COOKIES = True
+IG_PROXIES           = os.getenv("IG_PROXIES", "")
+IG_PLAYWRIGHT_PROXY  = os.getenv("IG_PLAYWRIGHT_PROXY", "")
+IG_USERNAME          = os.getenv("IG_USERNAME", "")
+IG_PASSWORD          = os.getenv("IG_PASSWORD", "")
+IG_TOTP_SECRET       = os.getenv("IG_TOTP_SECRET", "")
 
-IG_PROXIES          = os.getenv("IG_PROXIES", "")
-IG_PLAYWRIGHT_PROXY = os.getenv("IG_PLAYWRIGHT_PROXY", "")
-IG_USERNAME          = os.getenv("IG_USERNAME", "onixxghostt")
-IG_PASSWORD          = os.getenv("IG_PASSWORD", "143@Frnds")
-IG_TOTP_SECRET       = os.getenv("IG_TOTP_SECRET", "3IGFI5H7SACGQQVP7W7VCTCX76O6NDME")
-
-DOWNLOAD_DIR   = os.path.join(os.getcwd(), "downloads");    os.makedirs(DOWNLOAD_DIR,   exist_ok=True)
-COOKIES_DIR    = os.path.join(os.getcwd(), "cookies");      os.makedirs(COOKIES_DIR,    exist_ok=True)
+DOWNLOAD_DIR   = os.path.join(os.getcwd(), "downloads");      os.makedirs(DOWNLOAD_DIR,   exist_ok=True)
+COOKIES_DIR    = os.path.join(os.getcwd(), "cookies");        os.makedirs(COOKIES_DIR,    exist_ok=True)
 COOKIE_FILE    = os.path.join(COOKIES_DIR, "instagram_cookies.txt")
 IG_PROFILE_DIR = os.path.join(os.getcwd(), "ig_playwright_profile"); os.makedirs(IG_PROFILE_DIR, exist_ok=True)
-IG_CACHE_DIR   = os.path.join(os.getcwd(), "igcache");      os.makedirs(IG_CACHE_DIR,   exist_ok=True)
+IG_CACHE_DIR   = os.path.join(os.getcwd(), "igcache");        os.makedirs(IG_CACHE_DIR,   exist_ok=True)
 SCREENSHOT_DIR = os.path.join(os.getcwd(), "ig_screenshots"); os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(3)
@@ -70,15 +68,13 @@ SHORTCODE_REGEX = re.compile(
 
 def is_instagram_url(url: str) -> bool:
     """
-    Hard domain check.
+    Hard domain check.  Must be called before any processing.
 
     Root cause of the reported bug:
       https://www.instagram.com/reel/DV6J4yQNjIA/ was being passed to
       Youtube.py because the shortcode 'DV6J4yQNjIA' is 11 chars and
-      looks identical to a YouTube video ID.  The fix is to enforce
-      'instagram.com' must be in the URL string before this module
-      processes it — and to guard the public API methods with the same
-      check so mis-routed calls are caught early with a clear error.
+      looks identical to a YouTube video ID.  This guard ensures the
+      'instagram.com' domain is always verified before routing.
     """
     if not url:
         return False
@@ -193,8 +189,12 @@ async def get_public_ip_info() -> dict:
             ) as r:
                 if r.status == 200:
                     d = await r.json()
-                    return {"ip": d.get("ip"), "city": d.get("city"),
-                            "country": d.get("country_name"), "org": d.get("org")}
+                    return {
+                        "ip":      d.get("ip"),
+                        "city":    d.get("city"),
+                        "country": d.get("country_name"),
+                        "org":     d.get("org"),
+                    }
     except Exception as e:
         logger.error(f"get_public_ip_info: {e}")
     return {}
@@ -208,8 +208,10 @@ def clear_old_cookies():
             os.remove(COOKIE_FILE)
             logger.warning("🧹 Old Instagram cookies removed")
         for f in glob.glob(os.path.join(COOKIES_DIR, "instagram*")):
-            try: os.remove(f)
-            except Exception: pass
+            try:
+                os.remove(f)
+            except Exception:
+                pass
     except Exception as e:
         logger.error(f"clear_old_cookies: {e}")
 
@@ -226,8 +228,10 @@ def cleanup_playwright_profile():
     for fname in ("SingletonLock", "SingletonCookie", "SingletonSocket", "DevToolsActivePort"):
         fpath = os.path.join(IG_PROFILE_DIR, fname)
         if os.path.exists(fpath):
-            try: os.remove(fpath)
-            except Exception: pass
+            try:
+                os.remove(fpath)
+            except Exception:
+                pass
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  NETSCAPE COOKIE WRITER
@@ -267,7 +271,6 @@ STEALTH_SCRIPT = """
 (() => {
   Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true });
   try { delete navigator.__proto__.webdriver; } catch(e) {}
-
   const _plugins = [
     {name:'Chrome PDF Plugin',  filename:'internal-pdf-viewer', description:'Portable Document Format'},
     {name:'Chrome PDF Viewer',  filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai', description:''},
@@ -281,16 +284,13 @@ STEALTH_SCRIPT = """
       refresh: () => {},
     }),
   });
-
   Object.defineProperty(navigator, 'languages', { get: () => ['en-US','en'] });
-
   window.chrome = {
     app: { isInstalled: false },
     runtime: {},
     loadTimes: () => ({}),
     csi: () => ({}),
   };
-
   const _origPerms = navigator.permissions?.query?.bind(navigator.permissions);
   if (_origPerms) {
     navigator.permissions.query = (p) =>
@@ -298,13 +298,11 @@ STEALTH_SCRIPT = """
         ? Promise.resolve({ state: Notification.permission })
         : _origPerms(p);
   }
-
   Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
   Object.defineProperty(navigator, 'deviceMemory',        { get: () => 8 });
   Object.defineProperty(navigator, 'maxTouchPoints',      { get: () => 0 });
   Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
   Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
-
   const _toDataURL = HTMLCanvasElement.prototype.toDataURL;
   HTMLCanvasElement.prototype.toDataURL = function(type, quality) {
     const ctx = this.getContext('2d');
@@ -319,7 +317,6 @@ STEALTH_SCRIPT = """
     }
     return _toDataURL.apply(this, arguments);
   };
-
   const _getParam = WebGLRenderingContext.prototype.getParameter;
   WebGLRenderingContext.prototype.getParameter = function(param) {
     if (param === 37445) return 'Intel Inc.';
@@ -575,6 +572,7 @@ async def _fill_and_submit(page, context) -> bool:
     logger.info(f"✍️  Entering username: {IG_USERNAME}")
     await _human_type(page, username_input, IG_USERNAME)
     await page.wait_for_timeout(random.randint(400, 900))
+
     logger.info("✍️  Entering password")
     await _human_type(page, password_input, IG_PASSWORD)
     await page.wait_for_timeout(random.randint(600, 1100))
@@ -608,13 +606,11 @@ async def _fill_and_submit(page, context) -> bool:
             )
         )
         return False
-
     if result == "2fa":
         fa_ok = await _handle_2fa(page)
         if not fa_ok:
             return False
         await page.wait_for_timeout(5000)
-
     if result == "checkpoint":
         if await _check_for_checkpoint(page):
             shot = await _log_page_state(page, "checkpoint")
@@ -637,7 +633,6 @@ async def _try_classic_login(page, context) -> bool:
     except Exception as e:
         logger.warning(f"Classic goto: {e}")
         await page.wait_for_timeout(6000)
-
     bl = await _body_len(page)
     logger.info(f"📄 Login page body: {bl} chars")
     if bl < 200:
@@ -680,8 +675,10 @@ async def _try_mobile_login(page, context) -> bool:
         return result
     except Exception as e:
         logger.error(f"_try_mobile_login: {e}")
-        try: await page.set_viewport_size({"width": 1920, "height": 1080})
-        except Exception: pass
+        try:
+            await page.set_viewport_size({"width": 1920, "height": 1080})
+        except Exception:
+            pass
         return False
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -704,7 +701,6 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
     await send_to_log_group(
         text=f"🌐 **Instagram – Generating Cookies**\n📝 {reason}\n⏳ Launching ...\n#InstagramCookies"
     )
-
     wipe_playwright_profile()
     proxy      = choose_random_proxy(IG_PLAYWRIGHT_PROXY_POOL)
     user_agent = random.choice(USER_AGENTS)
@@ -867,9 +863,9 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
 
             # ── Step 4: Export cookies ────────────────────────────────────────
             logger.info("🔗 Step 4/4 – Exporting cookies ...")
-            all_cookies  = await context.cookies()
+            all_cookies = await context.cookies()
             await context.close()
-            context      = None
+            context     = None
 
             ig_cookies   = [c for c in all_cookies
                             if "instagram.com" in c.get("domain", "")
@@ -918,10 +914,13 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
         if not ok or not os.path.exists(COOKIE_FILE):
             logger.error("Cookie generation failed")
             return None
+
         if not verify_cookies_file(COOKIE_FILE):
             logger.error("Cookie file failed verification")
-            if os.path.exists(COOKIE_FILE): os.remove(COOKIE_FILE)
+            if os.path.exists(COOKIE_FILE):
+                os.remove(COOKIE_FILE)
             return None
+
         if is_cookie_file_expired(COOKIE_FILE):
             logger.error("Cookie expired immediately")
             return None
@@ -1061,11 +1060,9 @@ def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict
         base["cookiefile"] = use_cookie_file
     else:
         logger.warning("No Instagram cookie file for yt-dlp")
-
     proxy = choose_random_proxy(IG_PROXY_POOL)
     if proxy:
         base["proxy"] = proxy
-
     if extra_opts:
         base.update(extra_opts)
     return base
@@ -1098,11 +1095,7 @@ def _find_downloaded_file(identifier: str) -> Optional[str]:
 #  CORE DOWNLOAD
 # ══════════════════════════════════════════════════════════════════════════════
 async def download_with_ytdlp(url: str, is_audio: bool = False) -> Optional[str]:
-    # ── HARD DOMAIN GUARD ────────────────────────────────────────────────────
-    # This is the fix for the reported bug.
-    # https://www.instagram.com/reel/DV6J4yQNjIA/ was being routed to
-    # Youtube.py because the shortcode looks like a YouTube video ID.
-    # We now reject any URL that is not instagram.com at the module boundary.
+    # Hard domain guard — reject non-Instagram URLs at module boundary
     if not is_instagram_url(url):
         logger.error(
             f"❌ Rejected non-Instagram URL: {url}\n"
@@ -1151,13 +1144,13 @@ async def download_with_ytdlp(url: str, is_audio: bool = False) -> Optional[str]
             if info and info.get("requested_downloads"):
                 filepath = info["requested_downloads"][0].get("filepath")
             if not filepath or not os.path.exists(filepath):
-                filepath = (_find_downloaded_file(video_id)
-                            or _find_downloaded_file(shortcode or ""))
-
+                filepath = (
+                    _find_downloaded_file(video_id)
+                    or _find_downloaded_file(shortcode or "")
+                )
             if filepath and os.path.exists(filepath):
                 logger.info(f"✅ Instagram download OK: {filepath}")
                 return filepath
-
             logger.error("Download finished but file not found on disk")
             return None
 
