@@ -15,7 +15,6 @@ from playwright.async_api import async_playwright
 from SHASHA_DRUGZ import app, LOGGER
 from SHASHA_DRUGZ.utils.formatters import time_to_seconds
 from config import LOG_GROUP_ID
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  USER-AGENT ROTATION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -25,7 +24,6 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  ENVIRONMENT
 # ══════════════════════════════════════════════════════════════════════════════
@@ -45,10 +43,8 @@ DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(3)
 _COOKIE_LOCK       = asyncio.Lock()
-
 # How often (seconds) the background watcher re-checks the IP
 IP_POLL_INTERVAL = int(os.getenv("IP_POLL_INTERVAL", "60"))
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  BLOCKED IP LIST
 #
@@ -110,24 +106,18 @@ BLOCKED_ORG_KEYWORDS = [
     "limestone",
     "peg tech",
 ]
-
 # ── Global IP state ───────────────────────────────────────────────────────────
 _IS_BLOCKED_IP:   bool = False
 _CURRENT_IP_INFO: dict = {}
 _GOOD_IP_EVENT         = None   # asyncio.Event — set when IP is usable
-
-
 def _good_ip_event() -> asyncio.Event:
     """Lazy-initialise the asyncio.Event (must run inside an event loop)."""
     global _GOOD_IP_EVENT
     if _GOOD_IP_EVENT is None:
         _GOOD_IP_EVENT = asyncio.Event()
     return _GOOD_IP_EVENT
-
-
 def is_blocked_ip() -> bool:
     return _IS_BLOCKED_IP
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  LOGGER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -143,10 +133,7 @@ def get_logger(name: str):
             log.addHandler(h)
         log.setLevel(logging.INFO)
         return log
-
-
 logger = get_logger("SHASHA_DRUGZ/platforms/Youtube.py")
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  PO_TOKEN PLUGIN DETECTION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -169,11 +156,8 @@ def _detect_pot_plugin() -> bool:
     except Exception:
         pass
     return False
-
-
 _POT_PLUGIN_PRESENT: bool = _detect_pot_plugin()
 logger.info(f"po_token plugin detected at startup: {_POT_PLUGIN_PRESENT}")
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  PROXY HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -181,15 +165,10 @@ def _parse_proxy_list(proxy_env: str):
     if not proxy_env:
         return []
     return [p.strip() for p in proxy_env.split(",") if p.strip()]
-
-
 YTDLP_PROXY_POOL      = _parse_proxy_list(YTDLP_PROXIES)
 PLAYWRIGHT_PROXY_POOL = _parse_proxy_list(PLAYWRIGHT_PROXIES)
-
-
 def choose_random_proxy(pool):
     return random.choice(pool) if pool else None
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  PUBLIC IP INFO
 # ══════════════════════════════════════════════════════════════════════════════
@@ -211,7 +190,6 @@ async def get_public_ip_info() -> Optional[dict]:
     except Exception as e:
         logger.error(f"Failed to fetch IP info: {e}")
     return None
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  IP QUALITY CHECK
 #  Returns True  → IP is GOOD  (Railway, residential …) → proceed normally
@@ -226,11 +204,9 @@ async def check_ip_quality() -> bool:
         _CURRENT_IP_INFO = {}
         _good_ip_event().set()
         return True
-
     _CURRENT_IP_INFO = info
     org = (info.get("org") or "").lower()
     _IS_BLOCKED_IP = any(kw in org for kw in BLOCKED_ORG_KEYWORDS)
-
     if _IS_BLOCKED_IP:
         _good_ip_event().clear()
         logger.warning(
@@ -246,7 +222,6 @@ async def check_ip_quality() -> bool:
             f"{info.get('city')}, {info.get('country')}"
         )
     return not _IS_BLOCKED_IP
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  BACKGROUND IP WATCHER
 #  Polls every IP_POLL_INTERVAL seconds.
@@ -261,7 +236,6 @@ async def _ip_watcher_loop():
         good        = await check_ip_quality()
         info        = _CURRENT_IP_INFO
         timestamp   = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-
         if was_blocked and good:
             # ── IP flipped: bad → good ─────────────────────────────────────
             logger.info("🎉 IP changed to a GOOD IP — resuming services ...")
@@ -277,8 +251,10 @@ async def _ip_watcher_loop():
                     f"#GoodIP #YouTubeCookies"
                 )
             )
+            # _good_ip_event() is already set inside check_ip_quality().
+            # Run cookie startup so cookies are ready before any queued
+            # download_with_ytdlp wakes up from wait_for_good_ip().
             await _run_cookie_startup()
-
         elif not was_blocked and not good:
             # ── IP flipped: good → bad ─────────────────────────────────────
             logger.warning("😱 IP changed to a BLOCKED IP — suspending services ...")
@@ -295,13 +271,33 @@ async def _ip_watcher_loop():
                     f"#BlockedIP"
                 )
             )
-
 # ══════════════════════════════════════════════════════════════════════════════
-#  WAIT FOR GOOD IP  (non-blocking — used before any download)
+#  WAIT FOR GOOD IP
+#
+#  Called at the top of download_with_ytdlp / download_song_stream.
+#  Blocks (awaits) until the IP watcher fires _good_ip_event, then returns.
+#  This is the core of the "auto-retry" behaviour:
+#
+#    Amazon IP now  →  wait here (no timeout) …
+#    Railway IP detected by watcher  →  _good_ip_event set  →  continue
+#
+#  Pass timeout=N (seconds) if you want a hard upper limit instead of
+#  waiting forever.
 # ══════════════════════════════════════════════════════════════════════════════
 async def wait_for_good_ip(timeout: float = None) -> bool:
+    """
+    If the current IP is good, return True immediately.
+    If the current IP is blocked, wait (indefinitely by default) until
+    the background IP watcher detects a good IP, then return True.
+    Returns False only when timeout is given and it expires.
+    """
     if not _IS_BLOCKED_IP:
         return True
+    info = _CURRENT_IP_INFO
+    logger.info(
+        f"⏳ Waiting for a good IP "
+        f"(current: {info.get('ip', 'unknown')} / {info.get('org', 'unknown')}) ..."
+    )
     try:
         if timeout:
             await asyncio.wait_for(_good_ip_event().wait(), timeout=timeout)
@@ -310,7 +306,6 @@ async def wait_for_good_ip(timeout: float = None) -> bool:
         return True
     except asyncio.TimeoutError:
         return False
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE CLEANUP
 # ══════════════════════════════════════════════════════════════════════════════
@@ -321,7 +316,6 @@ def clear_old_cookies():
             logger.warning(f"🧹 Removed auto-generated cookie: {COOKIE_FILE}")
     except Exception as e:
         logger.error(f"Failed to clear cookies: {e}")
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  LOG GROUP HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -336,8 +330,6 @@ async def send_to_log_group(text: str = None, file_obj=None):
             await app.send_message(chat_id=LOG_GROUP_ID, text=text)
     except Exception as e:
         logger.error(f"Failed to send to log group: {e}")
-
-
 async def send_cookie_file_to_log_group(reason: str = ""):
     if not os.path.exists(COOKIE_FILE):
         logger.warning("Cookie file missing – cannot send to log group.")
@@ -365,7 +357,6 @@ async def send_cookie_file_to_log_group(reason: str = ""):
                 await send_to_log_group(text=caption, file_obj=f)
         except Exception as e2:
             logger.error(f"Failed to send cookie file: {e2}")
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  PLAYWRIGHT PROFILE LOCK CLEANUP
 # ══════════════════════════════════════════════════════════════════════════════
@@ -382,7 +373,6 @@ def cleanup_playwright_profile():
                 logger.info(f"🧹 Removed stale profile file: {fname}")
             except Exception as e:
                 logger.warning(f"Could not remove {fname}: {e}")
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  BROWSER PROFILE COOKIE GENERATION  (Playwright)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -476,7 +466,6 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
             )
         )
         return False
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  EXTRACT COOKIES FROM BROWSER PROFILE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -489,12 +478,10 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
         ):
             logger.info("✅ Cookies already refreshed by another coroutine — reusing")
             return COOKIE_FILE
-
         ok = await generate_cookies_via_playwright(reason=reason)
         if not ok:
             logger.error("Browser profile cookie generation failed.")
             return None
-
         logger.info(f"🔄 Extracting cookies from browser profile ... [reason={reason}]")
         try:
             cmd = [
@@ -569,7 +556,6 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
         except Exception as e:
             logger.error(f"Cookie extraction error: {e}")
             return None
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE VERIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -630,8 +616,6 @@ def verify_cookies_file(filename: str) -> bool:
     except Exception as e:
         logger.error(f"Error verifying cookies file: {e}")
         return False
-
-
 def get_cookie_min_expiry(filepath: str) -> Optional[int]:
     try:
         min_exp = None
@@ -658,8 +642,6 @@ def get_cookie_min_expiry(filepath: str) -> Optional[int]:
     except Exception as e:
         logger.error(f"Failed to parse cookie expiry: {e}")
         return None
-
-
 def is_cookie_file_expired(filepath: str) -> bool:
     if not os.path.exists(filepath):
         return True
@@ -677,7 +659,6 @@ def is_cookie_file_expired(filepath: str) -> bool:
     remaining = min_exp - now
     logger.info(f"✅ Cookie valid for {remaining // 3600}h {(remaining % 3600) // 60}m")
     return False
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE FILE PICKER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -699,7 +680,6 @@ def cookie_txt_file() -> Optional[str]:
         if os.path.getsize(candidate) > 0:
             return candidate
     return None
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  ERROR CLASSIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -725,8 +705,6 @@ def is_auth_error(exception: Exception) -> bool:
         "authentication",
     ]
     return any(ind in error_str for ind in auth_indicators)
-
-
 def is_format_error(exception: Exception) -> bool:
     error_str = str(exception).lower()
     return (
@@ -734,7 +712,6 @@ def is_format_error(exception: Exception) -> bool:
         or "no video formats found" in error_str
         or "format is not available" in error_str
     )
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAIN COOKIE GETTER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -749,10 +726,8 @@ async def get_cookies(force_refresh: bool = False) -> Optional[str]:
             logger.info(f"✅ Using existing cookie: {os.path.basename(best)}")
             return best
         logger.warning("No valid/unexpired cookie found – regenerating ...")
-
     reason = "Force refresh" if force_refresh else "Initial / expired"
     return await refresh_cookies_from_browser(reason=reason)
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  VIDEO ID EXTRACTION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -773,7 +748,6 @@ def extract_video_id(url: str) -> Optional[str]:
     if "v=" in url:
         return url.split("v=")[-1].split("&")[0]
     return None
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  YT-DLP OPTIONS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -804,15 +778,12 @@ def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict
         logger.debug(f"Using cookiefile: {use_cookie_file}")
     else:
         logger.debug("No valid cookie file — proceeding without cookies")
-
     proxy = choose_random_proxy(YTDLP_PROXY_POOL)
     if proxy:
         base["proxy"] = proxy
-
     if extra_opts:
         base.update(extra_opts)
     return base
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  FILE FINDER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -830,7 +801,6 @@ def _get_downloaded_file(video_id: str, prefer_m4a: bool = False) -> Optional[st
             if video_id in f:
                 return os.path.join(DOWNLOAD_DIR, f)
     return None
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  FORMAT STRINGS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -843,42 +813,40 @@ def _audio_format_opts() -> dict:
             "preferredquality": "192",
         }],
     }
-
-
 def _video_format_opts() -> dict:
     return {
         "format":              "bv*+ba/b",
         "merge_output_format": "mp4",
     }
-
-
 STREAM_MIN_SIZE = 500_000
 STREAM_FORMAT   = "bestaudio[ext=m4a]/bestaudio/best"
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  CORE DOWNLOAD
 #
-#  BLOCKED IP RULE:
-#    ❌ Amazon / GCP / Azure → skip immediately, return None, no retries,
-#       no cookie regen.  The IP itself is the problem.
-#    ✅ Railway / residential → normal flow with cookie rotation + regen.
+#  BLOCKED IP BEHAVIOUR (NEW):
+#    ❌ Amazon / GCP / Azure detected
+#       → notify log group once
+#       → wait_for_good_ip()  ← blocks here (no timeout) until IP watcher
+#         detects Railway / residential and fires _good_ip_event
+#       → once unblocked: auto-generate cookies, then proceed with download
+#
+#  ✅ Railway / residential → normal flow with cookie rotation + regen.
 # ══════════════════════════════════════════════════════════════════════════════
 async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
     video_id = extract_video_id(link)
     if not video_id:
         logger.error(f"Could not extract video ID from {link}")
         return None
-
     existing = _get_downloaded_file(video_id)
     if existing and os.path.exists(existing):
         logger.info(f"📁 File already exists: {existing}")
         return existing
 
-    # ── BLOCKED IP: skip entirely ─────────────────────────────────────────
+    # ── BLOCKED IP: wait (auto-retry) until a good IP appears ────────────
     if is_blocked_ip():
         info = _CURRENT_IP_INFO
         logger.warning(
-            f"🚫 Download skipped — blocked IP "
+            f"🚫 Download queued — blocked IP "
             f"({info.get('org', 'unknown')} / {info.get('ip', 'unknown')}).  "
             f"Waiting for IP watcher to detect a good IP ..."
         )
@@ -893,21 +861,21 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                 f"#BlockedIP"
             )
         )
-        return None
+        # Block here — coroutine sleeps until _good_ip_event is set by
+        # _ip_watcher_loop → _run_cookie_startup (no timeout = wait forever)
+        await wait_for_good_ip()
+        logger.info("✅ Good IP detected — proceeding with download ...")
 
     # ── GOOD IP: normal download flow ─────────────────────────────────────
     cookie_file   = cookie_txt_file()
     if not cookie_file:
         logger.warning("No cookie file found – attempting download without cookies")
-
     def _build_opts(cf: Optional[str]) -> dict:
         extra = _audio_format_opts() if is_audio else _video_format_opts()
         return get_ytdlp_opts(extra, use_cookie_file=cf)
-
     ydl_opts      = _build_opts(cookie_file)
     loop          = asyncio.get_event_loop()
     tried_cookies = {cookie_file}
-
     for attempt in range(3):
         try:
             await asyncio.sleep(random.uniform(0.5, 2.0))
@@ -917,32 +885,31 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                     info = await loop.run_in_executor(
                         None, lambda: ydl.extract_info(link, download=True)
                     )
-
             file_path = _get_downloaded_file(video_id)
             if not file_path and info:
                 possible = info.get("_filename")
                 if possible and os.path.exists(possible):
                     file_path = possible
-
             if file_path and os.path.exists(file_path):
                 logger.info(f"✅ Download successful: {file_path}")
                 return file_path
-
             raise Exception("File not found after download")
-
         except Exception as e:
             err_str = str(e)
             logger.error(f"Download error (attempt {attempt + 1}): {err_str[:300]}")
-
             # Re-check IP on auth errors — it may have flipped mid-session
             if is_auth_error(e):
                 await check_ip_quality()
                 if is_blocked_ip():
                     logger.warning(
-                        "🚫 IP re-check shows BLOCKED — aborting download immediately."
+                        "🚫 IP re-check shows BLOCKED — waiting for good IP before retry ..."
                     )
-                    return None
-
+                    await wait_for_good_ip()
+                    logger.info("✅ Good IP restored — retrying download ...")
+                    # Refresh cookies now that IP is good again
+                    cookie_file = cookie_txt_file()
+                    ydl_opts    = _build_opts(cookie_file)
+                    continue
             # Format not available → retry with "best"
             if is_format_error(e) and attempt == 0:
                 logger.warning("⚠️ Format not available — retrying with 'best' fallback ...")
@@ -957,7 +924,6 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                     fallback["merge_output_format"] = "mp4"
                 ydl_opts = get_ytdlp_opts(fallback, use_cookie_file=cookie_file)
                 continue
-
             # Auth / robot on a good IP → rotate cookies → regen
             if is_auth_error(e) and AUTO_REFRESH_COOKIES and attempt == 0:
                 logger.warning("🤖 Auth/robot detected – trying a different cookie ...")
@@ -968,7 +934,6 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                     cookie_file = alt_cookie
                     ydl_opts    = _build_opts(cookie_file)
                     continue
-
                 logger.warning("No alternative cookie – regenerating via Playwright ...")
                 clear_old_cookies()
                 await send_to_log_group(
@@ -991,23 +956,17 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                 else:
                     logger.error("Cookie regeneration failed – aborting download")
                     return None
-
             return None
-
     return None
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  AUDIO / VIDEO WRAPPERS
 # ══════════════════════════════════════════════════════════════════════════════
 async def download_song(link: str) -> Optional[str]:
     logger.info(f"🎵 Downloading audio: {link}")
     return await download_with_ytdlp(link, is_audio=True)
-
-
 async def download_video(link: str) -> Optional[str]:
     logger.info(f"🎬 Downloading video: {link}")
     return await download_with_ytdlp(link, is_audio=False)
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  STREAMING HELPER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1020,33 +979,28 @@ async def wait_for_partial_file(
         if os.path.exists(file_path) and os.path.getsize(file_path) > min_size:
             return
         await asyncio.sleep(check_interval)
-
-
 async def download_song_stream(link: str) -> Tuple[Optional[str], Optional[asyncio.Task]]:
     video_id = extract_video_id(link)
     if not video_id:
         return None, None
-
     existing = _get_downloaded_file(video_id, prefer_m4a=True)
     if existing and os.path.exists(existing):
         return existing, None
-
+    # ── BLOCKED IP: wait for good IP before streaming ─────────────────────
     if is_blocked_ip():
-        logger.warning("🚫 Stream download skipped — blocked IP.")
-        return None, None
-
+        logger.warning("🚫 Stream download queued — waiting for good IP ...")
+        await wait_for_good_ip()
+        logger.info("✅ Good IP detected — proceeding with stream download ...")
     cookie_file   = cookie_txt_file()
     ydl_opts      = get_ytdlp_opts({"format": STREAM_FORMAT}, use_cookie_file=cookie_file)
     expected_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.m4a")
     loop          = asyncio.get_event_loop()
-
     async def _download_task():
         async with DOWNLOAD_SEMAPHORE:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 await loop.run_in_executor(
                     None, lambda: ydl.extract_info(link, download=True)
                 )
-
     task = asyncio.create_task(_download_task())
     try:
         await wait_for_partial_file(expected_path, min_size=STREAM_MIN_SIZE)
@@ -1055,7 +1009,6 @@ async def download_song_stream(link: str) -> Tuple[Optional[str], Optional[async
         logger.error(f"Streaming wait error: {e}")
         task.cancel()
         return None, None
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  PLAY_URL AUTO-TEST  (skipped entirely when IP is blocked)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1063,7 +1016,6 @@ async def test_cookie_with_playurl(retries: int = 2):
     if not PLAY_URL:
         logger.warning("PLAY_URL not set – skipping auto-test.")
         return
-
     # Hard skip on blocked IPs — always fails, no point trying
     if is_blocked_ip():
         info = _CURRENT_IP_INFO
@@ -1082,7 +1034,6 @@ async def test_cookie_with_playurl(retries: int = 2):
             )
         )
         return
-
     if retries <= 0:
         logger.error("❌ PLAY_URL test: max retries reached")
         await send_to_log_group(
@@ -1094,11 +1045,9 @@ async def test_cookie_with_playurl(retries: int = 2):
             )
         )
         return
-
     logger.info(f"🎬 Auto-testing cookies with PLAY_URL (retries left: {retries}) ...")
     test_dir = os.path.join(os.getcwd(), "cookie_test")
     os.makedirs(test_dir, exist_ok=True)
-
     video_id  = extract_video_id(PLAY_URL)
     cf        = cookie_txt_file()
     test_opts = get_ytdlp_opts(
@@ -1108,7 +1057,6 @@ async def test_cookie_with_playurl(retries: int = 2):
         },
         use_cookie_file=cf,
     )
-
     try:
         loop = asyncio.get_event_loop()
         async with DOWNLOAD_SEMAPHORE:
@@ -1116,7 +1064,6 @@ async def test_cookie_with_playurl(retries: int = 2):
                 await loop.run_in_executor(
                     None, lambda: ydl.extract_info(PLAY_URL, download=True)
                 )
-
         file_path = None
         if video_id:
             for ext in ["mp3", "webm", "m4a", "opus", "mp4", "mkv"]:
@@ -1124,7 +1071,6 @@ async def test_cookie_with_playurl(retries: int = 2):
                 if os.path.exists(p):
                     file_path = p
                     break
-
         if not file_path and os.path.exists(test_dir):
             files = [
                 os.path.join(test_dir, f)
@@ -1133,7 +1079,6 @@ async def test_cookie_with_playurl(retries: int = 2):
             ]
             if files:
                 file_path = max(files, key=os.path.getmtime)
-
         if file_path and os.path.exists(file_path):
             size_kb = os.path.getsize(file_path) // 1024
             logger.info(f"✅ Cookie test PASSED – {file_path} ({size_kb} KB)")
@@ -1166,18 +1111,15 @@ async def test_cookie_with_playurl(retries: int = 2):
             new_cookie = await refresh_cookies_from_browser(reason="PLAY_URL test: file not found")
             if new_cookie:
                 await test_cookie_with_playurl(retries=retries - 1)
-
     except Exception as e:
         err_str = str(e)
         logger.error(f"Cookie auto-test error: {err_str}")
-
         if is_auth_error(e):
             # Re-check IP before deciding to regenerate
             await check_ip_quality()
             if is_blocked_ip():
                 logger.warning("🚫 IP re-check shows BLOCKED — skipping cookie regen.")
                 return
-
             logger.warning("🤖 Robot/auth detected during PLAY_URL test – regenerating ...")
             clear_old_cookies()
             await send_to_log_group(
@@ -1205,7 +1147,6 @@ async def test_cookie_with_playurl(retries: int = 2):
                     "#CookieTest"
                 )
             )
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  UTILITY
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1222,8 +1163,6 @@ async def shell_cmd(cmd):
             return out.decode("utf-8")
         return err
     return out.decode("utf-8")
-
-
 async def check_file_size(link):
     try:
         cf       = cookie_txt_file()
@@ -1245,7 +1184,6 @@ async def check_file_size(link):
     except Exception as e:
         logger.error(f"Failed to get file size: {e}")
         return None
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  YouTubeAPI CLASS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1260,12 +1198,10 @@ class YouTubeAPI:
             r"([A-Za-z0-9_-]{11}|PL[A-Za-z0-9_-]+)([&\?][^\s]*)?"
         )
         self.reg = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-9?]*[ -/]*[@-~])")
-
     async def exists(self, link: str, videoid: Union[bool, str] = None):
         if videoid:
             link = self.base + link
         return bool(re.search(self.regex, link))
-
     async def url(self, message_1: Message) -> Union[str, None]:
         messages = [message_1]
         if message_1.reply_to_message:
@@ -1281,7 +1217,6 @@ class YouTubeAPI:
                     if entity.type == MessageEntityType.TEXT_LINK:
                         return entity.url
         return None
-
     async def details(self, link: str, videoid: Union[bool, str] = None):
         if videoid:
             link = self.base + link
@@ -1295,7 +1230,6 @@ class YouTubeAPI:
             vidid        = result["id"]
             duration_sec = int(time_to_seconds(duration_min)) if duration_min else 0
         return title, duration_min, duration_sec, thumbnail, vidid
-
     async def title(self, link: str, videoid: Union[bool, str] = None):
         if videoid:
             link = self.base + link
@@ -1304,7 +1238,6 @@ class YouTubeAPI:
         results = VideosSearch(link, limit=1)
         for result in (await results.next())["result"]:
             return result["title"]
-
     async def duration(self, link: str, videoid: Union[bool, str] = None):
         if videoid:
             link = self.base + link
@@ -1313,7 +1246,6 @@ class YouTubeAPI:
         results = VideosSearch(link, limit=1)
         for result in (await results.next())["result"]:
             return result["duration"]
-
     async def thumbnail(self, link: str, videoid: Union[bool, str] = None):
         if videoid:
             link = self.base + link
@@ -1322,7 +1254,6 @@ class YouTubeAPI:
         results = VideosSearch(link, limit=1)
         for result in (await results.next())["result"]:
             return result["thumbnails"][0]["url"].split("?")[0]
-
     async def video(self, link: str, videoid: Union[bool, str] = None):
         if videoid:
             link = self.base + link
@@ -1333,7 +1264,6 @@ class YouTubeAPI:
             return 0, "Video download failed"
         except Exception as e:
             return 0, f"Video failed: {str(e)[:100]}"
-
     async def playlist(self, link, limit, user_id, videoid: Union[bool, str] = None):
         if videoid:
             link = self.listbase + link
@@ -1362,7 +1292,6 @@ class YouTubeAPI:
         except Exception as e:
             logger.error(f"Playlist extraction failed: {e}")
             return []
-
     async def track(self, link: str, videoid: Union[bool, str] = None):
         if videoid:
             link = self.base + link
@@ -1383,7 +1312,6 @@ class YouTubeAPI:
             "thumb":        thumbnail,
         }
         return track_details, vidid
-
     async def formats(self, link: str, videoid: Union[bool, str] = None):
         if videoid:
             link = self.base + link
@@ -1419,7 +1347,6 @@ class YouTubeAPI:
         except Exception as e:
             logger.error(f"Failed to get formats: {e}")
             return [], link
-
     async def slider(self, link: str, query_type: int, videoid: Union[bool, str] = None):
         if videoid:
             link = self.base + link
@@ -1432,7 +1359,6 @@ class YouTubeAPI:
         vidid        = result[query_type]["id"]
         thumbnail    = result[query_type]["thumbnails"][0]["url"].split("?")[0]
         return title, duration_min, thumbnail, vidid
-
     async def download(
         self,
         link:      str,
@@ -1453,7 +1379,6 @@ class YouTubeAPI:
                 downloaded_file = await download_video(link)
             else:
                 downloaded_file = await download_song(link)
-
             if not downloaded_file or not os.path.exists(downloaded_file):
                 logger.error(
                     f"Downloaded file path invalid or missing: {downloaded_file!r} "
@@ -1464,7 +1389,6 @@ class YouTubeAPI:
         except Exception as e:
             logger.error(f"Download error: {e}")
             return None, False
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE STARTUP HELPER  (shared by startup_services and IP watcher)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1492,10 +1416,8 @@ async def _run_cookie_startup():
                     "#YouTubeCookies"
                 )
             )
-
     logger.info("🎬 Running PLAY_URL startup test ...")
     await test_cookie_with_playurl(retries=2)
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  STARTUP
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1503,13 +1425,10 @@ async def startup_services():
     if not ENABLE_YT_COOKIES:
         logger.info("YouTube cookie handling disabled (ENABLE_YT_COOKIES=false).")
         return
-
     logger.info("🚀 Starting YouTube services ...")
-
     # Step 1 — check IP quality before doing anything else
     good = await check_ip_quality()
     info = _CURRENT_IP_INFO
-
     if not good:
         # ── Blocked IP on startup: hold everything, start watcher ──────────
         logger.warning(
@@ -1533,9 +1452,10 @@ async def startup_services():
             )
         )
         # Start watcher and return — no cookie gen, no test
+        # Any in-flight download_with_ytdlp calls are already waiting on
+        # _good_ip_event and will resume automatically once watcher fires it.
         asyncio.create_task(_ip_watcher_loop())
         return
-
     # ── Good IP on startup ──────────────────────────────────────────────────
     logger.info(
         f"✅ Good IP on startup — "
@@ -1553,9 +1473,7 @@ async def startup_services():
             f"#GoodIP #Startup"
         )
     )
-
     # Step 2 — generate cookies + run PLAY_URL test
     await _run_cookie_startup()
-
     # Step 3 — start background IP watcher (watches for good → bad flip)
     asyncio.create_task(_ip_watcher_loop())
