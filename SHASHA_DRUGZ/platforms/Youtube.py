@@ -211,7 +211,15 @@ def cleanup_playwright_profile():
                 pass
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  GOOGLE LOGIN INSIDE PLAYWRIGHT  (optional — only if credentials are set)
+#  GOOGLE LOGIN INSIDE PLAYWRIGHT
+#
+#  FIX: Google's login flow in 2025/2026 added intermediate screens
+#       ("choose account", "verify it's you", slow password field rendering).
+#       We now use:
+#         - Extended timeouts (20s per selector instead of 15s)
+#         - Multiple password field selector fallbacks
+#         - Post-login challenge detection
+#         - Graceful fallback (login failure → anonymous warm-up, not crash)
 # ══════════════════════════════════════════════════════════════════════════════
 async def _google_login(page) -> bool:
     if not YT_GOOGLE_EMAIL or not YT_GOOGLE_PASSWORD:
@@ -223,17 +231,71 @@ async def _google_login(page) -> bool:
             "?service=youtube&hl=en&flowName=GlifWebSignIn",
             wait_until="domcontentloaded", timeout=60_000,
         )
-        await page.wait_for_timeout(random.randint(2000, 4000))
+        await page.wait_for_timeout(random.randint(2000, 3500))
+
+        # ── Email step ────────────────────────────────────────────────────────
         email_input = page.locator("input[type='email']")
-        await email_input.wait_for(state="visible", timeout=15_000)
+        await email_input.wait_for(state="visible", timeout=20_000)
         await email_input.fill(YT_GOOGLE_EMAIL)
+        await page.wait_for_timeout(random.randint(500, 1000))
         await page.keyboard.press("Enter")
-        await page.wait_for_timeout(random.randint(2500, 4000))
-        pwd_input = page.locator("input[type='password']")
-        await pwd_input.wait_for(state="visible", timeout=15_000)
+
+        # Give Google time to transition to password page
+        await page.wait_for_timeout(random.randint(3000, 5000))
+
+        # ── Password step — multiple selector fallbacks ────────────────────────
+        # Google changes the password field's name/autocomplete attributes
+        # periodically. We try all known variants with a generous timeout.
+        pwd_input = None
+        for pwd_sel in [
+            "input[type='password']",
+            "input[name='password']",
+            "input[name='Passwd']",
+            "input[aria-label='Enter your password']",
+            "input[autocomplete='current-password']",
+        ]:
+            try:
+                el = page.locator(pwd_sel)
+                await el.wait_for(state="visible", timeout=20_000)
+                if await el.count() > 0 and await el.first.is_visible():
+                    pwd_input = el.first
+                    logger.info(f"✅ Password field found: {pwd_sel}")
+                    break
+            except Exception:
+                continue
+
+        if not pwd_input:
+            url  = page.url.lower()
+            body = ""
+            try:
+                body = (await page.inner_text("body")).lower()
+            except Exception:
+                pass
+            if any(s in url or s in body for s in (
+                "challenge", "captcha", "verify", "unusual",
+                "blocked", "suspicious", "selectchallenge",
+            )):
+                logger.error(f"🚨 Google login challenge/captcha detected: {page.url}")
+            else:
+                logger.error(
+                    f"❌ Password field not found after email step.\n"
+                    f"   URL: {page.url}\n"
+                    f"   This usually means: 2FA prompt, captcha, or account lock."
+                )
+            return False
+
         await pwd_input.fill(YT_GOOGLE_PASSWORD)
+        await page.wait_for_timeout(random.randint(500, 1000))
         await page.keyboard.press("Enter")
-        await page.wait_for_timeout(random.randint(5000, 8000))
+        await page.wait_for_timeout(random.randint(6000, 9000))
+
+        # ── Post-login challenge check ────────────────────────────────────────
+        url = page.url.lower()
+        if any(s in url for s in ("challenge", "verify", "captcha", "selectchallenge")):
+            logger.error(f"🚨 Post-login challenge/verification required: {page.url}")
+            return False
+
+        # ── Auth cookie check ─────────────────────────────────────────────────
         cookies = await page.context.cookies()
         auth = [c["name"] for c in cookies if c["name"] in (
             "SAPISID", "LOGIN_INFO", "__Secure-1PAPISID",
@@ -242,8 +304,14 @@ async def _google_login(page) -> bool:
         if auth:
             logger.info(f"✅ Google login successful | auth cookies: {auth}")
             return True
-        logger.warning("⚠️ Google login: no auth cookies found (captcha / 2FA / wrong creds?)")
+
+        logger.warning(
+            f"⚠️ Google login: no auth cookies found.\n"
+            f"   URL: {page.url}\n"
+            f"   Possible causes: 2FA enabled, CAPTCHA, account flagged, wrong credentials."
+        )
         return False
+
     except Exception as e:
         logger.error(f"_google_login: {e}")
         return False
@@ -288,23 +356,29 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                 window.chrome = { runtime: {} };
             """)
 
+            # Try Google login if credentials are set
+            login_ok = False
             if YT_GOOGLE_EMAIL and YT_GOOGLE_PASSWORD:
-                await _google_login(page)
-            else:
-                for url, label in [
-                    ("https://accounts.google.com", "accounts.google.com"),
-                    ("https://www.youtube.com",     "youtube.com"),
-                ]:
-                    try:
-                        logger.info(f"🔗 Visiting {label} ...")
-                        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-                        await page.wait_for_timeout(random.randint(3000, 6000))
-                        await page.mouse.move(random.randint(100, 600), random.randint(100, 400))
-                        await page.wait_for_timeout(random.randint(500, 1500))
-                        await page.mouse.wheel(0, random.randint(200, 600))
-                        await page.wait_for_timeout(random.randint(500, 1000))
-                    except Exception as e:
-                        logger.warning(f"{label} warning: {e}")
+                login_ok = await _google_login(page)
+                if not login_ok:
+                    logger.warning(
+                        "⚠️ Google login failed — proceeding with anonymous warm-up.\n"
+                        "   Visitor-only cookies will be generated.\n"
+                        "   Fix: ensure account has no 2FA, correct password set in env."
+                    )
+
+            # Always warm up youtube.com (gets visitor cookies even if login failed)
+            try:
+                logger.info("🔗 Visiting youtube.com ...")
+                await page.goto("https://www.youtube.com",
+                                wait_until="domcontentloaded", timeout=60_000)
+                await page.wait_for_timeout(random.randint(3000, 5000))
+                await page.mouse.move(random.randint(100, 600), random.randint(100, 400))
+                await page.wait_for_timeout(random.randint(500, 1500))
+                await page.mouse.wheel(0, random.randint(200, 600))
+                await page.wait_for_timeout(random.randint(500, 1000))
+            except Exception as e:
+                logger.warning(f"youtube.com warm-up: {e}")
 
             if PLAY_URL:
                 try:
@@ -342,6 +416,11 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE REFRESH  (with lock)
+#
+#  FIX: Previously this returned None when only visitor cookies were obtained,
+#       causing the caller to receive None and then crash with
+#       "[Errno 2] No such file or directory: 'None'" when passing it to yt-dlp.
+#       Now: visitor-only cookies are accepted and returned as a valid path.
 # ══════════════════════════════════════════════════════════════════════════════
 async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Optional[str]:
     async with _COOKIE_LOCK:
@@ -371,9 +450,14 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
                 stderr=asyncio.subprocess.PIPE,
             )
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+
             if proc.returncode == 0 and os.path.exists(COOKIE_FILE):
-                if verify_cookies_file(COOKIE_FILE) and not is_cookie_file_expired(COOKIE_FILE):
-                    logger.info("✅ Cookies extracted and verified")
+                if verify_cookies_file(COOKIE_FILE):
+                    if not is_cookie_file_expired(COOKIE_FILE):
+                        logger.info("✅ Cookies extracted and verified")
+                    else:
+                        logger.info("✅ Cookies extracted (session cookies – no expiry)")
+
                     ip = await get_public_ip_info()
                     ts = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
                     await send_to_log_group(
@@ -389,28 +473,16 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
                     await send_cookie_file_to_log_group(reason=reason)
                     return COOKIE_FILE
 
-                logger.warning("⚠️ Extracted cookies failed verify – retrying ...")
+                # Cookie file exists but failed verification entirely
+                logger.error("❌ Cookie file failed verification after extraction")
                 if os.path.exists(COOKIE_FILE):
                     os.remove(COOKIE_FILE)
-                ok2 = await generate_cookies_via_playwright(reason=f"{reason} (retry)")
-                if not ok2:
-                    return None
-                proc2 = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                await asyncio.wait_for(proc2.communicate(), timeout=120)
-                if proc2.returncode == 0 and os.path.exists(COOKIE_FILE):
-                    if verify_cookies_file(COOKIE_FILE):
-                        await send_cookie_file_to_log_group(reason=f"{reason} (retry)")
-                        return COOKIE_FILE
-                logger.error("❌ Retry extraction failed")
                 return None
 
             err = stderr.decode()[:300] if stderr else "unknown"
-            logger.warning(f"yt-dlp extraction failed: {err}")
+            logger.warning(f"yt-dlp extraction failed (rc={proc.returncode}): {err}")
             return None
+
         except asyncio.TimeoutError:
             logger.error("Cookie extraction timed out")
             return None
@@ -420,11 +492,8 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE VERIFICATION
-#  FIX: The old code required SAPISID/LOGIN_INFO etc. and returned False for
-#       anonymous sessions. This caused the Android fallback to always be used
-#       even when cookies were perfectly valid visitor tokens.
-#       New approach: accept visitor cookies (VISITOR_INFO1_LIVE + YSC) as
-#       "valid enough" for yt-dlp to use, while still logging auth status.
+#  Accepts both authenticated (SAPISID etc.) and visitor (VISITOR_INFO1_LIVE,
+#  YSC) cookies. Visitor cookies are valid for yt-dlp on public videos.
 # ══════════════════════════════════════════════════════════════════════════════
 def verify_cookies_file(filename: str) -> bool:
     try:
@@ -446,15 +515,11 @@ def verify_cookies_file(filename: str) -> bool:
             logger.error(f"Too few valid lines: {valid}")
             return False
 
-        # Check for real auth cookies
-        AUTH_COOKIES = [
-            "SAPISID", "LOGIN_INFO", "__Secure-1PAPISID",
-            "__Secure-3PAPISID", "SID", "HSID", "SSID", "APISID",
-        ]
-        found_auth = [c for c in AUTH_COOKIES if c in content]
-
-        # Also accept visitor cookies (anonymous sessions)
+        AUTH_COOKIES    = ["SAPISID", "LOGIN_INFO", "__Secure-1PAPISID",
+                           "__Secure-3PAPISID", "SID", "HSID", "SSID", "APISID"]
         VISITOR_COOKIES = ["VISITOR_INFO1_LIVE", "YSC", "PREF", "SOCS"]
+
+        found_auth    = [c for c in AUTH_COOKIES    if c in content]
         found_visitor = [c for c in VISITOR_COOKIES if c in content]
 
         if found_auth:
@@ -464,15 +529,15 @@ def verify_cookies_file(filename: str) -> bool:
             )
             return True
         elif found_visitor:
-            # Visitor-only cookies: valid for yt-dlp but won't bypass all restrictions
             logger.info(
                 f"✅ Cookies verified (visitor/anonymous): lines={valid} "
                 f"| visitor={found_visitor}\n"
-                f"   ⚠️  These won't bypass age-gates. Set YT_GOOGLE_EMAIL + YT_GOOGLE_PASSWORD for full auth."
+                f"   ⚠️  Visitor cookies won't bypass bot detection on flagged IPs.\n"
+                f"   Set YT_GOOGLE_EMAIL + YT_GOOGLE_PASSWORD for authenticated cookies."
             )
             return True
         else:
-            logger.error(f"❌ Cookie file has no recognisable YouTube cookies (lines={valid})")
+            logger.error(f"❌ No recognisable YouTube cookies found (lines={valid})")
             return False
     except Exception as e:
         logger.error(f"verify_cookies_file: {e}")
@@ -507,7 +572,7 @@ def is_cookie_file_expired(filepath: str) -> bool:
         return True
     min_exp = get_cookie_min_expiry(filepath)
     if min_exp is None:
-        # Can't determine expiry — treat as valid (session cookies have no expiry)
+        # Session cookies have no expiry timestamp — treat as valid
         logger.info("Cookie expiry unknown (session cookies) – treating as valid")
         return False
     now = int(time.time())
@@ -571,14 +636,21 @@ def extract_video_id(url: str) -> Optional[str]:
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  YT-DLP OPTIONS
-#  Strategy A (no cookie_file): Android innertube — bypasses bot check, no cookies needed
-#  Strategy B (with cookie_file): Desktop web client — for age-gated / auth content
+#
+#  Strategy A — Android innertube (no cookies)
+#    - android_embedded added alongside android for better cloud IP success rate
+#    - X-YouTube-Client-Name: "3" kept (it's the Android client ID, safe to send)
+#    - X-YouTube-Client-Version and X-Goog-Visitor-Id NOT included (fingerprints)
+#
+#  Strategy B — Desktop web + cookie file
+#    - Used when Android client is blocked
+#    - Requires at minimum visitor cookies; auth cookies strongly preferred
 # ══════════════════════════════════════════════════════════════════════════════
 def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict:
     proxy = choose_random_proxy(YTDLP_PROXY_POOL)
 
     if use_cookie_file and os.path.exists(use_cookie_file):
-        # Strategy B: authenticated desktop web client + cookie file
+        # Strategy B: desktop web + cookies
         base = {
             "outtmpl":            os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s"),
             "quiet":              True,
@@ -604,7 +676,7 @@ def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict
             },
         }
     else:
-        # Strategy A: anonymous Android innertube — no cookies needed
+        # Strategy A: Android innertube — no cookies needed
         profile = get_android_profile()
         base = {
             "outtmpl":            os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s"),
@@ -622,14 +694,16 @@ def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict
             "cachedir":           YT_CACHE_DIR,
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["android"],  # Clean: android only
+                    # android_embedded is less flagged on cloud IPs than plain android
+                    "player_client": ["android", "android_embedded"],
                 }
             },
             "http_headers": {
-                "User-Agent":      profile["ua"],
-                "Accept-Language": "en-US,en;q=0.9",
-                # FIX: Removed X-YouTube-Client-Name, X-YouTube-Client-Version,
-                #      X-Goog-Visitor-Id — these are high-risk fingerprints in 2026
+                "User-Agent":            profile["ua"],
+                "Accept-Language":       "en-US,en;q=0.9",
+                # Client ID "3" = Android YouTube app. Safe to include.
+                # Do NOT add Client-Version or Visitor-Id — those are fingerprints.
+                "X-YouTube-Client-Name": "3",
             },
         }
 
@@ -658,12 +732,20 @@ def _get_downloaded_file(video_id: str, prefer_m4a: bool = False) -> Optional[st
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CORE DOWNLOAD
-#  Attempt order:
-#    1. Android client (no cookies) — works for most public videos
-#    2. Cookie file + web client    — fallback for age-gated / restricted
+#
+#  Attempt 1: Android innertube (no cookies)
+#  Attempt 2: Cookie file + desktop web client
+#
+#  FIX 1 (CRITICAL): cookie_file now validated with `os.path.exists()` before
+#    being passed to yt-dlp. This prevents the crash:
+#    "[Errno 2] No such file or directory: 'None'"
+#    which occurred because refresh_cookies_from_browser() returned None
+#    (visitor-only cookies) but the old code passed it directly to yt-dlp.
+#
+#  FIX 2: Cookie fallback skipped entirely when ENABLE_YT_COOKIES=false.
 # ══════════════════════════════════════════════════════════════════════════════
 async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
-    # Hard guard
+    # Hard guard — never process Instagram URLs here
     if "instagram.com" in link.lower():
         logger.error(f"❌ Rejected Instagram URL in YouTube downloader: {link}")
         return None
@@ -709,13 +791,20 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
         logger.warning(f"Android client attempt failed: {str(e)[:200]}")
 
     # ── Attempt 2: Cookie file + desktop web client ───────────────────────────
+    if not ENABLE_YT_COOKIES:
+        logger.warning("Cookie fallback disabled (ENABLE_YT_COOKIES=false) – giving up")
+        return None
+
     logger.info("⚙️  Falling back to cookie-based web client ...")
     cookie_file = await get_cookies()
-    if not cookie_file:
-        logger.warning("No valid cookies available – cannot use cookie fallback")
+
+    # FIX: guard against None or non-existent path before passing to yt-dlp
+    if not cookie_file or not os.path.exists(cookie_file):
+        logger.warning("❌ No valid cookie file available – skipping cookie fallback")
         return None
 
     ydl_opts = get_ytdlp_opts(_format_extra(is_audio), use_cookie_file=cookie_file)
+
     for attempt in range(2):
         try:
             await asyncio.sleep(random.uniform(1.0, 3.0))
@@ -728,6 +817,7 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                 return fp
             logger.error("Cookie fallback: file not found after download")
             return None
+
         except Exception as e:
             if is_auth_error(e) and AUTO_REFRESH_COOKIES and attempt == 0:
                 logger.warning(f"🤖 Auth/robot detected (attempt {attempt+1}) – refreshing ...")
@@ -740,11 +830,12 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                     )
                 )
                 new_cf = await refresh_cookies_from_browser(reason="Robot/auth during download")
-                if new_cf:
+                # FIX: validate new_cf is a real file before using it
+                if new_cf and os.path.exists(new_cf):
                     logger.info("✅ Fresh cookies – retrying ...")
                     ydl_opts = get_ytdlp_opts(_format_extra(is_audio), use_cookie_file=new_cf)
                     continue
-                logger.error("Cookie regen failed – aborting")
+                logger.error("Cookie regen failed or returned invalid path – aborting")
                 return None
             logger.error(f"Download error (cookie attempt {attempt+1}): {str(e)[:300]}")
             return None
