@@ -1,7 +1,7 @@
 # SHASHA_DRUGZ/plugins/cookies_manager.py
 import os
 import traceback
-
+from datetime import datetime
 from pyrogram import filters
 from pyrogram.types import (
     CallbackQuery,
@@ -9,25 +9,24 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
-
 from SHASHA_DRUGZ import app, LOGGER
 from config import ADMINS_ID, LOG_GROUP_ID
 from SHASHA_DRUGZ.platforms.Youtube import (
-    COOKIE_FILE,          # absolute path → cookies/youtube_cookies.txt
-    get_cookies,          # async → returns path or None
-    verify_cookies_file,  # sync → bool
+    COOKIE_FILE,
+    get_cookies,
+    verify_cookies_file,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  COOKIE FILE PATH  (resolved once at import time)
-#  Falls back to a sane default if Youtube.py doesn't export COOKIE_FILE.
+#  COOKIE FILE PATH
 # ─────────────────────────────────────────────────────────────────────────────
 try:
     _COOKIE_PATH: str = COOKIE_FILE
 except Exception:
     _COOKIE_PATH = os.path.join(os.getcwd(), "cookies", "youtube_cookies.txt")
 
-os.makedirs(os.path.dirname(_COOKIE_PATH), exist_ok=True)
+_COOKIES_DIR = os.path.dirname(_COOKIE_PATH)
+os.makedirs(_COOKIES_DIR, exist_ok=True)
 
 
 def cookie_txt_file() -> str | None:
@@ -38,10 +37,6 @@ def cookie_txt_file() -> str | None:
 
 
 async def get_cookies_simple() -> str | None:
-    """
-    Wrapper around Youtube.get_cookies() that returns the cookie file path.
-    Uses force_refresh=True so a brand-new cookie is always generated.
-    """
     try:
         path = await get_cookies(force_refresh=True)
         return path if path and os.path.exists(path) else None
@@ -63,8 +58,8 @@ def is_admin(user_id: int) -> bool:
 def cookie_buttons() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📥 𝐃ᴏᴡɴʟᴏᴀᴅ",   callback_data="cookie_download"),
-            InlineKeyboardButton("🔄 𝐑ᴇɢᴇɴᴇʀᴀᴛᴇ", callback_data="cookie_regenerate"),
+            InlineKeyboardButton("📥 Dᴏᴡɴʟᴏᴀᴅ",   callback_data="cookie_download"),
+            InlineKeyboardButton("🔄 Rᴇɢᴇɴᴇʀᴀᴛᴇ", callback_data="cookie_regenerate"),
         ]
     ])
 
@@ -94,19 +89,16 @@ async def notify_log_group(user, cookie_file: str, action: str) -> None:
 async def get_cookie_command(client, message: Message):
     if not message.from_user or not is_admin(message.from_user.id):
         return await message.reply_text("❌ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ.")
-
     try:
         cookie_file = cookie_txt_file()
         if not cookie_file:
             return await message.reply_text("❌ ɴᴏ ᴄᴏᴏᴋɪᴇ ғɪʟᴇ ғᴏᴜɴᴅ.")
-
         await message.reply_document(
             document=cookie_file,
             caption="🍪 **ʟᴀᴛᴇsᴛ ʏᴏᴜᴛᴜʙᴇ ᴄᴏᴏᴋɪᴇ ғɪʟᴇ**",
             reply_markup=cookie_buttons(),
         )
         await notify_log_group(message.from_user, cookie_file, "Downloaded Cookie")
-
     except Exception as e:
         LOGGER("SHASHA_DRUGZ").error(f"GET COOKIE ERROR: {e}")
         await message.reply_text(f"❌ ᴇʀʀᴏʀ:\n`{str(e)[:200]}`")
@@ -119,13 +111,11 @@ async def get_cookie_command(client, message: Message):
 async def new_cookie_command(client, message: Message):
     if not message.from_user or not is_admin(message.from_user.id):
         return await message.reply_text("❌ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ.")
-
     msg = await message.reply_text("🔄 ɢᴇɴᴇʀᴀᴛɪɴɢ ɴᴇᴡ ᴄᴏᴏᴋɪᴇs...")
     try:
         cookie_file = await get_cookies_simple()
         if not cookie_file:
             return await msg.edit("❌ ᴄᴏᴏᴋɪᴇ ɢᴇɴᴇʀᴀᴛɪᴏɴ ғᴀɪʟᴇᴅ.")
-
         await msg.edit("✅ ɴᴇᴡ ᴄᴏᴏᴋɪᴇ ɢᴇɴᴇʀᴀᴛᴇᴅ!")
         await message.reply_document(
             document=cookie_file,
@@ -133,7 +123,6 @@ async def new_cookie_command(client, message: Message):
             reply_markup=cookie_buttons(),
         )
         await notify_log_group(message.from_user, cookie_file, "Generated New Cookie")
-
     except Exception as e:
         LOGGER("SHASHA_DRUGZ").error(traceback.format_exc())
         await msg.edit(f"❌ ᴄᴏᴏᴋɪᴇ ɢᴇɴᴇʀᴀᴛɪᴏɴ ғᴀɪʟᴇᴅ:\n`{str(e)[:200]}`")
@@ -141,21 +130,12 @@ async def new_cookie_command(client, message: Message):
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  /uploadcookie  — reply to a .txt file to replace the active cookie file
-#
-#  Steps:
-#    1. Verify the reply contains a .txt document.
-#    2. Download it to a temp path.
-#    3. Validate it looks like a Netscape cookie file with YouTube cookies.
-#    4. Remove any existing youtube_cookies.txt.
-#    5. Move the uploaded file into place as youtube_cookies.txt.
-#    6. Confirm to the admin and notify the log group.
 # ─────────────────────────────────────────────────────────────────────────────
 @app.on_message(filters.command("uploadcookie"))
 async def upload_cookie_command(client, message: Message):
     if not message.from_user or not is_admin(message.from_user.id):
         return await message.reply_text("❌ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ.")
 
-    # ── Must reply to a document ──────────────────────────────────────────────
     reply = message.reply_to_message
     if not reply or not reply.document:
         return await message.reply_text(
@@ -163,30 +143,22 @@ async def upload_cookie_command(client, message: Message):
         )
 
     doc = reply.document
-
-    # ── Must be a .txt file ───────────────────────────────────────────────────
     file_name: str = doc.file_name or ""
     if not file_name.lower().endswith(".txt"):
-        return await message.reply_text(
-            "❌ ᴏɴʟʏ `.txt` ғɪʟᴇs ᴀʀᴇ ᴀᴄᴄᴇᴘᴛᴇᴅ."
-        )
+        return await message.reply_text("❌ ᴏɴʟʏ `.txt` ғɪʟᴇs ᴀʀᴇ ᴀᴄᴄᴇᴘᴛᴇᴅ.")
 
     msg = await message.reply_text("📥 ᴅᴏᴡɴʟᴏᴀᴅɪɴɢ ᴄᴏᴏᴋɪᴇ ғɪʟᴇ...")
-
+    tmp_path = None
     try:
-        # ── Download to a temp path first ─────────────────────────────────────
         cookies_dir = os.path.dirname(_COOKIE_PATH)
         os.makedirs(cookies_dir, exist_ok=True)
         tmp_path = os.path.join(cookies_dir, f"_upload_tmp_{doc.file_unique_id}.txt")
-
         await client.download_media(reply, file_name=tmp_path)
 
         if not os.path.exists(tmp_path):
             return await msg.edit("❌ ᴅᴏᴡɴʟᴏᴀᴅ ғᴀɪʟᴇᴅ. ᴛʀʏ ᴀɢᴀɪɴ.")
 
-        # ── Validate the file is a proper Netscape cookie file ────────────────
         await msg.edit("🔍 ᴠᴀʟɪᴅᴀᴛɪɴɢ ᴄᴏᴏᴋɪᴇ ғɪʟᴇ...")
-
         if not verify_cookies_file(tmp_path):
             os.remove(tmp_path)
             return await msg.edit(
@@ -197,18 +169,15 @@ async def upload_cookie_command(client, message: Message):
                 "Netscape HTTP Cookie File format."
             )
 
-        # ── Remove old cookie file ────────────────────────────────────────────
         if os.path.exists(_COOKIE_PATH):
             os.remove(_COOKIE_PATH)
             LOGGER("SHASHA_DRUGZ").info(f"uploadcookie: removed old {_COOKIE_PATH}")
 
-        # ── Move uploaded file into place ─────────────────────────────────────
         os.rename(tmp_path, _COOKIE_PATH)
         LOGGER("SHASHA_DRUGZ").info(
             f"uploadcookie: installed new cookie file → {_COOKIE_PATH}"
         )
 
-        # ── Confirm ───────────────────────────────────────────────────────────
         await msg.edit(
             f"✅ **Cookie file uploaded successfully!**\n\n"
             f"📄 Saved as: `youtube_cookies.txt`\n"
@@ -216,23 +185,130 @@ async def upload_cookie_command(client, message: Message):
             f"The new cookie will be used for all future downloads.",
             reply_markup=cookie_buttons(),
         )
-
-        # ── Log group notification ────────────────────────────────────────────
         await notify_log_group(
             message.from_user,
             _COOKIE_PATH,
             f"Uploaded Cookie (original: {file_name})",
         )
-
     except Exception as e:
         LOGGER("SHASHA_DRUGZ").error(f"UPLOAD COOKIE ERROR:\n{traceback.format_exc()}")
-        # Clean up temp file if it exists
         try:
-            if os.path.exists(tmp_path):
+            if tmp_path and os.path.exists(tmp_path):
                 os.remove(tmp_path)
         except Exception:
             pass
         await msg.edit(f"❌ ᴜᴘʟᴏᴀᴅ ғᴀɪʟᴇᴅ:\n`{str(e)[:300]}`")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  /showcookies  — list all .txt files in the cookies folder with saved time
+# ─────────────────────────────────────────────────────────────────────────────
+@app.on_message(filters.command("showcookies"))
+async def show_cookies_command(client, message: Message):
+    if not message.from_user or not is_admin(message.from_user.id):
+        return await message.reply_text("❌ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ.")
+    try:
+        if not os.path.isdir(_COOKIES_DIR):
+            return await message.reply_text("❌ ᴄᴏᴏᴋɪᴇs ғᴏʟᴅᴇʀ ɴᴏᴛ ғᴏᴜɴᴅ.")
+
+        txt_files = [
+            f for f in os.listdir(_COOKIES_DIR)
+            if f.endswith(".txt") and os.path.isfile(os.path.join(_COOKIES_DIR, f))
+        ]
+
+        if not txt_files:
+            return await message.reply_text("📂 ɴᴏ ᴄᴏᴏᴋɪᴇ ғɪʟᴇs ғᴏᴜɴᴅ ɪɴ ᴛʜᴇ ᴄᴏᴏᴋɪᴇs ғᴏʟᴅᴇʀ.")
+
+        # Sort by modification time (newest first)
+        txt_files.sort(
+            key=lambda f: os.path.getmtime(os.path.join(_COOKIES_DIR, f)),
+            reverse=True,
+        )
+
+        lines = ["🍪 **Cookies Folder**\n"]
+        for idx, fname in enumerate(txt_files, start=1):
+            fpath = os.path.join(_COOKIES_DIR, fname)
+            mtime = os.path.getmtime(fpath)
+            # Format: 3.28AM/26-04-2026
+            dt = datetime.fromtimestamp(mtime)
+            time_str = dt.strftime("%-I.%M%p/%d-%m-%Y")   # Linux
+            # On Windows use: dt.strftime("%#I.%M%p/%d-%m-%Y")
+            lines.append(f"`{idx}.` `{fname}` — `{time_str}`")
+
+        await message.reply_text(
+            "\n".join(lines),
+            parse_mode="markdown",
+        )
+    except Exception as e:
+        LOGGER("SHASHA_DRUGZ").error(f"SHOWCOOKIES ERROR: {e}")
+        await message.reply_text(f"❌ ᴇʀʀᴏʀ:\n`{str(e)[:200]}`")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  /rmcookie  — remove a specific cookie file from the cookies folder
+#
+#  Usage:
+#    /rmcookie youtube_cookies.txt
+#    /rmcookie instagram_cookie.txt
+# ─────────────────────────────────────────────────────────────────────────────
+@app.on_message(filters.command("rmcookie"))
+async def rm_cookie_command(client, message: Message):
+    if not message.from_user or not is_admin(message.from_user.id):
+        return await message.reply_text("❌ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ.")
+    try:
+        # Parse argument: /rmcookie <filename>
+        parts = message.text.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            return await message.reply_text(
+                "❌ **Usage:** `/rmcookie <filename>`\n\n"
+                "**Example:** `/rmcookie youtube_cookies.txt`\n\n"
+                "Use `/showcookies` to see available files."
+            )
+
+        filename = parts[1].strip()
+
+        # Security: prevent path traversal attacks
+        if os.sep in filename or "/" in filename or "\\" in filename or ".." in filename:
+            return await message.reply_text(
+                "❌ ɪɴᴠᴀʟɪᴅ ғɪʟᴇɴᴀᴍᴇ. ᴜsᴇ ᴊᴜsᴛ ᴛʜᴇ ғɪʟᴇ ɴᴀᴍᴇ, ɴᴏ ᴘᴀᴛʜs."
+            )
+
+        # Only allow .txt files
+        if not filename.lower().endswith(".txt"):
+            return await message.reply_text("❌ ᴏɴʟʏ `.txt` ғɪʟᴇs ᴄᴀɴ ʙᴇ ʀᴇᴍᴏᴠᴇᴅ.")
+
+        target = os.path.join(_COOKIES_DIR, filename)
+
+        if not os.path.isfile(target):
+            return await message.reply_text(
+                f"❌ ғɪʟᴇ `{filename}` ɴᴏᴛ ғᴏᴜɴᴅ ɪɴ ᴄᴏᴏᴋɪᴇs ғᴏʟᴅᴇʀ.\n\n"
+                f"Use `/showcookies` to see available files."
+            )
+
+        os.remove(target)
+        LOGGER("SHASHA_DRUGZ").info(f"rmcookie: deleted {target}")
+
+        await message.reply_text(
+            f"🗑️ **Cookie file removed successfully!**\n\n"
+            f"📄 Deleted: `{filename}`"
+        )
+
+        # Log to group (no document since file is deleted)
+        try:
+            if LOG_GROUP_ID:
+                await app.send_message(
+                    LOG_GROUP_ID,
+                    f"🗑️ **Cookie Removed**\n\n"
+                    f"👤 User   : {message.from_user.mention}\n"
+                    f"🆔 ID     : `{message.from_user.id}`\n"
+                    f"📄 File   : `{filename}`",
+                )
+        except Exception as log_err:
+            LOGGER("SHASHA_DRUGZ").error(f"rmcookie log error: {log_err}")
+
+    except Exception as e:
+        LOGGER("SHASHA_DRUGZ").error(f"RMCOOKIE ERROR: {e}")
+        await message.reply_text(f"❌ ᴇʀʀᴏʀ:\n`{str(e)[:200]}`")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -250,7 +326,6 @@ async def cookie_callback_handler(client, query: CallbackQuery):
             cookie_file = cookie_txt_file()
             if not cookie_file:
                 return await query.answer("No cookie file found", show_alert=True)
-
             await query.message.reply_document(
                 document=cookie_file,
                 caption="📥 **ᴅᴏᴡɴʟᴏᴀᴅᴇᴅ ᴄᴏᴏᴋɪᴇ ғɪʟᴇ**",
@@ -266,11 +341,9 @@ async def cookie_callback_handler(client, query: CallbackQuery):
         elif action == "cookie_regenerate":
             await query.answer("ɢᴇɴᴇʀᴀᴛɪɴɢ ɴᴇᴡ ᴄᴏᴏᴋɪᴇ...")
             status = await query.message.reply_text("🔄 ʀᴇɢᴇɴᴇʀᴀᴛɪɴɢ ᴄᴏᴏᴋɪᴇs...")
-
             cookie_file = await get_cookies_simple()
             if not cookie_file:
                 return await status.edit("❌ ᴄᴏᴏᴋɪᴇ ɢᴇɴᴇʀᴀᴛɪᴏɴ ғᴀɪʟᴇᴅ.")
-
             await status.edit("✅ ᴄᴏᴏᴋɪᴇ ʀᴇɢᴇɴᴇʀᴀᴛᴇᴅ!")
             await query.message.reply_document(
                 document=cookie_file,
@@ -282,12 +355,6 @@ async def cookie_callback_handler(client, query: CallbackQuery):
                 cookie_file,
                 "Regenerated via Button",
             )
-
     except Exception:
         LOGGER("SHASHA_DRUGZ").error(traceback.format_exc())
         await query.answer("Error occurred", show_alert=True)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  MODULE META
-# ─────────────────────────────────────────────────────────────────────────────
