@@ -51,10 +51,54 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(3)
 
-# KEY FIX: Only ONE cookie generation at a time.
-# Without this, multiple simultaneous song requests each trigger
-# their own Playwright launch → profile corruption → all fail.
+# Only ONE cookie generation at a time — prevents parallel Playwright launches
+# from corrupting the shared browser profile.
 _COOKIE_LOCK = asyncio.Lock()
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PO_TOKEN PLUGIN DETECTION
+#
+#  If yt-dlp-get-pot (or any po_token provider) is installed it prints
+#  "Generating POT for …" and internally selects its own YouTube client for
+#  token generation (typically "web" or "tv_embedded").
+#
+#  Setting extractor_args["youtube"]["player_client"] to ANY explicit list
+#  overrides that choice.  When the client yt-dlp-get-pot chose is not in our
+#  list the format manifest it returns is incomplete →
+#  "Requested format is not available".
+#
+#  Fix: detect the plugin at import time and skip the player_client override
+#  entirely when it is present.  When no plugin is found, set a broad client
+#  list so yt-dlp still has good format coverage.
+# ══════════════════════════════════════════════════════════════════════════════
+def _detect_pot_plugin() -> bool:
+    """Return True if a po_token provider plugin appears to be installed."""
+    # Method 1 – check importlib for known package names
+    try:
+        import importlib.util
+        for pkg in ("yt_dlp_get_pot", "ytdlp_get_pot", "yt_dlp_plugins"):
+            if importlib.util.find_spec(pkg) is not None:
+                return True
+    except Exception:
+        pass
+    # Method 2 – scan yt-dlp's own plugin registry (works for egg-link installs)
+    try:
+        from yt_dlp import plugins as _ydlp_plugins  # noqa: F401
+        import yt_dlp.plugins as plg_mod
+        plugin_dirs = getattr(plg_mod, "_dirs", []) or []
+        for d in plugin_dirs:
+            if os.path.isdir(d):
+                for entry in os.listdir(d):
+                    if "pot" in entry.lower() or "getpot" in entry.lower():
+                        return True
+    except Exception:
+        pass
+    # Method 3 – conservative: check if the POT log line appears in a dry-run
+    # (skip — too expensive at import time; rely on methods 1 & 2)
+    return False
+
+
+_POT_PLUGIN_PRESENT: bool = _detect_pot_plugin()
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PROXY HELPERS
@@ -87,6 +131,7 @@ def get_logger(name: str):
         return log
 
 logger = get_logger("SHASHA_DRUGZ/platforms/Youtube.py")
+logger.info(f"po_token plugin detected at startup: {_POT_PLUGIN_PRESENT}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE CLEANUP
@@ -222,7 +267,6 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
                 ignore_https_errors=True,
             )
             page = await context.new_page()
-            # Stealth: remove webdriver fingerprint
             await page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
                 Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
@@ -283,12 +327,8 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  EXTRACT COOKIES FROM BROWSER PROFILE
-#  Uses _COOKIE_LOCK to prevent parallel generation (the main fix)
 # ══════════════════════════════════════════════════════════════════════════════
 async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Optional[str]:
-    # KEY FIX: acquire lock before generation.
-    # If another coroutine is already generating, wait for it to finish,
-    # then check if the cookie file is now valid (avoid double generation).
     async with _COOKIE_LOCK:
         if (
             os.path.exists(COOKIE_FILE)
@@ -381,9 +421,6 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE VERIFICATION
-#  FIX: Accepts both authenticated cookies (SAPISID, LOGIN_INFO, SID etc.)
-#       AND visitor cookies (VISITOR_INFO1_LIVE, YSC, PREF, SOCS).
-#       Your uploaded cookie file has SAPISID + LOGIN_INFO + SID — fully valid.
 # ══════════════════════════════════════════════════════════════════════════════
 def verify_cookies_file(filename: str) -> bool:
     try:
@@ -399,7 +436,6 @@ def verify_cookies_file(filename: str) -> bool:
             logger.error("Cookies file is JSON format, not Netscape")
             return False
 
-        # Check for any meaningful YouTube cookie (auth OR visitor)
         auth_cookies = [
             "SAPISID", "LOGIN_INFO", "__Secure-1PAPISID",
             "__Secure-3PAPISID", "SID", "HSID", "SSID", "APISID",
@@ -472,7 +508,6 @@ def is_cookie_file_expired(filepath: str) -> bool:
         return True
     min_exp = get_cookie_min_expiry(filepath)
     if min_exp is None:
-        # Session cookies or unparseable expiry — treat as valid
         logger.info("Cookie expiry unknown (session cookies) – treating as valid")
         return False
     now = int(time.time())
@@ -513,6 +548,9 @@ def is_auth_error(exception: Exception) -> bool:
 #  MAIN COOKIE GETTER
 # ══════════════════════════════════════════════════════════════════════════════
 async def get_cookies(force_refresh: bool = False) -> Optional[str]:
+    if force_refresh:
+        cleanup_playwright_profile()
+
     if not force_refresh and os.path.exists(COOKIE_FILE):
         if verify_cookies_file(COOKIE_FILE) and not is_cookie_file_expired(COOKIE_FILE):
             logger.info("✅ Using existing (non-expired) cookies")
@@ -547,6 +585,18 @@ def extract_video_id(url: str) -> Optional[str]:
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  YT-DLP OPTIONS
+#
+#  KEY FIX — po_token plugin conflict:
+#
+#  When yt-dlp-get-pot (or any po_token provider) is installed it selects its
+#  own YouTube client (typically "web" or "tv_embedded") for token generation.
+#  Setting extractor_args["youtube"]["player_client"] to ANY explicit list
+#  overrides that selection.  When the plugin's chosen client is not in our
+#  list the format manifest it fetches is incomplete →
+#  "Requested format is not available".
+#
+#  Solution: skip the player_client override entirely when _POT_PLUGIN_PRESENT
+#  is True.  When no plugin is present, set a broad list for good coverage.
 # ══════════════════════════════════════════════════════════════════════════════
 def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict:
     ua = random.choice(USER_AGENTS)
@@ -559,19 +609,28 @@ def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict
         "retries":            10,
         "fragment_retries":   10,
         "cachedir":           YT_CACHE_DIR,
-        "extractor_args": {
-            "youtube": {"player_client": ["android"]}
-        },
         "http_headers": {
             "User-Agent":      ua,
             "Accept-Language": "en-US,en;q=0.9",
         },
     }
+
+    # Do NOT set player_client when a po_token plugin is present —
+    # overriding its client choice breaks format resolution.
+    if not _POT_PLUGIN_PRESENT:
+        base["extractor_args"] = {
+            "youtube": {
+                "player_client": ["ios", "android", "web", "tv_embedded"]
+            }
+        }
+        logger.debug("No po_token plugin — using explicit player_client list")
+    else:
+        logger.debug("po_token plugin active — skipping player_client override")
+
     if use_cookie_file and os.path.exists(use_cookie_file):
         base["cookiefile"] = use_cookie_file
         logger.debug(f"Using cookiefile: {use_cookie_file}")
     else:
-        # Fallback: read from persistent Chromium profile
         base["cookiesfrombrowser"] = ("chrome", PLAYWRIGHT_PROFILE_DIR)
         logger.debug("Falling back to cookiesfrombrowser with persistent profile")
 
@@ -603,25 +662,10 @@ def _get_downloaded_file(video_id: str, prefer_m4a: bool = False) -> Optional[st
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  FORMAT STRINGS
-#
-#  ROOT CAUSE of "Requested format is not available":
-#    "bestaudio[ext=m4a]/bestaudio"  — [ext=m4a] fails when YouTube serves
-#    only webm/opus streams (very common on cloud IPs and restricted videos).
-#    "bestvideo+bestaudio/best"      — the + merge requires two separate
-#    streams both to exist; when only a combined stream is available it fails.
-#
-#  FIX: Use the most permissive format strings that yt-dlp always resolves:
-#    Audio → "bestaudio/best"  (picks any available audio, no codec filter)
-#    Video → "bestvideo+bestaudio/best"  (merge preferred, "best" as fallback)
-#
-#  The FFmpegExtractAudio postprocessor handles transcoding to mp3 regardless
-#  of the source container (webm, m4a, opus, mp4 — all work).
+#  "bestaudio/best" — most permissive; resolves with any client / container.
+#  FFmpegExtractAudio converts to mp3 192k regardless of source container.
 # ══════════════════════════════════════════════════════════════════════════════
 def _audio_format_opts() -> dict:
-    """
-    Most stable audio format — always resolves on any video.
-    Uses FFmpegExtractAudio to convert whatever yt-dlp downloads → mp3 192k.
-    """
     return {
         "format": "bestaudio/best",
         "postprocessors": [{
@@ -632,10 +676,6 @@ def _audio_format_opts() -> dict:
     }
 
 def _video_format_opts() -> dict:
-    """
-    Most stable video format — prefers merged best quality, falls back to
-    any available single combined stream so it never raises "not available".
-    """
     return {
         "format":              "bestvideo+bestaudio/best",
         "merge_output_format": "mp4",
@@ -651,7 +691,7 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
         return None
 
     existing = _get_downloaded_file(video_id)
-    if existing:
+    if existing and os.path.exists(existing):
         logger.info(f"📁 File already exists: {existing}")
         return existing
 
@@ -676,10 +716,10 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                         None, lambda: ydl.extract_info(link, download=True)
                     )
             file_path = _get_downloaded_file(video_id)
-            if file_path:
+            if file_path and os.path.exists(file_path):
                 logger.info(f"✅ Download successful: {file_path}")
                 return file_path
-            logger.error("Download finished but file not found on disk")
+            logger.error(f"Download finished but file not found on disk. video_id={video_id!r}")
             return None
 
         except Exception as e:
@@ -734,7 +774,7 @@ async def download_song_stream(link: str) -> Tuple[Optional[str], Optional[async
         return None, None
 
     existing = _get_downloaded_file(video_id, prefer_m4a=True)
-    if existing:
+    if existing and os.path.exists(existing):
         return existing, None
 
     cookie_file = await get_cookies()
@@ -796,7 +836,6 @@ async def test_cookie_with_playurl(retries: int = 2):
     os.makedirs(test_dir, exist_ok=True)
     video_id = extract_video_id(PLAY_URL)
 
-    # Use the same stable format string as the main downloader
     test_opts = get_ytdlp_opts(
         {
             "outtmpl": os.path.join(test_dir, "%(id)s.%(ext)s"),
@@ -1016,7 +1055,7 @@ class YouTubeAPI:
             link = self.base + link
         try:
             downloaded_file = await download_video(link)
-            if downloaded_file:
+            if downloaded_file and os.path.exists(downloaded_file):
                 return 1, downloaded_file
             return 0, "Video download failed"
         except Exception as e:
@@ -1135,13 +1174,20 @@ class YouTubeAPI:
         try:
             if songvideo or songaudio:
                 downloaded_file = await download_song(link)
-                return downloaded_file, bool(downloaded_file)
             elif video:
                 downloaded_file = await download_video(link)
-                return downloaded_file, bool(downloaded_file)
             else:
                 downloaded_file = await download_song(link)
-                return downloaded_file, bool(downloaded_file)
+
+            # Guard None / missing path — prevents "[Errno 2] No such file: None"
+            if not downloaded_file or not os.path.exists(downloaded_file):
+                logger.error(
+                    f"Downloaded file path invalid or missing: {downloaded_file!r} "
+                    f"for link={link!r}"
+                )
+                return None, False
+
+            return downloaded_file, True
         except Exception as e:
             logger.error(f"Download error: {e}")
             return None, False
