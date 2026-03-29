@@ -4,7 +4,6 @@ import re
 import random
 import time
 import datetime
-import glob
 import logging
 from typing import Union, Optional, Tuple
 import yt_dlp
@@ -47,114 +46,106 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(3)
 _COOKIE_LOCK       = asyncio.Lock()
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  DATACENTER / CLOUD IP DETECTION
-#  YouTube aggressively bot-blocks requests from AWS, GCP, Azure, etc.
-#  When running on such an IP, cookie regeneration is pointless — the
-#  *download* request itself will be blocked, not just the cookie fetch.
-#  We detect this at startup and skip futile retry loops.
-# ══════════════════════════════════════════════════════════════════════════════
+# How often (seconds) the background watcher re-checks the IP
+IP_POLL_INTERVAL = int(os.getenv("IP_POLL_INTERVAL", "60"))
 
-# Known datacenter / cloud / hosting ASN org-name fragments (lowercase)
-DATACENTER_ORG_KEYWORDS = [
+# ══════════════════════════════════════════════════════════════════════════════
+#  BLOCKED IP LIST
+#
+#  These are cloud / hyperscaler providers whose IPs YouTube actively
+#  bot-blocks at the connection level.  No cookie trick can fix this.
+#
+#  ✅ GOOD  — Railway, Render, Fly.io, Hosterion, most small VPS → works fine
+#  ❌ BAD   — Amazon AWS, Google Cloud, Azure, DigitalOcean … → always blocked
+# ══════════════════════════════════════════════════════════════════════════════
+BLOCKED_ORG_KEYWORDS = [
+    # Amazon / AWS
     "amazon",
-    "aws",
+    "amazon.com",
+    "amazon technologies",
+    "as16509",
+    "as14618",
+    # Google Cloud
     "google cloud",
-    "google llc",          # GCP compute exits via "Google LLC"
+    "google llc",
+    "as15169",
+    # Microsoft Azure
     "microsoft azure",
     "microsoft corporation",
+    "as8075",
+    # DigitalOcean
     "digitalocean",
+    # Linode / Akamai Cloud
     "linode",
-    "akamai",              # Linode was rebranded Akamai Cloud
+    "akamai",
+    # Vultr / Choopa
     "vultr",
-    "ovh",
+    "choopa",
+    # OVH
+    "ovhcloud",
+    "ovh sas",
+    # Hetzner
     "hetzner",
-    "choopa",              # Vultr subsidiary
-    "packet.net",
-    "equinix",
+    # Contabo
     "contabo",
+    # LeaseWeb
     "leaseweb",
-    "hostwinds",
+    # Zenlayer
     "zenlayer",
-    "cogent",
-    "level 3",
-    "serverius",
-    "m247",
-    "quadranet",
-    "limestone networks",
-    "psychz networks",
+    # Psychz / Sharktech / QuadraNet
+    "psychz",
     "sharktech",
+    "quadranet",
+    # Tzulo / DataCamp
     "tzulo",
     "datacamp limited",
+    # Serverius / M247
+    "serverius",
+    "m247",
+    # Hostwinds / Packet / Equinix
+    "hostwinds",
+    "packet.net",
+    "equinix",
+    # Limestone / Peg Tech
+    "limestone",
     "peg tech",
-    "hostpapa",
-    "as16509",             # Amazon fallback ASN string
-    "as14618",             # Amazon fallback ASN string
 ]
 
-# Global flag — set once during startup via _detect_ip_quality()
-_IS_DATACENTER_IP: bool = False
-_CURRENT_IP_INFO:  dict = {}
+# ── Global IP state ───────────────────────────────────────────────────────────
+_IS_BLOCKED_IP:   bool = False
+_CURRENT_IP_INFO: dict = {}
+_GOOD_IP_EVENT         = None   # asyncio.Event — set when IP is usable
 
-async def _detect_ip_quality() -> None:
-    """
-    Fetch public IP info and set _IS_DATACENTER_IP / _CURRENT_IP_INFO globals.
-    Called once at startup; result cached for the lifetime of the process.
-    """
-    global _IS_DATACENTER_IP, _CURRENT_IP_INFO
-    info = await get_public_ip_info()
-    if not info:
-        _IS_DATACENTER_IP = False
-        _CURRENT_IP_INFO  = {}
-        return
-    _CURRENT_IP_INFO = info
-    org = (info.get("org") or "").lower()
-    _IS_DATACENTER_IP = any(kw in org for kw in DATACENTER_ORG_KEYWORDS)
-    level = "⚠️ DATACENTER / CLOUD" if _IS_DATACENTER_IP else "✅ RESIDENTIAL / HOSTING"
-    logger.info(
-        f"🌐 IP Quality Check → {level}\n"
-        f"   IP       : {info.get('ip')}\n"
-        f"   Location : {info.get('city')}, {info.get('country')}\n"
-        f"   Org/ISP  : {info.get('org')}"
-    )
 
-def is_datacenter_ip() -> bool:
-    """Returns True if the current outbound IP is a known datacenter/cloud IP."""
-    return _IS_DATACENTER_IP
+def _good_ip_event() -> asyncio.Event:
+    """Lazy-initialise the asyncio.Event (must run inside an event loop)."""
+    global _GOOD_IP_EVENT
+    if _GOOD_IP_EVENT is None:
+        _GOOD_IP_EVENT = asyncio.Event()
+    return _GOOD_IP_EVENT
+
+
+def is_blocked_ip() -> bool:
+    return _IS_BLOCKED_IP
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  COOKIE FILE PICKER
-#  Picks a random .txt from the cookies folder.
-#  Supports both manually uploaded cookies (Cookie-Editor) and
-#  auto-generated cookies (Playwright/yt-dlp extraction).
-#  Falls back to the primary COOKIE_FILE if the folder has no .txt files.
+#  LOGGER
 # ══════════════════════════════════════════════════════════════════════════════
-def cookie_txt_file() -> Optional[str]:
-    """
-    Return a random valid .txt cookie file from the cookies folder.
-    Validates each candidate before returning so a corrupt file is skipped.
-    Returns None if no valid cookie file is found anywhere.
-    """
-    candidates = []
-    if os.path.isdir(COOKIES_DIR):
-        candidates = [
-            os.path.join(COOKIES_DIR, f)
-            for f in os.listdir(COOKIES_DIR)
-            if f.endswith(".txt") and os.path.isfile(os.path.join(COOKIES_DIR, f))
-        ]
-    if not candidates:
-        return None
-    # Shuffle so we don't always hammer the same file
-    random.shuffle(candidates)
-    for candidate in candidates:
-        if os.path.getsize(candidate) > 0 and verify_cookies_file(candidate):
-            return candidate
-    # Nothing passed verification — return the first non-empty file anyway
-    # (yt-dlp will fail gracefully rather than crashing on None)
-    for candidate in candidates:
-        if os.path.getsize(candidate) > 0:
-            return candidate
-    return None
+def get_logger(name: str):
+    try:
+        return LOGGER(name)
+    except Exception:
+        log = logging.getLogger(name)
+        if not log.handlers:
+            h = logging.StreamHandler()
+            h.setFormatter(logging.Formatter(
+                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+            log.addHandler(h)
+        log.setLevel(logging.INFO)
+        return log
+
+
+logger = get_logger("SHASHA_DRUGZ/platforms/Youtube.py")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PO_TOKEN PLUGIN DETECTION
@@ -179,7 +170,9 @@ def _detect_pot_plugin() -> bool:
         pass
     return False
 
+
 _POT_PLUGIN_PRESENT: bool = _detect_pot_plugin()
+logger.info(f"po_token plugin detected at startup: {_POT_PLUGIN_PRESENT}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PROXY HELPERS
@@ -189,39 +182,139 @@ def _parse_proxy_list(proxy_env: str):
         return []
     return [p.strip() for p in proxy_env.split(",") if p.strip()]
 
+
 YTDLP_PROXY_POOL      = _parse_proxy_list(YTDLP_PROXIES)
 PLAYWRIGHT_PROXY_POOL = _parse_proxy_list(PLAYWRIGHT_PROXIES)
+
 
 def choose_random_proxy(pool):
     return random.choice(pool) if pool else None
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  LOGGER
+#  PUBLIC IP INFO
 # ══════════════════════════════════════════════════════════════════════════════
-def get_logger(name: str):
+async def get_public_ip_info() -> Optional[dict]:
     try:
-        return LOGGER(name)
-    except Exception:
-        log = logging.getLogger(name)
-        if not log.handlers:
-            h = logging.StreamHandler()
-            h.setFormatter(logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
-            log.addHandler(h)
-        log.setLevel(logging.INFO)
-        return log
-
-logger = get_logger("SHASHA_DRUGZ/platforms/Youtube.py")
-logger.info(f"po_token plugin detected at startup: {_POT_PLUGIN_PRESENT}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://ipapi.co/json/",
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return {
+                        "ip":      data.get("ip"),
+                        "city":    data.get("city"),
+                        "country": data.get("country_name"),
+                        "org":     data.get("org"),
+                    }
+    except Exception as e:
+        logger.error(f"Failed to fetch IP info: {e}")
+    return None
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  COOKIE CLEANUP  (only removes the primary auto-generated file)
+#  IP QUALITY CHECK
+#  Returns True  → IP is GOOD  (Railway, residential …) → proceed normally
+#  Returns False → IP is BAD   (Amazon, GCP, Azure …)   → skip everything
+# ══════════════════════════════════════════════════════════════════════════════
+async def check_ip_quality() -> bool:
+    global _IS_BLOCKED_IP, _CURRENT_IP_INFO
+    info = await get_public_ip_info()
+    if not info:
+        # Cannot determine — assume good to avoid infinite blocking
+        _IS_BLOCKED_IP   = False
+        _CURRENT_IP_INFO = {}
+        _good_ip_event().set()
+        return True
+
+    _CURRENT_IP_INFO = info
+    org = (info.get("org") or "").lower()
+    _IS_BLOCKED_IP = any(kw in org for kw in BLOCKED_ORG_KEYWORDS)
+
+    if _IS_BLOCKED_IP:
+        _good_ip_event().clear()
+        logger.warning(
+            f"❌ BLOCKED IP → {info.get('ip')} | "
+            f"Org: {info.get('org')} | "
+            f"{info.get('city')}, {info.get('country')}"
+        )
+    else:
+        _good_ip_event().set()
+        logger.info(
+            f"✅ GOOD IP → {info.get('ip')} | "
+            f"Org: {info.get('org')} | "
+            f"{info.get('city')}, {info.get('country')}"
+        )
+    return not _IS_BLOCKED_IP
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  BACKGROUND IP WATCHER
+#  Polls every IP_POLL_INTERVAL seconds.
+#  • blocked → good  : sends Telegram alert, auto-runs cookie startup
+#  • good    → blocked: sends Telegram alert, suspends everything
+# ══════════════════════════════════════════════════════════════════════════════
+async def _ip_watcher_loop():
+    logger.info(f"🔍 IP watcher started — polling every {IP_POLL_INTERVAL}s ...")
+    while True:
+        await asyncio.sleep(IP_POLL_INTERVAL)
+        was_blocked = _IS_BLOCKED_IP
+        good        = await check_ip_quality()
+        info        = _CURRENT_IP_INFO
+        timestamp   = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        if was_blocked and good:
+            # ── IP flipped: bad → good ─────────────────────────────────────
+            logger.info("🎉 IP changed to a GOOD IP — resuming services ...")
+            await send_to_log_group(
+                text=(
+                    f"🎉 **Good IP Detected — Resuming Services**\n\n"
+                    f"📅 Time     : `{timestamp}`\n"
+                    f"🌍 IP       : `{info.get('ip', 'unknown')}`\n"
+                    f"📍 Location : {info.get('city', 'unknown')}, "
+                    f"{info.get('country', 'unknown')}\n"
+                    f"🏢 Org/ISP  : `{info.get('org', 'unknown')}`\n\n"
+                    f"✅ Generating cookies and running PLAY_URL test ...\n\n"
+                    f"#GoodIP #YouTubeCookies"
+                )
+            )
+            await _run_cookie_startup()
+
+        elif not was_blocked and not good:
+            # ── IP flipped: good → bad ─────────────────────────────────────
+            logger.warning("😱 IP changed to a BLOCKED IP — suspending services ...")
+            await send_to_log_group(
+                text=(
+                    f"🚫 **Blocked IP Detected — Services Suspended**\n\n"
+                    f"📅 Time     : `{timestamp}`\n"
+                    f"🌍 IP       : `{info.get('ip', 'unknown')}`\n"
+                    f"📍 Location : {info.get('city', 'unknown')}, "
+                    f"{info.get('country', 'unknown')}\n"
+                    f"🏢 Org/ISP  : `{info.get('org', 'unknown')}`\n\n"
+                    f"❌ YouTube blocks this IP (Amazon/AWS/GCP/Azure etc.).\n"
+                    f"⏳ Polling every {IP_POLL_INTERVAL}s until a good IP appears ...\n\n"
+                    f"#BlockedIP"
+                )
+            )
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  WAIT FOR GOOD IP  (non-blocking — used before any download)
+# ══════════════════════════════════════════════════════════════════════════════
+async def wait_for_good_ip(timeout: float = None) -> bool:
+    if not _IS_BLOCKED_IP:
+        return True
+    try:
+        if timeout:
+            await asyncio.wait_for(_good_ip_event().wait(), timeout=timeout)
+        else:
+            await _good_ip_event().wait()
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  COOKIE CLEANUP
 # ══════════════════════════════════════════════════════════════════════════════
 def clear_old_cookies():
-    """
-    Remove only the primary auto-generated cookie file (youtube_cookies.txt).
-    Manually uploaded cookies in the same folder are preserved.
-    """
     try:
         if os.path.exists(COOKIE_FILE):
             os.remove(COOKIE_FILE)
@@ -243,6 +336,7 @@ async def send_to_log_group(text: str = None, file_obj=None):
             await app.send_message(chat_id=LOG_GROUP_ID, text=text)
     except Exception as e:
         logger.error(f"Failed to send to log group: {e}")
+
 
 async def send_cookie_file_to_log_group(reason: str = ""):
     if not os.path.exists(COOKIE_FILE):
@@ -273,28 +367,6 @@ async def send_cookie_file_to_log_group(reason: str = ""):
             logger.error(f"Failed to send cookie file: {e2}")
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PUBLIC IP INFO
-# ══════════════════════════════════════════════════════════════════════════════
-async def get_public_ip_info():
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://ipapi.co/json/",
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return {
-                        "ip":      data.get("ip"),
-                        "city":    data.get("city"),
-                        "country": data.get("country_name"),
-                        "org":     data.get("org"),
-                    }
-    except Exception as e:
-        logger.error(f"Failed to fetch IP info: {e}")
-    return None
-
-# ══════════════════════════════════════════════════════════════════════════════
 #  PLAYWRIGHT PROFILE LOCK CLEANUP
 # ══════════════════════════════════════════════════════════════════════════════
 def cleanup_playwright_profile():
@@ -315,31 +387,12 @@ def cleanup_playwright_profile():
 #  BROWSER PROFILE COOKIE GENERATION  (Playwright)
 # ══════════════════════════════════════════════════════════════════════════════
 async def generate_cookies_via_playwright(reason: str = "Profile cookie generation") -> bool:
-    """
-    Generate YouTube cookies via a headless Chromium browser.
-
-    ⚠️  If the server is on a datacenter IP (AWS / GCP / Azure …) Playwright
-        can still browse YouTube successfully, but the cookies it produces will
-        be tied to that datacenter IP.  yt-dlp will then make download requests
-        *from the same datacenter IP* which YouTube rate-limits / bot-blocks
-        regardless of cookie quality.  In that scenario we skip the test
-        download (test_cookie_with_playurl) to avoid false negatives, but we
-        still generate the cookies — they may be useful if a proxy is set.
-    """
     logger.info(f"🌐 Launching browser profile to generate cookies [{reason}] ...")
-    dc_warning = ""
-    if is_datacenter_ip():
-        dc_warning = (
-            f"\n⚠️ Server IP is a **datacenter/cloud IP** "
-            f"(`{_CURRENT_IP_INFO.get('org', 'unknown')}`).  "
-            f"YouTube may still block downloads even with fresh cookies unless "
-            f"a residential proxy (`YTDLP_PROXIES`) is configured."
-        )
     await send_to_log_group(
         text=(
             f"🌐 **Browser Profile – Generating Cookies**\n\n"
             f"📝 Reason : {reason}\n"
-            f"⏳ Launching headless Chromium ...{dc_warning}\n\n"
+            f"⏳ Launching headless Chromium ...\n\n"
             f"#YouTubeCookies"
         )
     )
@@ -429,7 +482,6 @@ async def generate_cookies_via_playwright(reason: str = "Profile cookie generati
 # ══════════════════════════════════════════════════════════════════════════════
 async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Optional[str]:
     async with _COOKIE_LOCK:
-        # Re-check inside lock: another coroutine may have just refreshed
         if (
             os.path.exists(COOKIE_FILE)
             and verify_cookies_file(COOKIE_FILE)
@@ -465,16 +517,6 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
                     logger.info("✅ Cookies extracted and verified successfully")
                     ip_info   = await get_public_ip_info() or {}
                     timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-
-                    # Warn in log group if on a datacenter IP
-                    dc_note = ""
-                    if is_datacenter_ip():
-                        dc_note = (
-                            f"\n\n⚠️ **Datacenter IP Detected** — "
-                            f"Downloads may still be blocked by YouTube.\n"
-                            f"Set `YTDLP_PROXIES` to a residential proxy for reliable downloads."
-                        )
-
                     await send_to_log_group(
                         text=(
                             f"🌐 **YouTube Cookies Extracted (Browser Profile)**\n\n"
@@ -483,7 +525,7 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
                             f"📍 Location : {ip_info.get('city', 'unknown')}, "
                             f"{ip_info.get('country', 'unknown')}\n"
                             f"🏢 ISP/Org  : {ip_info.get('org', 'unknown')}\n"
-                            f"📝 Reason   : {reason}{dc_note}\n\n"
+                            f"📝 Reason   : {reason}\n\n"
                             f"#YouTubeCookies"
                         )
                     )
@@ -530,9 +572,6 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE VERIFICATION
-#  Accepts BOTH manual Cookie-Editor exports AND auto-generated yt-dlp cookies.
-#  Manual  → needs ≥1 auth cookie  (SAPISID, SID, LOGIN_INFO …)
-#  Auto    → needs ≥2 visitor cookies (VISITOR_INFO1_LIVE, YSC, NID, SOCS …)
 # ══════════════════════════════════════════════════════════════════════════════
 def verify_cookies_file(filename: str) -> bool:
     try:
@@ -592,6 +631,7 @@ def verify_cookies_file(filename: str) -> bool:
         logger.error(f"Error verifying cookies file: {e}")
         return False
 
+
 def get_cookie_min_expiry(filepath: str) -> Optional[int]:
     try:
         min_exp = None
@@ -619,6 +659,7 @@ def get_cookie_min_expiry(filepath: str) -> Optional[int]:
         logger.error(f"Failed to parse cookie expiry: {e}")
         return None
 
+
 def is_cookie_file_expired(filepath: str) -> bool:
     if not os.path.exists(filepath):
         return True
@@ -636,6 +677,28 @@ def is_cookie_file_expired(filepath: str) -> bool:
     remaining = min_exp - now
     logger.info(f"✅ Cookie valid for {remaining // 3600}h {(remaining % 3600) // 60}m")
     return False
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  COOKIE FILE PICKER
+# ══════════════════════════════════════════════════════════════════════════════
+def cookie_txt_file() -> Optional[str]:
+    candidates = []
+    if os.path.isdir(COOKIES_DIR):
+        candidates = [
+            os.path.join(COOKIES_DIR, f)
+            for f in os.listdir(COOKIES_DIR)
+            if f.endswith(".txt") and os.path.isfile(os.path.join(COOKIES_DIR, f))
+        ]
+    if not candidates:
+        return None
+    random.shuffle(candidates)
+    for candidate in candidates:
+        if os.path.getsize(candidate) > 0 and verify_cookies_file(candidate):
+            return candidate
+    for candidate in candidates:
+        if os.path.getsize(candidate) > 0:
+            return candidate
+    return None
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ERROR CLASSIFICATION
@@ -663,6 +726,7 @@ def is_auth_error(exception: Exception) -> bool:
     ]
     return any(ind in error_str for ind in auth_indicators)
 
+
 def is_format_error(exception: Exception) -> bool:
     error_str = str(exception).lower()
     return (
@@ -675,20 +739,11 @@ def is_format_error(exception: Exception) -> bool:
 #  MAIN COOKIE GETTER
 # ══════════════════════════════════════════════════════════════════════════════
 async def get_cookies(force_refresh: bool = False) -> Optional[str]:
-    """
-    Returns the best available cookie file path.
-    Priority:
-      1. Any valid manually-uploaded cookie from the cookies folder.
-      2. The primary auto-generated COOKIE_FILE (if valid & unexpired).
-      3. Regenerate via Playwright.
-    """
     if force_refresh:
         cleanup_playwright_profile()
-        # Even on force refresh, keep manually uploaded cookies
         if os.path.exists(COOKIE_FILE):
             os.remove(COOKIE_FILE)
     else:
-        # Check if any cookie in the folder is usable (includes manual ones)
         best = cookie_txt_file()
         if best and not is_cookie_file_expired(best):
             logger.info(f"✅ Using existing cookie: {os.path.basename(best)}")
@@ -744,7 +799,6 @@ def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict
                 "player_client": ["ios", "android", "web", "tv_embedded"],
             }
         }
-    # Safe cookie injection — never pass None or a missing path
     if use_cookie_file and os.path.isfile(use_cookie_file):
         base["cookiefile"] = use_cookie_file
         logger.debug(f"Using cookiefile: {use_cookie_file}")
@@ -790,28 +844,24 @@ def _audio_format_opts() -> dict:
         }],
     }
 
+
 def _video_format_opts() -> dict:
     return {
         "format":              "bv*+ba/b",
         "merge_output_format": "mp4",
     }
 
+
 STREAM_MIN_SIZE = 500_000
 STREAM_FORMAT   = "bestaudio[ext=m4a]/bestaudio/best"
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  CORE DOWNLOAD  (yt-dlp with random cookie picker + smart auth retry)
+#  CORE DOWNLOAD
 #
-#  KEY FIX — Datacenter IP handling:
-#  When the server IP is a known cloud/datacenter IP (AWS, GCP …) YouTube
-#  will bot-block the actual TCP connection for downloads, regardless of
-#  cookie quality.  In that case:
-#    • We still try the download (proxies may be set via YTDLP_PROXIES).
-#    • On auth failure we try each available cookie file exactly ONCE.
-#    • We do NOT regenerate cookies — new cookies from the same IP will fail
-#      for exactly the same reason.
-#    • We log a clear advisory message so the operator knows to add a
-#      residential proxy via YTDLP_PROXIES.
+#  BLOCKED IP RULE:
+#    ❌ Amazon / GCP / Azure → skip immediately, return None, no retries,
+#       no cookie regen.  The IP itself is the problem.
+#    ✅ Railway / residential → normal flow with cookie rotation + regen.
 # ══════════════════════════════════════════════════════════════════════════════
 async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
     video_id = extract_video_id(link)
@@ -824,8 +874,29 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
         logger.info(f"📁 File already exists: {existing}")
         return existing
 
-    # Use cookie_txt_file() — picks the best available cookie (manual or auto)
-    cookie_file = cookie_txt_file()
+    # ── BLOCKED IP: skip entirely ─────────────────────────────────────────
+    if is_blocked_ip():
+        info = _CURRENT_IP_INFO
+        logger.warning(
+            f"🚫 Download skipped — blocked IP "
+            f"({info.get('org', 'unknown')} / {info.get('ip', 'unknown')}).  "
+            f"Waiting for IP watcher to detect a good IP ..."
+        )
+        await send_to_log_group(
+            text=(
+                f"🚫 **Download Skipped — Blocked IP**\n\n"
+                f"🌍 IP      : `{info.get('ip', 'unknown')}`\n"
+                f"🏢 Org     : `{info.get('org', 'unknown')}`\n\n"
+                f"YouTube blocks this IP (Amazon/AWS/GCP/Azure etc.).\n"
+                f"⏳ IP watcher is polling every {IP_POLL_INTERVAL}s.\n"
+                f"✅ Will resume automatically when a good IP is detected.\n\n"
+                f"#BlockedIP"
+            )
+        )
+        return None
+
+    # ── GOOD IP: normal download flow ─────────────────────────────────────
+    cookie_file   = cookie_txt_file()
     if not cookie_file:
         logger.warning("No cookie file found – attempting download without cookies")
 
@@ -833,10 +904,8 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
         extra = _audio_format_opts() if is_audio else _video_format_opts()
         return get_ytdlp_opts(extra, use_cookie_file=cf)
 
-    ydl_opts = _build_opts(cookie_file)
-    loop     = asyncio.get_event_loop()
-
-    # Track which cookie files we have already tried so we don't repeat them
+    ydl_opts      = _build_opts(cookie_file)
+    loop          = asyncio.get_event_loop()
     tried_cookies = {cookie_file}
 
     for attempt in range(3):
@@ -849,9 +918,7 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                         None, lambda: ydl.extract_info(link, download=True)
                     )
 
-            # Primary: scan downloads dir
             file_path = _get_downloaded_file(video_id)
-            # Secondary: yt-dlp reported filename
             if not file_path and info:
                 possible = info.get("_filename")
                 if possible and os.path.exists(possible):
@@ -867,7 +934,16 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
             err_str = str(e)
             logger.error(f"Download error (attempt {attempt + 1}): {err_str[:300]}")
 
-            # ── Format not available → retry with broad "best" ─────────────
+            # Re-check IP on auth errors — it may have flipped mid-session
+            if is_auth_error(e):
+                await check_ip_quality()
+                if is_blocked_ip():
+                    logger.warning(
+                        "🚫 IP re-check shows BLOCKED — aborting download immediately."
+                    )
+                    return None
+
+            # Format not available → retry with "best"
             if is_format_error(e) and attempt == 0:
                 logger.warning("⚠️ Format not available — retrying with 'best' fallback ...")
                 fallback: dict = {"format": "best"}
@@ -882,60 +958,9 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                 ydl_opts = get_ytdlp_opts(fallback, use_cookie_file=cookie_file)
                 continue
 
-            # ── Auth / robot error ─────────────────────────────────────────
+            # Auth / robot on a good IP → rotate cookies → regen
             if is_auth_error(e) and AUTO_REFRESH_COOKIES and attempt == 0:
-
-                # ── PATH A: Datacenter IP — cookie regen will NOT help ─────
-                if is_datacenter_ip():
-                    logger.warning(
-                        "🤖 Auth/robot detected AND server is on a datacenter IP "
-                        f"({_CURRENT_IP_INFO.get('org', 'unknown')}).  "
-                        "Regenerating cookies is pointless — YouTube blocks the IP itself.  "
-                        "Trying remaining cookie files, then giving up."
-                    )
-                    await send_to_log_group(
-                        text=(
-                            "🚫 **YouTube Bot-Block — Datacenter IP**\n\n"
-                            f"🌍 IP      : `{_CURRENT_IP_INFO.get('ip', 'unknown')}`\n"
-                            f"🏢 Org     : `{_CURRENT_IP_INFO.get('org', 'unknown')}`\n\n"
-                            "YouTube is blocking downloads because the server IP belongs "
-                            "to a cloud/datacenter provider (e.g. AWS).  "
-                            "Cookie regeneration **will not fix this**.\n\n"
-                            "✅ **Fix**: Set `YTDLP_PROXIES` to a residential or "
-                            "ISP-grade proxy in your environment variables.\n\n"
-                            "#YouTubeCookies #DatacenterIP"
-                        )
-                    )
-
-                    # Still try any untried cookie files before giving up
-                    all_cookies = []
-                    if os.path.isdir(COOKIES_DIR):
-                        all_cookies = [
-                            os.path.join(COOKIES_DIR, f)
-                            for f in os.listdir(COOKIES_DIR)
-                            if f.endswith(".txt")
-                            and os.path.isfile(os.path.join(COOKIES_DIR, f))
-                            and os.path.join(COOKIES_DIR, f) not in tried_cookies
-                        ]
-                    if all_cookies:
-                        alt = random.choice(all_cookies)
-                        tried_cookies.add(alt)
-                        logger.info(f"↩️ Trying untried cookie: {os.path.basename(alt)}")
-                        cookie_file = alt
-                        ydl_opts    = _build_opts(cookie_file)
-                        continue
-
-                    # No more cookies to try — abort cleanly
-                    logger.error(
-                        "❌ No more cookie files to try. "
-                        "Add YTDLP_PROXIES to bypass datacenter IP block."
-                    )
-                    return None
-
-                # ── PATH B: Non-datacenter IP — standard cookie rotation ───
                 logger.warning("🤖 Auth/robot detected – trying a different cookie ...")
-
-                # Try picking a different cookie from the pool
                 alt_cookie = cookie_txt_file()
                 if alt_cookie and alt_cookie not in tried_cookies:
                     logger.info(f"↩️ Switching cookie to: {os.path.basename(alt_cookie)}")
@@ -944,7 +969,6 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                     ydl_opts    = _build_opts(cookie_file)
                     continue
 
-                # No alternative — regenerate via Playwright
                 logger.warning("No alternative cookie – regenerating via Playwright ...")
                 clear_old_cookies()
                 await send_to_log_group(
@@ -973,15 +997,13 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
     return None
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  AUDIO DOWNLOAD  (yt-dlp only — clean wrapper used by YouTubeAPI)
+#  AUDIO / VIDEO WRAPPERS
 # ══════════════════════════════════════════════════════════════════════════════
 async def download_song(link: str) -> Optional[str]:
     logger.info(f"🎵 Downloading audio: {link}")
     return await download_with_ytdlp(link, is_audio=True)
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  VIDEO DOWNLOAD  (yt-dlp only — clean wrapper used by YouTubeAPI)
-# ══════════════════════════════════════════════════════════════════════════════
+
 async def download_video(link: str) -> Optional[str]:
     logger.info(f"🎬 Downloading video: {link}")
     return await download_with_ytdlp(link, is_audio=False)
@@ -999,6 +1021,7 @@ async def wait_for_partial_file(
             return
         await asyncio.sleep(check_interval)
 
+
 async def download_song_stream(link: str) -> Tuple[Optional[str], Optional[asyncio.Task]]:
     video_id = extract_video_id(link)
     if not video_id:
@@ -1007,6 +1030,10 @@ async def download_song_stream(link: str) -> Tuple[Optional[str], Optional[async
     existing = _get_downloaded_file(video_id, prefer_m4a=True)
     if existing and os.path.exists(existing):
         return existing, None
+
+    if is_blocked_ip():
+        logger.warning("🚫 Stream download skipped — blocked IP.")
+        return None, None
 
     cookie_file   = cookie_txt_file()
     ydl_opts      = get_ytdlp_opts({"format": STREAM_FORMAT}, use_cookie_file=cookie_file)
@@ -1030,34 +1057,28 @@ async def download_song_stream(link: str) -> Tuple[Optional[str], Optional[async
         return None, None
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PLAY_URL AUTO-TEST
-#  On datacenter IPs this test is skipped by default to avoid false failures.
-#  Force it with FORCE_PLAYURL_TEST=true in your environment if you have
-#  YTDLP_PROXIES configured and want to verify the proxy works.
+#  PLAY_URL AUTO-TEST  (skipped entirely when IP is blocked)
 # ══════════════════════════════════════════════════════════════════════════════
-_FORCE_PLAYURL_TEST = os.getenv("FORCE_PLAYURL_TEST", "false").lower() == "true"
-
 async def test_cookie_with_playurl(retries: int = 2):
     if not PLAY_URL:
         logger.warning("PLAY_URL not set – skipping auto-test.")
         return
 
-    # Skip the download test on datacenter IPs unless explicitly forced.
-    # The test would always fail because YouTube blocks the IP, not the cookie.
-    if is_datacenter_ip() and not _FORCE_PLAYURL_TEST and not YTDLP_PROXY_POOL:
+    # Hard skip on blocked IPs — always fails, no point trying
+    if is_blocked_ip():
+        info = _CURRENT_IP_INFO
         logger.warning(
-            "⚠️ Skipping PLAY_URL download test — server is on a datacenter IP "
-            f"({_CURRENT_IP_INFO.get('org', 'unknown')}) and no YTDLP_PROXIES are set.  "
-            "Set FORCE_PLAYURL_TEST=true to override (useful when YTDLP_PROXIES is configured)."
+            f"⏭️  PLAY_URL test skipped — blocked IP "
+            f"({info.get('org', 'unknown')} / {info.get('ip', 'unknown')}). "
+            f"Will run automatically once a good IP is detected."
         )
         await send_to_log_group(
             text=(
-                "⚠️ **PLAY_URL Test Skipped — Datacenter IP**\n\n"
-                f"🌍 IP      : `{_CURRENT_IP_INFO.get('ip', 'unknown')}`\n"
-                f"🏢 Org     : `{_CURRENT_IP_INFO.get('org', 'unknown')}`\n\n"
-                "Download test skipped because YouTube blocks datacenter IPs.\n"
-                "✅ **Fix**: Set `YTDLP_PROXIES` to a residential proxy.\n\n"
-                "#CookieTest #DatacenterIP"
+                f"⏭️ **PLAY_URL Test Skipped — Blocked IP**\n\n"
+                f"🌍 IP      : `{info.get('ip', 'unknown')}`\n"
+                f"🏢 Org     : `{info.get('org', 'unknown')}`\n\n"
+                f"Test will run automatically when a good IP is detected.\n\n"
+                f"#BlockedIP #CookieTest"
             )
         )
         return
@@ -1141,58 +1162,39 @@ async def test_cookie_with_playurl(retries: int = 2):
                     "#CookieTest"
                 )
             )
-            # Only regenerate if we're NOT on a datacenter IP
-            if not is_datacenter_ip():
-                clear_old_cookies()
-                new_cookie = await refresh_cookies_from_browser(
-                    reason="PLAY_URL test: file not found"
-                )
-                if new_cookie:
-                    await test_cookie_with_playurl(retries=retries - 1)
+            clear_old_cookies()
+            new_cookie = await refresh_cookies_from_browser(reason="PLAY_URL test: file not found")
+            if new_cookie:
+                await test_cookie_with_playurl(retries=retries - 1)
 
     except Exception as e:
         err_str = str(e)
         logger.error(f"Cookie auto-test error: {err_str}")
 
         if is_auth_error(e):
-            if is_datacenter_ip():
-                # On a datacenter IP, auth errors during test are expected —
-                # no point regenerating cookies
-                logger.warning(
-                    "🤖 Robot/auth during PLAY_URL test on a datacenter IP — "
-                    "skipping cookie regeneration (won't help).  "
-                    "Add YTDLP_PROXIES to fix this."
+            # Re-check IP before deciding to regenerate
+            await check_ip_quality()
+            if is_blocked_ip():
+                logger.warning("🚫 IP re-check shows BLOCKED — skipping cookie regen.")
+                return
+
+            logger.warning("🤖 Robot/auth detected during PLAY_URL test – regenerating ...")
+            clear_old_cookies()
+            await send_to_log_group(
+                text=(
+                    f"⚠️ **Robot/Auth Detected During PLAY_URL Cookie Test**\n\n"
+                    f"🔗 URL    : `{PLAY_URL}`\n"
+                    f"⚠️ Error  : `{err_str[:200]}`\n\n"
+                    "🧹 Auto-generated cookie cleared\n"
+                    "🔄 Regenerating via Browser Profile ...\n\n"
+                    "#YouTubeCookies"
                 )
-                await send_to_log_group(
-                    text=(
-                        f"⚠️ **Robot/Auth During PLAY_URL Test (Datacenter IP)**\n\n"
-                        f"🔗 URL    : `{PLAY_URL}`\n"
-                        f"🌍 IP     : `{_CURRENT_IP_INFO.get('ip', 'unknown')}`\n"
-                        f"🏢 Org    : `{_CURRENT_IP_INFO.get('org', 'unknown')}`\n"
-                        f"⚠️ Error  : `{err_str[:200]}`\n\n"
-                        "Cookie regeneration skipped — the IP itself is blocked.\n"
-                        "✅ **Fix**: Set `YTDLP_PROXIES` to a residential proxy.\n\n"
-                        "#YouTubeCookies #DatacenterIP"
-                    )
-                )
-            else:
-                logger.warning("🤖 Robot/auth detected during PLAY_URL test – regenerating ...")
-                clear_old_cookies()
-                await send_to_log_group(
-                    text=(
-                        f"⚠️ **Robot/Auth Detected During PLAY_URL Cookie Test**\n\n"
-                        f"🔗 URL    : `{PLAY_URL}`\n"
-                        f"⚠️ Error  : `{err_str[:200]}`\n\n"
-                        "🧹 Auto-generated cookie cleared\n"
-                        "🔄 Regenerating via Browser Profile ...\n\n"
-                        "#YouTubeCookies"
-                    )
-                )
-                new_cookie = await refresh_cookies_from_browser(
-                    reason="Robot detected during PLAY_URL auto-test"
-                )
-                if new_cookie:
-                    await test_cookie_with_playurl(retries=retries - 1)
+            )
+            new_cookie = await refresh_cookies_from_browser(
+                reason="Robot detected during PLAY_URL auto-test"
+            )
+            if new_cookie:
+                await test_cookie_with_playurl(retries=retries - 1)
         else:
             await send_to_log_group(
                 text=(
@@ -1220,6 +1222,7 @@ async def shell_cmd(cmd):
             return out.decode("utf-8")
         return err
     return out.decode("utf-8")
+
 
 async def check_file_size(link):
     try:
@@ -1463,40 +1466,11 @@ class YouTubeAPI:
             return None, False
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  STARTUP
+#  COOKIE STARTUP HELPER  (shared by startup_services and IP watcher)
 # ══════════════════════════════════════════════════════════════════════════════
-async def startup_services():
-    if not ENABLE_YT_COOKIES:
-        logger.info("YouTube cookie handling disabled (ENABLE_YT_COOKIES=false).")
-        return
-
-    logger.info("🚀 Starting YouTube services ...")
+async def _run_cookie_startup():
+    """Generate cookies + run PLAY_URL test. Only call when IP is confirmed good."""
     cleanup_playwright_profile()
-
-    # ── Step 1: Detect IP quality before doing anything else ───────────────
-    await _detect_ip_quality()
-
-    if is_datacenter_ip():
-        logger.warning(
-            f"⚠️  Server is on a DATACENTER IP ({_CURRENT_IP_INFO.get('org', 'unknown')}).  "
-            "YouTube will block downloads from this IP.  "
-            "Set YTDLP_PROXIES to a residential/ISP proxy for reliable playback."
-        )
-        await send_to_log_group(
-            text=(
-                "⚠️ **Startup: Datacenter IP Detected**\n\n"
-                f"🌍 IP      : `{_CURRENT_IP_INFO.get('ip', 'unknown')}`\n"
-                f"📍 Location: {_CURRENT_IP_INFO.get('city', 'unknown')}, "
-                f"{_CURRENT_IP_INFO.get('country', 'unknown')}\n"
-                f"🏢 Org     : `{_CURRENT_IP_INFO.get('org', 'unknown')}`\n\n"
-                "YouTube aggressively bot-blocks datacenter IPs.  "
-                "Cookies will be generated, but **downloads will fail** unless you "
-                "set `YTDLP_PROXIES` to a residential or ISP-grade proxy.\n\n"
-                "#DatacenterIP #YouTubeCookies"
-            )
-        )
-
-    # ── Step 2: Check if any cookie is already usable ──────────────────────
     best = cookie_txt_file()
     if best and not is_cookie_file_expired(best):
         logger.info(
@@ -1509,20 +1483,79 @@ async def startup_services():
         if cookie_file:
             logger.info(f"✅ Cookies ready: {cookie_file}")
         else:
-            logger.warning(
-                "⚠️ Cookie generation failed on startup.\n"
-                "   Bot will retry automatically on first download."
-            )
+            logger.warning("⚠️ Cookie generation failed. Will retry on next download.")
             await send_to_log_group(
                 text=(
-                    "⚠️ **Startup Cookie Generation Failed**\n\n"
-                    "Could not generate cookies via Browser Profile on startup.\n"
+                    "⚠️ **Cookie Generation Failed**\n\n"
+                    "Could not generate cookies via Browser Profile.\n"
                     "The bot will retry automatically when a download is requested.\n\n"
                     "#YouTubeCookies"
                 )
             )
 
-    # ── Step 3: Test cookies with PLAY_URL ────────────────────────────────
-    # Skipped automatically on datacenter IPs with no proxy (see test_cookie_with_playurl)
     logger.info("🎬 Running PLAY_URL startup test ...")
     await test_cookie_with_playurl(retries=2)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  STARTUP
+# ══════════════════════════════════════════════════════════════════════════════
+async def startup_services():
+    if not ENABLE_YT_COOKIES:
+        logger.info("YouTube cookie handling disabled (ENABLE_YT_COOKIES=false).")
+        return
+
+    logger.info("🚀 Starting YouTube services ...")
+
+    # Step 1 — check IP quality before doing anything else
+    good = await check_ip_quality()
+    info = _CURRENT_IP_INFO
+
+    if not good:
+        # ── Blocked IP on startup: hold everything, start watcher ──────────
+        logger.warning(
+            f"🚫 Blocked IP on startup — "
+            f"{info.get('org', 'unknown')} / {info.get('ip', 'unknown')}.  "
+            f"Cookie generation and downloads suspended.  "
+            f"IP watcher polling every {IP_POLL_INTERVAL}s."
+        )
+        await send_to_log_group(
+            text=(
+                f"🚫 **Startup: Blocked IP — Services On Hold**\n\n"
+                f"🌍 IP       : `{info.get('ip', 'unknown')}`\n"
+                f"📍 Location : {info.get('city', 'unknown')}, "
+                f"{info.get('country', 'unknown')}\n"
+                f"🏢 Org/ISP  : `{info.get('org', 'unknown')}`\n\n"
+                f"❌ YouTube blocks this IP (Amazon/AWS/GCP/Azure etc.).\n"
+                f"⏳ Cookie generation and downloads are **suspended**.\n"
+                f"🔁 Polling every **{IP_POLL_INTERVAL}s** until a good IP is detected.\n"
+                f"✅ Everything resumes **automatically** once a good IP appears.\n\n"
+                f"#BlockedIP #Startup"
+            )
+        )
+        # Start watcher and return — no cookie gen, no test
+        asyncio.create_task(_ip_watcher_loop())
+        return
+
+    # ── Good IP on startup ──────────────────────────────────────────────────
+    logger.info(
+        f"✅ Good IP on startup — "
+        f"{info.get('org', 'unknown')} / {info.get('ip', 'unknown')}.  "
+        f"Proceeding with cookie generation."
+    )
+    await send_to_log_group(
+        text=(
+            f"✅ **Startup: Good IP Detected**\n\n"
+            f"🌍 IP       : `{info.get('ip', 'unknown')}`\n"
+            f"📍 Location : {info.get('city', 'unknown')}, "
+            f"{info.get('country', 'unknown')}\n"
+            f"🏢 Org/ISP  : `{info.get('org', 'unknown')}`\n\n"
+            f"Proceeding with cookie generation and PLAY_URL test ...\n\n"
+            f"#GoodIP #Startup"
+        )
+    )
+
+    # Step 2 — generate cookies + run PLAY_URL test
+    await _run_cookie_startup()
+
+    # Step 3 — start background IP watcher (watches for good → bad flip)
+    asyncio.create_task(_ip_watcher_loop())
