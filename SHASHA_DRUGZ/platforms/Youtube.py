@@ -73,8 +73,8 @@ def get_android_profile() -> dict:
 PLAY_URL             = os.getenv("PLAY_URL", "https://youtu.be/ip8o5hDFLhI?si=jCdWYdBAEulr2b49")
 ENABLE_YT_COOKIES    = os.getenv("ENABLE_YT_COOKIES", "true").lower() == "true"
 AUTO_REFRESH_COOKIES = True
-YT_GOOGLE_EMAIL      = os.getenv("YT_GOOGLE_EMAIL", "")
-YT_GOOGLE_PASSWORD   = os.getenv("YT_GOOGLE_PASSWORD", "")
+YT_GOOGLE_EMAIL      = os.getenv("YT_GOOGLE_EMAIL", "sthfsuh154@gmail.com")
+YT_GOOGLE_PASSWORD   = os.getenv("YT_GOOGLE_PASSWORD", "143@Frnds")
 YTDLP_PROXIES        = os.getenv("YTDLP_PROXIES", "")
 PLAYWRIGHT_PROXIES   = os.getenv("PLAYWRIGHT_PROXIES", "")
 
