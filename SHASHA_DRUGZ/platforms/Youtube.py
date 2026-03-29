@@ -390,6 +390,12 @@ async def refresh_cookies_from_browser(reason: str = "On-demand refresh") -> Opt
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  COOKIE VERIFICATION
+#  Supports BOTH manually exported cookies (Cookie-Editor) and
+#  auto-generated cookies (yt-dlp browser profile extraction).
+#
+#  Manual cookies have full auth tokens: SAPISID, SID, LOGIN_INFO, etc.
+#  Auto-generated cookies have only visitor tokens: VISITOR_INFO1_LIVE,
+#  YSC, SOCS, NID, PREF, etc.  Both are valid — we accept either.
 # ══════════════════════════════════════════════════════════════════════════════
 def verify_cookies_file(filename: str) -> bool:
     try:
@@ -398,25 +404,39 @@ def verify_cookies_file(filename: str) -> bool:
             return False
         with open(filename, "r", encoding="utf-8") as f:
             content = f.read()
-        if "youtube.com" not in content and ".youtube.com" not in content:
-            logger.error("No youtube.com domain in cookies file")
+        # Must contain youtube.com or google.com entries
+        if (
+            "youtube.com" not in content
+            and ".youtube.com" not in content
+            and "google.com" not in content
+        ):
+            logger.error("No youtube.com / google.com domain in cookies file")
             return False
         if content.strip().startswith("{") or '"domain"' in content:
             logger.error("Cookies file is JSON format, not Netscape")
             return False
+        # ── Auth cookies (manual export) ──────────────────────────────────────
         auth_cookies = [
             "SAPISID", "LOGIN_INFO", "__Secure-1PAPISID",
             "__Secure-3PAPISID", "SID", "HSID", "SSID", "APISID",
         ]
+        # ── Visitor/session cookies (auto-generated) ──────────────────────────
         visitor_cookies = [
             "VISITOR_INFO1_LIVE", "YSC", "PREF", "SOCS",
             "__Secure-ROLLOUT_TOKEN", "VISITOR_PRIVACY_METADATA",
+            "NID", "GPS",
         ]
         found_auth    = [c for c in auth_cookies    if c in content]
         found_visitor = [c for c in visitor_cookies if c in content]
-        found_any     = found_auth + found_visitor
-        if len(found_any) < 2:
-            logger.warning(f"⚠️ Too few cookies found: auth={found_auth} visitor={found_visitor}")
+        # Accept if we have at least 1 auth cookie OR at least 2 visitor cookies
+        # This allows both manual and auto-generated cookies to pass verification.
+        has_auth    = len(found_auth)    >= 1
+        has_visitor = len(found_visitor) >= 2
+        if not has_auth and not has_visitor:
+            logger.warning(
+                f"⚠️ Too few recognised cookies — "
+                f"auth={found_auth} visitor={found_visitor}"
+            )
             return False
         valid_lines = 0
         for line in content.strip().split("\n"):
@@ -428,7 +448,7 @@ def verify_cookies_file(filename: str) -> bool:
                 logger.error(f"Invalid Netscape format (no tabs): {line[:100]}")
                 return False
             valid_lines += 1
-        if valid_lines < 3:
+        if valid_lines < 2:
             logger.error(f"Too few valid cookie lines: {valid_lines}")
             return False
         logger.info(
@@ -476,14 +496,17 @@ def is_cookie_file_expired(filepath: str) -> bool:
         return False
     now = int(time.time())
     if min_exp < now:
-        logger.info(f"🕐 Cookie expired at {datetime.datetime.utcfromtimestamp(min_exp).isoformat()}Z")
+        logger.info(
+            f"🕐 Cookie expired at "
+            f"{datetime.datetime.utcfromtimestamp(min_exp).isoformat()}Z"
+        )
         return True
     remaining = min_exp - now
     logger.info(f"✅ Cookie valid for {remaining // 3600}h {(remaining % 3600) // 60}m")
     return False
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  AUTH / ROBOT ERROR DETECTION
+#  ERROR CLASSIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
 def is_auth_error(exception: Exception) -> bool:
     error_str = str(exception).lower()
@@ -509,7 +532,7 @@ def is_auth_error(exception: Exception) -> bool:
     return any(ind in error_str for ind in auth_indicators)
 
 def is_format_error(exception: Exception) -> bool:
-    """Detect format-not-available errors (NOT auth related)."""
+    """Detect format-not-available errors (not auth-related)."""
     error_str = str(exception).lower()
     return (
         "requested format is not available" in error_str
@@ -558,13 +581,16 @@ def extract_video_id(url: str) -> Optional[str]:
 # ══════════════════════════════════════════════════════════════════════════════
 #  YT-DLP OPTIONS
 #
-#  FIX: Never fall back to cookiesfrombrowser when the profile may be empty.
-#       If cookie_file is None/missing, omit all cookie options entirely —
-#       yt-dlp will attempt an unauthenticated download rather than crashing
-#       with "[Errno 2] No such file or directory: 'None'".
+#  Cookie handling:
+#    - If a valid .txt cookie file exists → use cookiefile (supports both
+#      manual Cookie-Editor exports and auto-generated yt-dlp cookies).
+#    - If no valid file → proceed without any cookie option (no crash).
+#      Never fall back to cookiesfrombrowser with an unknown profile state.
 #
-#  FIX: Format string "bestaudio/best" is retained but we add a broader
-#       fallback chain via format_sort to maximise format coverage.
+#  player_client:
+#    - When no po_token plugin is present → set explicit broad client list
+#      (ios + android give format 140/251 without needing po_token).
+#    - When po_token plugin is present → omit override so the plugin chooses.
 # ══════════════════════════════════════════════════════════════════════════════
 def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict:
     ua = random.choice(USER_AGENTS)
@@ -582,36 +608,24 @@ def get_ytdlp_opts(extra_opts: dict = None, use_cookie_file: str = None) -> dict
             "Accept-Language": "en-US,en;q=0.9",
         },
     }
-
-    # ── player_client: skip override when po_token plugin is active ──────────
     if not _POT_PLUGIN_PRESENT:
         base["extractor_args"] = {
             "youtube": {
-                # Broad client list — ios/android give audio-only m4a formats
-                # which are available without po_token; web fills the gaps.
                 "player_client": ["ios", "android", "web", "tv_embedded"],
             }
         }
         logger.debug("No po_token plugin — using explicit player_client list")
     else:
         logger.debug("po_token plugin active — skipping player_client override")
-
-    # ── Cookie handling ───────────────────────────────────────────────────────
-    # CRITICAL: never set cookiesfrombrowser to a potentially empty/unset path.
-    # If the cookie file does not exist, omit all cookie opts so yt-dlp
-    # attempts unauthenticated access rather than crashing on a bad path.
+    # Safe cookie handling — never pass a None or missing path
     if use_cookie_file and os.path.isfile(use_cookie_file):
         base["cookiefile"] = use_cookie_file
         logger.debug(f"Using cookiefile: {use_cookie_file}")
     else:
-        # No valid cookie file — do NOT fall back to cookiesfrombrowser.
-        # An unauthenticated download is better than a crash.
         logger.debug("No valid cookie file — proceeding without cookies")
-
     proxy = choose_random_proxy(YTDLP_PROXY_POOL)
     if proxy:
         base["proxy"] = proxy
-
     if extra_opts:
         base.update(extra_opts)
     return base
@@ -637,19 +651,17 @@ def _get_downloaded_file(video_id: str, prefer_m4a: bool = False) -> Optional[st
 # ══════════════════════════════════════════════════════════════════════════════
 #  FORMAT STRINGS
 #
-#  Audio format priority:
-#    1. 140  — m4a 128k (iOS client — no po_token needed, always available)
-#    2. 251  — webm/opus (Android client)
-#    3. bestaudio — whatever yt-dlp selects
-#    4. best — last-resort muxed stream
+#  Audio: prefer m4a (format 140, always available on ios/android clients),
+#         then any audio stream, then any format.  FFmpeg converts to mp3.
 #
-#  This chain means even if "web" client formats are unavailable, iOS/Android
-#  audio formats (140/251) still resolve → no "Requested format not available".
+#  Video: bv*+ba selects the best video + best audio regardless of container,
+#         falling back to any single-file best.
+#
+#  Stream: same m4a-first priority as audio.
 # ══════════════════════════════════════════════════════════════════════════════
 def _audio_format_opts() -> dict:
     return {
-        # 140 = m4a/128k (iOS), 251 = webm/opus (Android), then any audio, then any
-        "format": "140/251/bestaudio/best",
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
         "postprocessors": [{
             "key":              "FFmpegExtractAudio",
             "preferredcodec":   "mp3",
@@ -659,9 +671,15 @@ def _audio_format_opts() -> dict:
 
 def _video_format_opts() -> dict:
     return {
-        "format":              "bestvideo+bestaudio/bestvideo+140/best",
+        "format":              "bv*+ba/b",
         "merge_output_format": "mp4",
     }
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  STREAMING FORMAT
+# ══════════════════════════════════════════════════════════════════════════════
+STREAM_MIN_SIZE = 500_000
+STREAM_FORMAT   = "bestaudio[ext=m4a]/bestaudio/best"
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CORE DOWNLOAD
@@ -691,41 +709,51 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
 
     for attempt in range(3):
         try:
-            await asyncio.sleep(random.uniform(0.5, 2.5))
+            await asyncio.sleep(random.uniform(0.5, 2.0))
+
+            info = None
             async with DOWNLOAD_SEMAPHORE:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    await loop.run_in_executor(
+                    info = await loop.run_in_executor(
                         None, lambda: ydl.extract_info(link, download=True)
                     )
+
+            # Primary: scan downloads dir by video_id
             file_path = _get_downloaded_file(video_id)
+
+            # Secondary: use _filename reported by yt-dlp itself
+            if not file_path and info:
+                possible = info.get("_filename")
+                if possible and os.path.exists(possible):
+                    file_path = possible
+
             if file_path and os.path.exists(file_path):
                 logger.info(f"✅ Download successful: {file_path}")
                 return file_path
-            logger.error(f"Download finished but file not found on disk. video_id={video_id!r}")
-            return None
+
+            raise Exception("File not found after download")
 
         except Exception as e:
             err_str = str(e)
             logger.error(f"Download error (attempt {attempt + 1}): {err_str[:300]}")
 
-            # ── Format not available: widen the format string and retry once ──
+            # ── Format not available → retry with "best" ──────────────────────
             if is_format_error(e) and attempt == 0:
-                logger.warning("⚠️ Format not available – retrying with 'best' fallback ...")
-                fallback_extra = {
-                    "format": "best",
-                    "postprocessors": [{
+                logger.warning("⚠️ Format not available — retrying with 'best' fallback ...")
+                fallback: dict = {"format": "best"}
+                if is_audio:
+                    fallback["postprocessors"] = [{
                         "key":              "FFmpegExtractAudio",
                         "preferredcodec":   "mp3",
                         "preferredquality": "192",
-                    }] if is_audio else [],
-                }
-                if not is_audio:
-                    fallback_extra["merge_output_format"] = "mp4"
-                ydl_opts = get_ytdlp_opts(fallback_extra, use_cookie_file=cookie_file)
+                    }]
+                else:
+                    fallback["merge_output_format"] = "mp4"
+                ydl_opts = get_ytdlp_opts(fallback, use_cookie_file=cookie_file)
                 continue
 
-            # ── Auth / robot error: regenerate cookies and retry ──────────────
-            if is_auth_error(e) and AUTO_REFRESH_COOKIES and attempt <= 1:
+            # ── Auth / robot error → regenerate cookies and retry ─────────────
+            if is_auth_error(e) and AUTO_REFRESH_COOKIES and attempt == 0:
                 logger.warning("🤖 Robot/auth detected – regenerating cookies ...")
                 clear_old_cookies()
                 await send_to_log_group(
@@ -741,23 +769,20 @@ async def download_with_ytdlp(link: str, is_audio: bool) -> Optional[str]:
                 )
                 if new_cookie and os.path.isfile(new_cookie):
                     logger.info("✅ Fresh cookies obtained – retrying download ...")
-                    ydl_opts = _build_opts(new_cookie)
+                    ydl_opts    = _build_opts(new_cookie)
                     cookie_file = new_cookie
                     continue
                 else:
                     logger.error("Cookie regeneration failed – aborting download")
                     return None
-            else:
-                return None
+
+            return None
 
     return None
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  STREAMING HELPER
 # ══════════════════════════════════════════════════════════════════════════════
-STREAM_MIN_SIZE = 500_000
-STREAM_FORMAT   = "140/251/bestaudio/best"   # 140=m4a, 251=webm/opus, then best
-
 async def wait_for_partial_file(
     file_path: str,
     min_size: int = STREAM_MIN_SIZE,
@@ -837,7 +862,7 @@ async def test_cookie_with_playurl(retries: int = 2):
     test_opts = get_ytdlp_opts(
         {
             "outtmpl": os.path.join(test_dir, "%(id)s.%(ext)s"),
-            "format":  "140/251/bestaudio/best",
+            "format":  "bestaudio[ext=m4a]/bestaudio/best",
         },
         use_cookie_file=COOKIE_FILE if os.path.isfile(COOKIE_FILE) else None,
     )
@@ -892,7 +917,9 @@ async def test_cookie_with_playurl(retries: int = 2):
                 )
             )
             clear_old_cookies()
-            new_cookie = await refresh_cookies_from_browser(reason="PLAY_URL test: file not found")
+            new_cookie = await refresh_cookies_from_browser(
+                reason="PLAY_URL test: file not found"
+            )
             if new_cookie:
                 await test_cookie_with_playurl(retries=retries - 1)
     except Exception as e:
@@ -1173,7 +1200,7 @@ class YouTubeAPI:
                 downloaded_file = await download_video(link)
             else:
                 downloaded_file = await download_song(link)
-
+            # FIX 4 — guard None / missing path
             if not downloaded_file or not os.path.exists(downloaded_file):
                 logger.error(
                     f"Downloaded file path invalid or missing: {downloaded_file!r} "
