@@ -237,7 +237,7 @@ async def show_cookies_command(client, message: Message):
 
         await message.reply_text(
             "\n".join(lines),
-            parse_mode="markdown",
+            #parse_mode="markdown",
         )
     except Exception as e:
         LOGGER("SHASHA_DRUGZ").error(f"SHOWCOOKIES ERROR: {e}")
