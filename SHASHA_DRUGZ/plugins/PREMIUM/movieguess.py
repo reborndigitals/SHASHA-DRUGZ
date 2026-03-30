@@ -1322,9 +1322,9 @@ async def _handle_hint(q, chat_id: int, mode: str, replace_kb: bool):
     elif mode == "dialogue":
         await app.send_message(
             chat_id,
-            f"<blockquote>💬 **ꜰᴀᴍᴏᴜꜱ ᴅɪᴀʟᴏɢᴜᴇ</blockquote>**\n"
-            f"<blockquote>{movie.get('dialogue', '\"...\"')}\n\n"
-            f"🎬 ꜰʀᴏᴍ ᴡʜɪᴄʜ ᴍᴏᴠɪᴇ ɪꜱ ᴛʜɪꜱ?</blockquote>"
+            f"<blockquote>💬 <b>Famous Dialogue</b></blockquote>\n"
+            f"<blockquote>{movie.get('dialogue', '...')}\n\n"
+            f"🎬 From which movie is this?</blockquote>"
         )
     elif mode == "image":
         # Start progressive blur reveal
