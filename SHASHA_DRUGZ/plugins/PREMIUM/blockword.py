@@ -809,8 +809,6 @@ async def blockword_callbacks(client: Client, query: CallbackQuery):
 __menu__ = "CMD_MANAGE"
 __mod_name__ = "H_B_88"
 __help__ = """
-🛡 **BlockWord Help**
-
 👮 **Admin Commands:**
 🔻 /blockword — ᴏᴘᴇɴ ᴅᴀsʜʙᴏᴀʀᴅ
 🔻 /blockword on|off — ǫᴜɪᴄᴋ ᴛᴏɢɢʟᴇ
