@@ -58,7 +58,7 @@ async def get_settings(chat_id: int) -> dict:
     if not doc:
         doc = {
             "chat_id": chat_id,
-            "enabled": False,
+            "enabled": True,
             "auto_approve": False,
             "log_chat_id": None,
         }
