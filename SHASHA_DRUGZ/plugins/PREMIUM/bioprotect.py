@@ -1,37 +1,9 @@
 # SHASHA_DRUGZ/dplugins/COMMON/MANAGE/bioprotect.py
 # ══════════════════════════════════════════════════════════════
 #  Bio Link Protector — SHASHA_DRUGZ Plugin
-#
-#  FEATURES:
-#    • Auto-detect URLs in user bio on every message
-#    • Per-group enable/disable via /biolink toggle
-#    • Penalty modes: delete-only (default), warn→action, mute, ban
-#    • Warn limit selector (1–5), configurable penalty after warns
-#    • Whitelist system: /biofree, /biounfree, /biofreelist
-#    • Config panel: /bioconfig  (admins only)
-#    • All actions have inline undo buttons (unmute / unban / whitelist)
-#
-#  DEFAULT BEHAVIOR (before any /bioconfig):
-#    • biolink = ENABLED  (auto-enabled when bot is added to group)
-#    • mode    = "delete"  (just removes the message, no warn/mute/ban)
-#    • limit   = 3         (warn limit, used when mode = "warn")
-#    • penalty = "delete"  (action after warns = delete only)
-#
-#  COMMANDS:
-#    /biolink            → show current status + toggle button (owner)
-#    /biolink enable     → enable bio-link protection (owner)
-#    /biolink disable    → disable bio-link protection (owner)
-#    /bioconfig          → full settings panel (admins)
-#    /biofree [reply|id] → whitelist a user (admins)
-#    /biounfree [reply|id] → remove from whitelist (admins)
-#    /biofreelist        → list all whitelisted users (admins)
-#
-#  PRIORITY FIX:
-#    check_bio runs at group=1 (HIGHEST PRIORITY).
-#    This guarantees bio is checked BEFORE antiflood/approval (group=5)
-#    can delete the message — solving the "biolink never detects" bug.
 # ══════════════════════════════════════════════════════════════
 import re
+import asyncio
 import logging
 from pyrogram import filters, errors
 from pyrogram.enums import ChatMemberStatus
@@ -44,42 +16,32 @@ from pyrogram.types import (
     CallbackQuery,
 )
 from SHASHA_DRUGZ.core.mongo import mongodb
-
 logger = logging.getLogger("BioProtect")
 
-# ── URL regex — detects http/https/t.me links and @usernames in bio ──────────
 _URL_RE = re.compile(
     r"(https?://\S+|t\.me/\S+|@[A-Za-z0-9_]{5,})",
     re.IGNORECASE,
 )
 
-# ── Custom filter: passes only non-command messages ───────────────────────────
-# filters.command(None) crashes Pyrogram — use filters.create lambda instead.
 @filters.create
 async def _not_command(_, __, message):
-    """Returns True when the message is NOT a bot command."""
     if message.text and message.text.startswith("/"):
         return False
     return True
 
-# ── MongoDB collections ───────────────────────────────────────────────────────
 _cfg_col  = mongodb["bioprotect_config"]
 _warn_col = mongodb["bioprotect_warns"]
 _wl_col   = mongodb["bioprotect_whitelist"]
 
-# ══════════════════════════════════════════════════════════════
-#  DB HELPERS
-# ══════════════════════════════════════════════════════════════
 async def _get_cfg(chat_id: int) -> dict:
-    """Return config for this group, inserting defaults if missing."""
     doc = await _cfg_col.find_one({"chat_id": chat_id})
     if doc is None:
         doc = {
             "chat_id": chat_id,
-            "enabled": True,        # enabled by default
-            "mode":    "delete",    # delete | warn | mute | ban
-            "limit":   3,           # warn limit (used when mode=warn)
-            "penalty": "delete",    # action after warns: delete | mute | ban
+            "enabled": True,
+            "mode":    "delete",
+            "limit":   3,
+            "penalty": "delete",
         }
         await _cfg_col.insert_one(doc)
     return doc
@@ -120,9 +82,6 @@ async def _rm_wl(chat_id: int, user_id: int):
 async def _get_wl(chat_id: int) -> list:
     return [d["user_id"] async for d in _wl_col.find({"chat_id": chat_id})]
 
-# ══════════════════════════════════════════════════════════════
-#  PERMISSION HELPERS
-# ══════════════════════════════════════════════════════════════
 async def _is_admin(client, chat_id: int, user_id: int) -> bool:
     try:
         m = await client.get_chat_member(chat_id, user_id)
@@ -137,12 +96,8 @@ async def _is_owner(client, chat_id: int, user_id: int) -> bool:
     except Exception:
         return False
 
-# ══════════════════════════════════════════════════════════════
-#  AUTO-ENABLE WHEN BOT IS ADDED TO A GROUP
-# ══════════════════════════════════════════════════════════════
 @app.on_chat_member_updated(filters.group)
 async def on_bot_added(client, update):
-    """Auto-enable bio-protect when the bot is added to a group."""
     try:
         bot = await client.get_me()
         if update.new_chat_member and update.new_chat_member.user.id == bot.id:
@@ -162,17 +117,10 @@ async def on_bot_added(client, update):
                     },
                     upsert=True,
                 )
-                logger.info(
-                    "BioProtect auto-enabled for chat %s (%s)",
-                    chat_id,
-                    getattr(update.chat, "title", "?"),
-                )
+                logger.info("BioProtect auto-enabled for chat %s (%s)", chat_id, getattr(update.chat, "title", "?"))
     except Exception as e:
         logger.warning("on_bot_added error: %s", e)
 
-# ══════════════════════════════════════════════════════════════
-#  KEYBOARDS
-# ══════════════════════════════════════════════════════════════
 def _biolink_kb(enabled: bool, chat_id: int) -> InlineKeyboardMarkup:
     if enabled:
         return InlineKeyboardMarkup([[
@@ -187,24 +135,12 @@ def _biolink_kb(enabled: bool, chat_id: int) -> InlineKeyboardMarkup:
 def _config_main_kb(mode: str, penalty: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(
-                "🍏 ᴅᴇʟᴇᴛᴇ ᴏɴʟʏ" if mode == "delete" else "ᴅᴇʟᴇᴛᴇ ᴏɴʟʏ",
-                callback_data="bp_mode_delete"
-            ),
-            InlineKeyboardButton(
-                "🍏 ᴡᴀʀɴ" if mode == "warn" else "ᴡᴀʀɴ",
-                callback_data="bp_mode_warn"
-            ),
+            InlineKeyboardButton("🍏 ᴅᴇʟᴇᴛᴇ ᴏɴʟʏ" if mode == "delete" else "ᴅᴇʟᴇᴛᴇ ᴏɴʟʏ", callback_data="bp_mode_delete"),
+            InlineKeyboardButton("🍏 ᴡᴀʀɴ" if mode == "warn" else "ᴡᴀʀɴ", callback_data="bp_mode_warn"),
         ],
         [
-            InlineKeyboardButton(
-                "🍏 ᴍᴜᴛᴇ" if mode == "mute" else "ᴍᴜᴛᴇ",
-                callback_data="bp_mode_mute"
-            ),
-            InlineKeyboardButton(
-                "🍏 ʙᴀɴ" if mode == "ban" else "ʙᴀɴ",
-                callback_data="bp_mode_ban"
-            ),
+            InlineKeyboardButton("🍏 ᴍᴜᴛᴇ" if mode == "mute" else "ᴍᴜᴛᴇ", callback_data="bp_mode_mute"),
+            InlineKeyboardButton("🍏 ʙᴀɴ" if mode == "ban" else "ʙᴀɴ", callback_data="bp_mode_ban"),
         ],
         [InlineKeyboardButton("⚙️ ᴡᴀʀɴ ʟɪᴍɪᴛ", callback_data="bp_warn_limit")],
         [InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻",    callback_data="bp_close")],
@@ -212,10 +148,7 @@ def _config_main_kb(mode: str, penalty: str) -> InlineKeyboardMarkup:
 
 def _warn_limit_kb(current: int) -> InlineKeyboardMarkup:
     nums = [
-        InlineKeyboardButton(
-            f"🍏 {n}" if n == current else str(n),
-            callback_data=f"bp_limit_{n}"
-        )
+        InlineKeyboardButton(f"🍏 {n}" if n == current else str(n), callback_data=f"bp_limit_{n}")
         for n in range(1, 6)
     ]
     return InlineKeyboardMarkup([
@@ -228,26 +161,14 @@ def _warn_limit_kb(current: int) -> InlineKeyboardMarkup:
 def _after_penalty_kb(penalty: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(
-                "🍏 ᴅᴇʟᴇᴛᴇ" if penalty == "delete" else "ᴅᴇʟᴇᴛᴇ",
-                callback_data="bp_penalty_delete"
-            ),
-            InlineKeyboardButton(
-                "🍏 ᴍᴜᴛᴇ" if penalty == "mute" else "ᴍᴜᴛᴇ",
-                callback_data="bp_penalty_mute"
-            ),
-            InlineKeyboardButton(
-                "🍏 ʙᴀɴ" if penalty == "ban" else "ʙᴀɴ",
-                callback_data="bp_penalty_ban"
-            ),
+            InlineKeyboardButton("🍏 ᴅᴇʟᴇᴛᴇ" if penalty == "delete" else "ᴅᴇʟᴇᴛᴇ", callback_data="bp_penalty_delete"),
+            InlineKeyboardButton("🍏 ᴍᴜᴛᴇ" if penalty == "mute" else "ᴍᴜᴛᴇ", callback_data="bp_penalty_mute"),
+            InlineKeyboardButton("🍏 ʙᴀɴ" if penalty == "ban" else "ʙᴀɴ", callback_data="bp_penalty_ban"),
         ],
         [InlineKeyboardButton("◀ ʙᴀᴄᴋ", callback_data="bp_back"),
          InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="bp_close")],
     ])
 
-# ══════════════════════════════════════════════════════════════
-#  /biolink — group owner toggle
-# ══════════════════════════════════════════════════════════════
 @app.on_message(filters.group & filters.command("biolink"))
 async def biolink_cmd(client, message):
     chat_id = message.chat.id
@@ -282,7 +203,6 @@ async def biolink_cmd(client, message):
     )
     await message.reply_text(text, reply_markup=_biolink_kb(status, chat_id))
 
-# ── biolink_toggle callback ───────────────────────────────────────────────────
 @app.on_callback_query(filters.regex(r"^biolink_toggle_(-?\d+)$"))
 async def biolink_toggle_cb(client, cq):
     chat_id = int(cq.data.split("_")[2])
@@ -308,9 +228,6 @@ async def biolink_toggle_cb(client, cq):
         pass
     await cq.answer("🟢 ᴇɴᴀʙʟᴇᴅ" if new_val else "🔴 ᴅɪsᴀʙʟᴇᴅ")
 
-# ══════════════════════════════════════════════════════════════
-#  /bioconfig — admin settings panel
-# ══════════════════════════════════════════════════════════════
 @app.on_message(filters.group & filters.command("bioconfig"))
 async def config_cmd(client, message):
     chat_id = message.chat.id
@@ -335,9 +252,6 @@ async def config_cmd(client, message):
     except Exception:
         pass
 
-# ══════════════════════════════════════════════════════════════
-#  CONFIG CALLBACKS
-# ══════════════════════════════════════════════════════════════
 @app.on_callback_query(filters.regex(r"^bp_"))
 async def bp_callbacks(client, cq):
     data    = cq.data
@@ -346,14 +260,12 @@ async def bp_callbacks(client, cq):
     if not await _is_admin(client, chat_id, user_id):
         return await cq.answer("❌ ɴᴏᴛ ᴀɴ ᴀᴅᴍɪɴ.", show_alert=True)
     cfg = await _get_cfg(chat_id)
-
     if data == "bp_close":
         try:
             await cq.message.delete()
         except Exception:
             pass
         return await cq.answer()
-
     if data == "bp_back":
         cfg = await _get_cfg(chat_id)
         text = (
@@ -369,7 +281,6 @@ async def bp_callbacks(client, cq):
         except Exception:
             pass
         return await cq.answer()
-
     if data.startswith("bp_mode_"):
         new_mode = data.replace("bp_mode_", "")
         await _set_cfg(chat_id, mode=new_mode)
@@ -398,7 +309,6 @@ async def bp_callbacks(client, cq):
             except Exception:
                 pass
         return await cq.answer(f"ᴍᴏᴅᴇ → {new_mode}")
-
     if data.startswith("bp_penalty_"):
         new_penalty = data.replace("bp_penalty_", "")
         await _set_cfg(chat_id, penalty=new_penalty)
@@ -413,7 +323,6 @@ async def bp_callbacks(client, cq):
         except Exception:
             pass
         return await cq.answer(f"ᴘᴇɴᴀʟᴛʏ → {new_penalty}")
-
     if data == "bp_warn_limit":
         cfg = await _get_cfg(chat_id)
         try:
@@ -424,7 +333,6 @@ async def bp_callbacks(client, cq):
         except Exception:
             pass
         return await cq.answer()
-
     if data.startswith("bp_limit_"):
         new_limit = int(data.replace("bp_limit_", ""))
         await _set_cfg(chat_id, limit=new_limit)
@@ -433,7 +341,6 @@ async def bp_callbacks(client, cq):
         except Exception:
             pass
         return await cq.answer(f"ᴡᴀʀɴ ʟɪᴍɪᴛ → {new_limit}")
-
     if data.startswith("bp_unmute_"):
         target_id = int(data.split("_")[2])
         try:
@@ -457,7 +364,6 @@ async def bp_callbacks(client, cq):
         except errors.ChatAdminRequired:
             await cq.answer("❌ ɪ ᴅᴏɴ'ᴛ ʜᴀᴠᴇ ᴘᴇʀᴍɪssɪᴏɴ.", show_alert=True)
         return await cq.answer()
-
     if data.startswith("bp_unban_"):
         target_id = int(data.split("_")[2])
         try:
@@ -477,7 +383,6 @@ async def bp_callbacks(client, cq):
         except errors.ChatAdminRequired:
             await cq.answer("❌ ɪ ᴅᴏɴ'ᴛ ʜᴀᴠᴇ ᴘᴇʀᴍɪssɪᴏɴ.", show_alert=True)
         return await cq.answer()
-
     if data.startswith("bp_cancel_warn_"):
         target_id = int(data.split("_")[3])
         await _reset_warns(chat_id, target_id)
@@ -496,7 +401,6 @@ async def bp_callbacks(client, cq):
         except Exception:
             pass
         return await cq.answer()
-
     if data.startswith("bp_whitelist_"):
         target_id = int(data.split("_")[2])
         await _add_wl(chat_id, target_id)
@@ -516,7 +420,6 @@ async def bp_callbacks(client, cq):
         except Exception:
             pass
         return await cq.answer()
-
     if data.startswith("bp_unwhitelist_"):
         target_id = int(data.split("_")[2])
         await _rm_wl(chat_id, target_id)
@@ -535,12 +438,8 @@ async def bp_callbacks(client, cq):
         except Exception:
             pass
         return await cq.answer()
-
     await cq.answer()
 
-# ══════════════════════════════════════════════════════════════
-#  WHITELIST COMMANDS
-# ══════════════════════════════════════════════════════════════
 @app.on_message(filters.group & filters.command("biofree"))
 async def cmd_free(client, message):
     chat_id = message.chat.id
@@ -625,71 +524,68 @@ async def cmd_freelist(client, message):
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ ᴄʟᴏsᴇ", callback_data="bp_close")]])
     await message.reply_text("\n".join(lines), reply_markup=kb)
 
-# ══════════════════════════════════════════════════════════════
-#  CORE BIO CHECK
-#
-#  KEY FIX: group=1 ensures this handler runs BEFORE antiflood/approval
-#  (which are group=5). Without this, approval enforcement deletes the
-#  message first and biolink never gets a chance to inspect the bio.
-# ══════════════════════════════════════════════════════════════
 @app.on_message(filters.group & ~filters.bot & _not_command, group=1)
 async def check_bio(client, message):
-    # Extra safety — skip commands
     if message.text and message.text.startswith("/"):
         return
     if not message.from_user:
         return
-
     chat_id = message.chat.id
     user_id = message.from_user.id
-
-    # Load config — skip if protection disabled
     cfg = await _get_cfg(chat_id)
     if not cfg["enabled"]:
         return
-
-    # Skip admins and whitelisted users
     if await _is_admin(client, chat_id, user_id):
         return
     if await _is_wl(chat_id, user_id):
         return
-
-    # Fetch user profile
     try:
         user = await client.get_users(user_id)
     except Exception:
         return
-
     bio = getattr(user, "bio", None) or ""
-
     def _bio_has_link(bio_text: str) -> bool:
         return bool(_URL_RE.search(bio_text))
-
-    # Clean bio — reset warns and exit
     if not _bio_has_link(bio):
         warns = await _get_warns(chat_id, user_id)
         if warns > 0:
             await _reset_warns(chat_id, user_id)
         return
-
-    # URL found in bio
     name    = user.first_name or str(user_id)
     mention = f"[{name}](tg://user?id={user_id})"
     mode    = cfg["mode"]
     limit   = cfg["limit"]
     penalty = cfg["penalty"]
 
-    # Always try to delete the triggering message first
-    try:
-        await message.delete()
-    except errors.MessageDeleteForbidden:
-        pass
-    except Exception:
-        pass
+    # ── Helper coroutines ─────────────────────────────────────
+    async def _delete_msg():
+        try:
+            await message.delete()
+        except Exception:
+            pass
 
-    # DEFAULT: delete only
+    async def _send_bio_report():
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔻 ᴡʜɪᴛᴇʟɪsᴛ ✅", callback_data=f"bp_whitelist_{user_id}"),
+            InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻",      callback_data="bp_close"),
+        ]])
+        try:
+            await message.reply_text(
+                f"<blockquote>🚨 {mention}\n\n"
+                f"❌ **ʀᴇᴍᴏᴠᴇ ʏᴏᴜʀ ʙɪᴏ ʟɪɴᴋ**\n\n"
+                f"ʏᴏᴜʀ ᴍᴇssᴀɢᴇ ᴡᴀs ᴅᴇʟᴇᴛᴇᴅ ʙᴇᴄᴀᴜsᴇ ʏᴏᴜʀ ʙɪᴏ ᴄᴏɴᴛᴀɪɴs ᴀ ʟɪɴᴋ.</blockquote>",
+                reply_markup=kb
+            )
+        except Exception:
+            pass
+
+    # DEFAULT: delete only — instant parallel (delete + report at same time)
     if mode == "delete":
+        await asyncio.gather(_delete_msg(), _send_bio_report())
         return
+
+    # Other modes: delete first, then handle
+    await _delete_msg()
 
     # WARN MODE
     if mode == "warn":
@@ -778,9 +674,6 @@ async def check_bio(client, message):
             pass
         return
 
-# ══════════════════════════════════════════════════════════════
-#  MODULE METADATA
-# ══════════════════════════════════════════════════════════════
 __menu__     = "CMD_PRO"
 __mod_name__ = "H_B_81"
 __help__ = """
