@@ -2,40 +2,27 @@
 #   GUESS MOVIE GAME MODULE  —  SHASHA_DRUGZ  v1.0
 #   File: SHASHA_DRUGZ/plugins/GAMES/guessmoviegame.py
 #
-#   COMMANDS
-#   ────────
-#   /gmovie or /guessmovie  → Start a movie guessing game
-#   /movietop               → Global leaderboard (with filters)
-#   /mymovrank              → Personal rank & stats
+#   FIXES APPLIED:
+#   1. FIX TEXT HINT BUG: "if mode in hints" blocked text hints from
+#      being given more than once. Text has 4 progressive clues — they
+#      were unreachable after the first. Fix: allow "text" mode to repeat.
+#      → if mode != "text" and mode in hints:
 #
-#   HINT MODES  (host selects via inline buttons)
-#   ──────────────────────────────────────────────
-#   1. Text Hint         – Descriptive text clues
-#   2. Emoji Puzzle      – Emoji-based riddle
-#   3. Dialogue Guess    – Famous movie dialogue
-#   4. Image Hint        – Blurred poster → clearer every 10s
-#   5. Audio Hint        – Short song clip via voice chat
+#   2. FIX ASYNCIO TASK BUG: asyncio.get_event_loop().create_task() at
+#      module import time silently fails because the event loop isn't
+#      running yet. Periodic score reset NEVER ran.
+#      Fix: lazy-init with a guard flag, triggered on first /gmovie call.
 #
-#   FLOW
-#   ────
-#   1. /gmovie → Language select buttons
-#   2. Host picks language → Timeout select
-#   3. Round starts → Host picks hint mode
-#   4. Members type guesses freely — no /join needed
-#   5. Correct guess → song list shown → member picks song → VC play
-#   6. Score tracked in MongoDB
+#   3. FIX IMPORT BUG: aq_markup and stream_markup were imported INSIDE
+#      _play_movie_song(). If the import fails mid-execution, song play
+#      crashes with ImportError. Fix: moved to top-level imports.
 #
-#   INTEGRATION
-#   ───────────
-#   • Youtube.py  – download_song(), YouTubeAPI
-#   • music.py    – stream() function pattern via SHASHA.join_call
-#   • MongoDB     – movie_game_scores, movie_game_meta collections
+#   4. FIX REDUNDANT IMPORT BUG: "from SHASHA_DRUGZ.misc import db as _db"
+#      was imported twice inside _play_movie_song() when db is already
+#      imported at module level. Removed inline imports, use module-level db.
 #
-#   HANDLER GROUPS:
-#     group=-1  → check_movie_guess (before chatbot)
-#     group=0   → /commands
+#   5. MINOR: Removed unused search_url variable in _fetch_and_blur_poster.
 # ================================================================
-
 import asyncio
 import io
 import os
@@ -44,7 +31,6 @@ import re as _re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-
 import aiohttp
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from pyrogram import filters
@@ -54,11 +40,10 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
-
 from SHASHA_DRUGZ import app
 from SHASHA_DRUGZ.core.call import SHASHA
 from SHASHA_DRUGZ.core.mongo import get_collection
-from SHASHA_DRUGZ.misc import db
+from SHASHA_DRUGZ.misc import db                          # module-level db (FIX 4)
 from SHASHA_DRUGZ.utils.database import (
     add_served_chat,
     get_assistant,
@@ -66,25 +51,35 @@ from SHASHA_DRUGZ.utils.database import (
 )
 from SHASHA_DRUGZ.utils.stream.queue import put_queue
 from SHASHA_DRUGZ.utils.thumbnails import get_thumb
-
+# FIX 3: moved from inside _play_movie_song to top-level imports
+from SHASHA_DRUGZ.utils.inline import aq_markup, stream_markup
 # YouTube integration
 from SHASHA_DRUGZ.platforms.Youtube import (
     YouTubeAPI,
     download_song,
 )
 from youtubesearchpython.__future__ import VideosSearch
-
 # ================================================================
 # ASSETS
 # ================================================================
 _FONT_PATH = "SHASHA_DRUGZ/assets/Sprintura Demo.otf"
 _executor  = ThreadPoolExecutor(max_workers=4)
-
 # ================================================================
 # MONGODB
 # ================================================================
 score_col = get_collection("movie_game_scores")
 meta_col  = get_collection("movie_game_meta")
+# ================================================================
+# FIX 2: Lazy-init guard for periodic reset task
+# ================================================================
+_reset_task_started = False
+
+async def _ensure_reset_task():
+    """Start the periodic score reset task once, safely after the loop is running."""
+    global _reset_task_started
+    if not _reset_task_started:
+        _reset_task_started = True
+        asyncio.create_task(_reset_periodic())
 
 # ================================================================
 # TITLE SYSTEM
@@ -105,7 +100,6 @@ GUESSER_TITLES = [
     (35000,  "🚀",  "ɢᴀʟᴀxʏ ᴘʀᴏᴅᴜᴄᴇʀ"),
     (50000,  "🏆",  "ɢʀᴀɴᴅ ᴍᴀsᴛᴇʀ ᴏꜰ ᴄɪɴᴇᴍᴀ"),
 ]
-
 HOST_TITLES = [
     (0,    "🎤",  "sʜʏ ʜɪɴᴛᴇʀ"),
     (5,    "💬",  "ᴄᴀsᴜᴀʟ ʜᴏsᴛ"),
@@ -121,21 +115,18 @@ HOST_TITLES = [
     (700,  "💫",  "ᴍʏᴛʜɪᴄ ɴᴀʀʀᴀᴛᴏʀ"),
     (1000, "🏆",  "ɢʀᴀɴᴅ ᴍᴀsᴛᴇʀ ʜᴏsᴛ"),
 ]
-
 def get_guesser_title(coins: int) -> tuple:
     result = GUESSER_TITLES[0][1], GUESSER_TITLES[0][2]
     for min_c, emoji, name in GUESSER_TITLES:
         if coins >= min_c:
             result = emoji, name
     return result
-
 def get_host_title(words_hosted: int) -> tuple:
     result = HOST_TITLES[0][1], HOST_TITLES[0][2]
     for min_w, emoji, name in HOST_TITLES:
         if words_hosted >= min_w:
             result = emoji, name
     return result
-
 def get_display_title(coins: int, words_hosted: int) -> str:
     ge, gn = get_guesser_title(coins)
     he, hn = get_host_title(words_hosted)
@@ -145,19 +136,16 @@ def get_display_title(coins: int, words_hosted: int) -> str:
     if h_scaled >= g_tier:
         return f"{he} {hn}"
     return f"{ge} {gn}"
-
 def _next_guesser_title(coins: int):
     for min_c, emoji, name in GUESSER_TITLES:
         if coins < min_c:
             return f"{emoji} {name} ᴀᴛ {min_c} ᴄᴏɪɴs"
     return None
-
 def _next_host_title(words_hosted: int):
     for min_w, emoji, name in HOST_TITLES:
         if words_hosted < min_w:
             return f"{emoji} {name} ᴀᴛ {min_w} ᴍᴏᴠɪᴇs"
     return None
-
 # ================================================================
 # MOVIE DATABASE
 # ================================================================
@@ -320,7 +308,7 @@ MOVIES = {
             "year": 2023,
             "director": "Atlee",
             "text_hints": [
-                "ꜱʜᴀʜʀᴜᴋʜ ᴋʜᴀɴ ᴀᴛʟᴇᴇ ᴋᴏʟʟʙᴏʀᴀᴛɪᴏɴ",
+                "ꜱʜᴀʜʀᴜᴋʜ ᴋʜᴀɴ ᴀᴛʟᴇᴇ ᴋᴏʟʟᴀʙᴏʀᴀᴛɪᴏɴ",
                 "ᴀ ᴊᴀɪʟ ᴡᴀʀᴅᴇɴ ᴡɪᴛʜ ꜱᴇᴄʀᴇᴛꜱ",
                 "ᴅᴇᴇᴘɪᴋᴀ ᴘᴀᴅᴜᴋᴏɴᴇ ᴄᴀᴍᴇᴏ",
                 "ʜɪɢʜᴇꜱᴛ ɢʀᴏꜱꜱɪɴɢ ʙᴏʟʟʏᴡᴏᴏᴅ ᴏꜰ 2023",
@@ -439,12 +427,10 @@ MOVIES = {
         },
     ],
 }
-
 # ================================================================
 # GAME STATE  (in-memory, per chat)
 # ================================================================
 games: dict = {}
-
 # ================================================================
 # REWARDS CONFIG
 # ================================================================
@@ -455,7 +441,6 @@ HOST_XP           = 20
 GUESSER_XP        = 30
 STREAK_THRESHOLD  = 3
 STREAK_BONUS      = 20
-
 # ================================================================
 # BLUR REVEAL LEVELS
 # ================================================================
@@ -466,7 +451,6 @@ BLUR_LEVELS = [
     ("📸 ᴀʟᴍᴏꜱᴛ ᴄʟᴇᴀʀ", 3),
     ("✅ ꜰᴜʟʟ ɪᴍᴀɢᴇ", 0),
 ]
-
 # ================================================================
 # DATABASE HELPERS
 # ================================================================
@@ -507,7 +491,6 @@ async def _add_score(chat_id, user, role, coins, xp, elapsed, movie_name) -> dic
         updated[k] = updated.get(k, 0) + v
     updated.update(upd.get("$set", {}))
     return updated
-
 async def _get_rank(chat_id, user_id) -> int:
     doc = await score_col.find_one({"chat_id": chat_id, "user_id": user_id})
     if not doc:
@@ -515,7 +498,6 @@ async def _get_rank(chat_id, user_id) -> int:
     return await score_col.count_documents(
         {"chat_id": chat_id, "coins": {"$gt": doc.get("coins", 0)}}
     ) + 1
-
 async def _get_top(chat_id, field="coins") -> str:
     medals = ["🥇", "🥈", "🥉"]
     lines, i = [], 0
@@ -529,8 +511,8 @@ async def _get_top(chat_id, field="coins") -> str:
         )
         i += 1
     return "\n".join(lines) if lines else "ɴᴏ ᴘʟᴀʏᴇʀꜱ ʏᴇᴛ."
-
 async def _reset_periodic():
+    """Periodically reset daily/weekly/monthly scores. Runs as a background task."""
     while True:
         try:
             now = datetime.utcnow()
@@ -550,12 +532,6 @@ async def _reset_periodic():
         except Exception as e:
             print(f"[moviegame] reset error: {e}")
         await asyncio.sleep(3600)
-
-try:
-    asyncio.get_event_loop().create_task(_reset_periodic())
-except Exception:
-    pass
-
 # ================================================================
 # ADMIN CHECK
 # ================================================================
@@ -565,22 +541,19 @@ async def _is_admin(chat_id, user_id) -> bool:
         return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
     except Exception:
         return False
-
 # ================================================================
 # IMAGE BLUR/REVEAL HELPERS
 # ================================================================
 async def _fetch_and_blur_poster(query: str, blur_radius: int) -> bytes | None:
-    """Search for a movie poster image and apply blur."""
+    """Generate a placeholder blurred poster image (no external API needed)."""
     try:
-        search_url = f"https://www.googleapis.com/customsearch/v1"
-        # Fallback: use a placeholder colored image if no API key
+        # FIX 5: removed unused search_url variable
         img = Image.new("RGB", (400, 560), color=(30, 30, 50))
         draw = ImageDraw.Draw(img)
         try:
             font = ImageFont.truetype(_FONT_PATH, 24)
         except Exception:
             font = ImageFont.load_default()
-        # Draw "?" pattern
         for y in range(0, 560, 80):
             for x in range(0, 400, 80):
                 draw.text((x + 20, y + 20), "🎬", font=font, fill=(80, 80, 120))
@@ -594,7 +567,6 @@ async def _fetch_and_blur_poster(query: str, blur_radius: int) -> bytes | None:
     except Exception as e:
         print(f"[moviegame] blur error: {e}")
         return None
-
 async def _send_blurred_image(chat_id: int, query: str, blur_radius: int, caption: str):
     """Send a blurred/revealed image to the chat."""
     try:
@@ -605,7 +577,6 @@ async def _send_blurred_image(chat_id: int, query: str, blur_radius: int, captio
             await app.send_photo(chat_id, photo=buf, caption=caption)
     except Exception as e:
         print(f"[moviegame] send image error: {e}")
-
 # ================================================================
 # AUDIO HINT HELPER
 # ================================================================
@@ -620,25 +591,19 @@ async def _play_song_hint(chat_id: int, song_name: str, movie_name: str):
         vidid  = result["id"]
         title  = result["title"]
         dur    = result.get("duration", "0:30")
-        # Download and stream
         link   = f"https://www.youtube.com/watch?v={vidid}"
         file_path = await download_song(link)
         if not file_path:
             return
-        # Check if VC is active, join if possible
         if await is_active_chat(chat_id):
-            # Already in VC — just add to queue
-            from SHASHA_DRUGZ.misc import db as _db
             await put_queue(
                 chat_id, chat_id, file_path, f"🎵 {title} [Hint]",
                 dur, "Movie Game", vidid, 0, "audio"
             )
         else:
-            # Try to join VC for the hint
             try:
                 await SHASHA.join_call(chat_id, chat_id, file_path, video=None)
-                from SHASHA_DRUGZ.misc import db as _db
-                _db[chat_id] = []
+                db[chat_id] = []         # FIX 4: use module-level db
                 await put_queue(
                     chat_id, chat_id, file_path,
                     f"🎵 {title} [Hint]", dur, "Movie Game",
@@ -652,7 +617,6 @@ async def _play_song_hint(chat_id: int, song_name: str, movie_name: str):
         )
     except Exception as e:
         print(f"[moviegame] audio hint error: {e}")
-
 # ================================================================
 # SONG PLAYER AFTER CORRECT GUESS
 # ================================================================
@@ -660,7 +624,6 @@ async def _play_movie_song(chat_id: int, song_name: str, movie_data: dict, user_
     """Play a selected movie song in voice chat."""
     try:
         search_query = f"{song_name} {movie_data['name']} {movie_data['year']}"
-        yt = YouTubeAPI()
         results = VideosSearch(search_query, limit=1)
         data = await results.next()
         if not data or not data.get("result"):
@@ -688,9 +651,9 @@ async def _play_movie_song(chat_id: int, song_name: str, movie_data: dict, user_
                 chat_id, chat_id, file_path, title, dur,
                 user_name, vidid, 0, "audio"
             )
-            from SHASHA_DRUGZ.utils.inline import aq_markup
+            # FIX 3: aq_markup now imported at top level — no inline import needed
             btn = aq_markup(None, chat_id)
-            position = len(db.get(chat_id) or []) - 1
+            position = len(db.get(chat_id) or []) - 1  # FIX 4: use module-level db
             await loading_msg.delete()
             if img:
                 await app.send_photo(
@@ -711,14 +674,13 @@ async def _play_movie_song(chat_id: int, song_name: str, movie_data: dict, user_
                     reply_markup=InlineKeyboardMarkup(btn),
                 )
         else:
-            from SHASHA_DRUGZ.misc import db as _db
-            _db[chat_id] = []
+            db[chat_id] = []            # FIX 4: use module-level db
             await SHASHA.join_call(chat_id, chat_id, file_path, video=None, image=img)
             await put_queue(
                 chat_id, chat_id, file_path, title, dur,
                 user_name, vidid, 0, "audio", forceplay=False
             )
-            from SHASHA_DRUGZ.utils.inline import stream_markup
+            # FIX 3: stream_markup now imported at top level — no inline import needed
             btn = stream_markup(None, vidid, chat_id)
             await loading_msg.delete()
             if img:
@@ -740,14 +702,12 @@ async def _play_movie_song(chat_id: int, song_name: str, movie_data: dict, user_
     except Exception as e:
         print(f"[moviegame] play song error: {e}")
         await app.send_message(chat_id, f"❌ ᴇʀʀᴏʀ ᴘʟᴀʏɪɴɢ ꜱᴏɴɢ: {str(e)[:100]}")
-
 # ================================================================
 # SONG LIST KEYBOARD (shown after correct guess)
 # ================================================================
 def _song_list_kb(chat_id: int, songs: list, movie_name: str) -> InlineKeyboardMarkup:
     buttons = []
     for i, song in enumerate(songs):
-        safe_song = song[:30].replace("|", "-")
         buttons.append([
             InlineKeyboardButton(
                 f"🎵 {song[:35]}",
@@ -758,7 +718,6 @@ def _song_list_kb(chat_id: int, songs: list, movie_name: str) -> InlineKeyboardM
         InlineKeyboardButton("❌ ᴄʟᴏꜱᴇ", callback_data=f"movg_close_{chat_id}"),
     ])
     return InlineKeyboardMarkup(buttons)
-
 # ================================================================
 # INLINE KEYBOARDS
 # ================================================================
@@ -773,7 +732,6 @@ def _lang_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🔀 ʀᴀɴᴅᴏᴍ", callback_data="movg_lang_random"),
         ],
     ])
-
 def _timeout_kb(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
@@ -783,7 +741,6 @@ def _timeout_kb(lang: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton("🕐 300ꜱ", callback_data=f"movg_time_{lang}_300"),
         ],
     ])
-
 def _hint_mode_kb(chat_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
@@ -802,7 +759,6 @@ def _hint_mode_kb(chat_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton("🛑 ꜱᴛᴏᴘ ɢᴀᴍᴇ",     callback_data=f"movg_stop_{chat_id}"),
         ],
     ])
-
 def _host_game_kb(chat_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
@@ -821,7 +777,6 @@ def _host_game_kb(chat_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton("🛑 ꜱᴛᴏᴘ",          callback_data=f"movg_stop_{chat_id}"),
         ],
     ])
-
 def _top_kb(chat_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
@@ -834,7 +789,6 @@ def _top_kb(chat_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton("🗓 ᴍᴏɴᴛʜʟʏ",    callback_data=f"movg_lb_monthly_{chat_id}"),
         ],
     ])
-
 # ================================================================
 # GAME ENGINE
 # ================================================================
@@ -846,7 +800,6 @@ async def _timeout_handler(chat_id: int, movie_name: str, round_num: int, timeou
         return
     if game.get("movie", {}).get("name") != movie_name or game.get("round") != round_num:
         return
-    # Cancel image reveal task if running
     if game.get("blur_task") and not game["blur_task"].done():
         game["blur_task"].cancel()
     game["movie"] = None
@@ -860,7 +813,6 @@ async def _timeout_handler(chat_id: int, movie_name: str, round_num: int, timeou
         )
     except Exception as e:
         print(f"[moviegame] timeout msg error: {e}")
-
 async def _blur_reveal_loop(chat_id: int, movie_data: dict, round_num: int):
     """Progressive blur reveal every 10 seconds."""
     for label, blur_radius in BLUR_LEVELS:
@@ -876,28 +828,23 @@ async def _blur_reveal_loop(chat_id: int, movie_data: dict, round_num: int):
             blur_radius,
             f"{label}\n🎬 ɢᴜᴇꜱꜱ ᴛʜᴇ ᴍᴏᴠɪᴇ!"
         )
-
 def _become_host_kb(chat_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("🎬 Wanna be a HOST?", callback_data=f"movg_behost_{chat_id}"),
     ]])
-
 async def _start_round(chat_id: int, host_uid: int, host_mention: str,
                        language: str, timeout: int):
     game = games.get(chat_id)
     if not game:
         return
-    # Cancel previous timer
     if game.get("timer_task") and not game["timer_task"].done():
         game["timer_task"].cancel()
     if game.get("blur_task") and not game["blur_task"].done():
         game["blur_task"].cancel()
-    # Pick random movie from language
     lang_movies = MOVIES.get(language, [])
     used = game.get("used_movies", set())
     available = [m for m in lang_movies if m["name"] not in used]
     if not available:
-        # Reset used list when all movies exhausted
         game["used_movies"] = set()
         available = lang_movies
     movie = random.choice(available)
@@ -925,18 +872,18 @@ async def _start_round(chat_id: int, host_uid: int, host_mention: str,
         game["round_msg_id"] = msg.id
     except Exception as e:
         print(f"[moviegame] start_round error: {e}")
-    # Start timeout timer
     task = asyncio.create_task(
         _timeout_handler(chat_id, movie["name"], round_num, timeout)
     )
     game["timer_task"] = task
-
 # ================================================================
 # COMMANDS
 # ================================================================
 @app.on_message(filters.command(["gmovie", "guessmovie"]) & filters.group)
 async def cmd_guessmovie(_, m: Message):
     chat_id = m.chat.id
+    # FIX 2: Start periodic reset task lazily on first /gmovie — loop is running here
+    await _ensure_reset_task()
     if chat_id in games:
         return await m.reply(
             "⚠️ **ɢᴀᴍᴇ ᴀʟʀᴇᴀᴅʏ ʀᴜɴɴɪɴɢ!**\n"
@@ -972,7 +919,6 @@ async def cmd_guessmovie(_, m: Message):
         f"🌐 **ꜱᴇʟᴇᴄᴛ ʟᴀɴɢᴜᴀɢᴇ:**</blockquote>",
         reply_markup=_lang_kb(),
     )
-
 @app.on_message(filters.command(["stopmoviegame", "gmoviestop"]) & filters.group)
 async def cmd_stop_movie(_, m: Message):
     chat_id = m.chat.id
@@ -993,7 +939,6 @@ async def cmd_stop_movie(_, m: Message):
         f"🎬 ᴛʜᴇ ᴍᴏᴠɪᴇ ᴡᴀꜱ: **{movie}**\n"
         f"ᴜꜱᴇ /gmovie ᴛᴏ ꜱᴛᴀʀᴛ ᴀɢᴀɪɴ."
     )
-
 @app.on_message(filters.command("movietop") & filters.group)
 async def cmd_movietop(_, m: Message):
     chat_id = m.chat.id
@@ -1003,7 +948,6 @@ async def cmd_movietop(_, m: Message):
         f"<blockquote>{top}</blockquote>",
         reply_markup=_top_kb(chat_id),
     )
-
 @app.on_message(filters.command("mymovrank") & filters.group)
 async def cmd_mymovrank(_, m: Message):
     chat_id = m.chat.id
@@ -1049,7 +993,6 @@ async def cmd_mymovrank(_, m: Message):
         f"{next_block}</blockquote>",
         reply_markup=_top_kb(chat_id),
     )
-
 # ================================================================
 # GUESS HANDLER  —  group=-1
 # ================================================================
@@ -1074,31 +1017,25 @@ async def check_movie_guess(_, m: Message):
     if not movie:
         m.continue_propagation()
         return
-    # Host cannot guess
     if m.from_user and m.from_user.id == game.get("host"):
         m.continue_propagation()
         return
     typed = (m.text or "").strip().lower()
     answer = movie["name"].lower()
-    # Flexible matching: remove articles, punctuation, check partial
     def normalize(s):
         s = _re.sub(r"[^a-z0-9 ]", "", s.lower())
         return s.strip()
     if normalize(typed) != normalize(answer):
         m.continue_propagation()
         return
-
     # ── CORRECT GUESS ────────────────────────────────────────────
     elapsed   = time.time() - game["start_time"]
     uid       = m.from_user.id
-    # Cancel timer and blur
     if game.get("timer_task") and not game["timer_task"].done():
         game["timer_task"].cancel()
     if game.get("blur_task") and not game["blur_task"].done():
         game["blur_task"].cancel()
     game["movie"] = None
-
-    # Coins calculation
     coins       = BASE_COINS
     xp          = GUESSER_XP
     bonus_lines = []
@@ -1112,8 +1049,6 @@ async def check_movie_guess(_, m: Message):
         coins += STREAK_BONUS
         bonus_lines.append(f"🔥 ꜱᴛʀᴇᴀᴋ x**{streak[uid]}**: +**{STREAK_BONUS}** ᴄᴏɪɴꜱ")
     mins, secs = divmod(int(elapsed), 60)
-
-    # Save score
     updated_doc   = await _add_score(chat_id, m.from_user, "guesser", coins, xp, elapsed, movie["name"])
     rank          = await _get_rank(chat_id, uid)
     new_coins     = updated_doc.get("coins", coins)
@@ -1122,8 +1057,6 @@ async def check_movie_guess(_, m: Message):
     ge, gn        = get_guesser_title(new_coins)
     old_ge, _     = get_guesser_title(new_coins - coins)
     title_upgraded = old_ge != ge
-
-    # Reward host
     host_uid    = game.get("host")
     host_line   = ""
     if host_uid and host_uid != uid:
@@ -1142,13 +1075,11 @@ async def check_movie_guess(_, m: Message):
             )
         except Exception as e:
             print(f"[moviegame] host reward error: {e}")
-
     bonus_block  = ("\n" + "\n".join(bonus_lines)) if bonus_lines else ""
     title_line   = (
         f"\n🎖 **ᴛɪᴛʟᴇ ᴜᴘɢʀᴀᴅᴇ!**  {ge} {gn} 🎉"
         if title_upgraded else f"\n🎖 {display_title}"
     )
-
     win_caption = (
         f"<blockquote>🎉 **ᴄᴏʀʀᴇᴄᴛ!**  {m.from_user.mention}</blockquote>\n"
         f"<blockquote>"
@@ -1161,14 +1092,10 @@ async def check_movie_guess(_, m: Message):
         f"{title_line}"
         f"{host_line}</blockquote>"
     )
-
     await m.reply(win_caption)
-
-    # Show song selection list
     await asyncio.sleep(1)
     songs = movie.get("songs", [])
     if songs and chat_id in games:
-        # Store songs in game state temporarily
         games[chat_id]["pending_songs"]  = songs
         games[chat_id]["pending_movie"]  = movie
         games[chat_id]["pending_user"]   = m.from_user.first_name
@@ -1180,8 +1107,6 @@ async def check_movie_guess(_, m: Message):
             f"👆 ᴛᴀᴘ ᴀ ꜱᴏɴɢ ᴛᴏ ᴘʟᴀʏ ɪɴ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ!</blockquote>",
             reply_markup=_song_list_kb(chat_id, songs, movie["name"]),
         )
-
-    # Next host button after delay
     await asyncio.sleep(5)
     if chat_id in games:
         try:
@@ -1193,12 +1118,9 @@ async def check_movie_guess(_, m: Message):
             )
         except Exception as e:
             print(f"[moviegame] next host btn error: {e}")
-
 # ================================================================
 # CALLBACK QUERIES
 # ================================================================
-
-# ── Language selection ──────────────────────────────────────────
 @app.on_callback_query(filters.regex(r"^movg_lang_(.+)$"))
 async def cb_lang(_, q):
     lang = q.data.split("_", 2)[2]
@@ -1219,8 +1141,6 @@ async def cb_lang(_, q):
         )
     except Exception:
         pass
-
-# ── Timeout selection ───────────────────────────────────────────
 @app.on_callback_query(filters.regex(r"^movg_time_(.+)_(\d+)$"))
 async def cb_timeout(_, q):
     m2      = _re.match(r"^movg_time_(.+)_(\d+)$", q.data)
@@ -1243,8 +1163,6 @@ async def cb_timeout(_, q):
         )
     except Exception:
         pass
-
-# ── Become host ─────────────────────────────────────────────────
 @app.on_callback_query(filters.regex(r"^movg_behost_(-?\d+)$"))
 async def cb_behost(_, q):
     chat_id = int(q.data.split("_")[2])
@@ -1265,23 +1183,18 @@ async def cb_behost(_, q):
     except Exception:
         pass
     await _start_round(chat_id, uid, mention, lang, timeout)
-
-# ── Hint mode — first hint (host selecting from initial buttons) ─
 @app.on_callback_query(filters.regex(r"^movg_hint_(text|emoji|dialogue|image|audio)_(-?\d+)$"))
 async def cb_hint_first(_, q):
     m2      = _re.match(r"^movg_hint_(text|emoji|dialogue|image|audio)_(-?\d+)$", q.data)
     mode    = m2.group(1)
     chat_id = int(m2.group(2))
     await _handle_hint(q, chat_id, mode, replace_kb=True)
-
-# ── More hints during round ──────────────────────────────────────
 @app.on_callback_query(filters.regex(r"^movg_morehint_(text|emoji|dialogue|image|audio)_(-?\d+)$"))
 async def cb_hint_more(_, q):
     m2      = _re.match(r"^movg_morehint_(text|emoji|dialogue|image|audio)_(-?\d+)$", q.data)
     mode    = m2.group(1)
     chat_id = int(m2.group(2))
     await _handle_hint(q, chat_id, mode, replace_kb=False)
-
 async def _handle_hint(q, chat_id: int, mode: str, replace_kb: bool):
     """Common hint handler for both first and additional hints."""
     game = games.get(chat_id)
@@ -1291,7 +1204,9 @@ async def _handle_hint(q, chat_id: int, mode: str, replace_kb: bool):
         return await q.answer("❌ ᴏɴʟʏ ᴛʜᴇ ʜᴏꜱᴛ ᴄᴀɴ ɢɪᴠᴇ ʜɪɴᴛꜱ.", show_alert=True)
     movie   = game["movie"]
     hints   = game.get("hints_given", [])
-    if mode in hints:
+    # FIX 1: Allow "text" mode to repeat — it has 4 progressive clues to reveal.
+    # Only block non-text modes from being given more than once.
+    if mode != "text" and mode in hints:
         return await q.answer(f"⚠️ {mode.upper()} ʜɪɴᴛ ᴀʟʀᴇᴀᴅʏ ɢɪᴠᴇɴ!", show_alert=True)
     hints.append(mode)
     game["hints_given"] = hints
@@ -1301,12 +1216,11 @@ async def _handle_hint(q, chat_id: int, mode: str, replace_kb: bool):
             await q.message.edit_reply_markup(reply_markup=_host_game_kb(chat_id))
     except Exception:
         pass
-    # Send the actual hint
     if mode == "text":
-        hint_list = movie.get("text_hints", [])
-        # Reveal hints progressively
-        given_count = sum(1 for h in hints if h == "text")
-        hint_text   = hint_list[min(given_count - 1, len(hint_list) - 1)] if hint_list else "ɴᴏ ʜɪɴᴛ"
+        hint_list   = movie.get("text_hints", [])
+        given_count = sum(1 for h in hints if h == "text")   # how many text hints so far
+        idx         = min(given_count - 1, len(hint_list) - 1)
+        hint_text   = hint_list[idx] if hint_list else "ɴᴏ ʜɪɴᴛ"
         await app.send_message(
             chat_id,
             f"<blockquote>📝 **ᴛᴇxᴛ ʜɪɴᴛ #{given_count}**</blockquote>\n"
@@ -1327,7 +1241,6 @@ async def _handle_hint(q, chat_id: int, mode: str, replace_kb: bool):
             f"🎬 From which movie is this?</blockquote>"
         )
     elif mode == "image":
-        # Start progressive blur reveal
         round_num = game["round"]
         blur_task = asyncio.create_task(
             _blur_reveal_loop(chat_id, movie, round_num)
@@ -1346,8 +1259,6 @@ async def _handle_hint(q, chat_id: int, mode: str, replace_kb: bool):
             await _play_song_hint(chat_id, hint_song, movie["name"])
         else:
             await q.answer("ɴᴏ ᴀᴜᴅɪᴏ ᴀᴠᴀɪʟᴀʙʟᴇ ꜰᴏʀ ᴛʜɪꜱ ᴍᴏᴠɪᴇ!", show_alert=True)
-
-# ── Skip round ──────────────────────────────────────────────────
 @app.on_callback_query(filters.regex(r"^movg_skip_(-?\d+)$"))
 async def cb_skip(_, q):
     chat_id = int(q.data.split("_")[2])
@@ -1374,8 +1285,6 @@ async def cb_skip(_, q):
         f"ᴡʜᴏ ᴡᴀɴᴛꜱ ᴛᴏ ʙᴇ ᴛʜᴇ ɴᴇxᴛ ʜᴏꜱᴛ?",
         reply_markup=_become_host_kb(chat_id),
     )
-
-# ── Stop game ────────────────────────────────────────────────────
 @app.on_callback_query(filters.regex(r"^movg_stop_(-?\d+)$"))
 async def cb_stop(_, q):
     chat_id = int(q.data.split("_")[2])
@@ -1402,8 +1311,6 @@ async def cb_stop(_, q):
         f"🎬 ᴛʜᴇ ᴍᴏᴠɪᴇ ᴡᴀꜱ: **{movie}**\n\n"
         f"ᴜꜱᴇ /gmovie ᴛᴏ ꜱᴛᴀʀᴛ ᴀ ɴᴇᴡ ɢᴀᴍᴇ!"
     )
-
-# ── Song selection (after correct guess) ────────────────────────
 @app.on_callback_query(filters.regex(r"^movg_song_(-?\d+)_(\d+)$"))
 async def cb_song_select(_, q):
     m2      = _re.match(r"^movg_song_(-?\d+)_(\d+)$", q.data)
@@ -1424,8 +1331,6 @@ async def cb_song_select(_, q):
     except Exception:
         pass
     await _play_movie_song(chat_id, song_name, movie, user_name)
-
-# ── Close button ─────────────────────────────────────────────────
 @app.on_callback_query(filters.regex(r"^movg_close_(-?\d+)$"))
 async def cb_close(_, q):
     await q.answer()
@@ -1433,8 +1338,6 @@ async def cb_close(_, q):
         await q.message.delete()
     except Exception:
         pass
-
-# ── Leaderboard filters ──────────────────────────────────────────
 @app.on_callback_query(filters.regex(r"^movg_lb_(global|today|weekly|monthly)_(-?\d+)$"))
 async def cb_leaderboard(_, q):
     m2      = _re.match(r"^movg_lb_(global|today|weekly|monthly)_(-?\d+)$", q.data)
@@ -1456,8 +1359,6 @@ async def cb_leaderboard(_, q):
         )
     except Exception:
         pass
-
-# ── My rank callback ─────────────────────────────────────────────
 @app.on_callback_query(filters.regex(r"^movg_myrank_(-?\d+)$"))
 async def cb_myrank(_, q):
     chat_id = int(q.data.split("_")[2])
@@ -1471,7 +1372,6 @@ async def cb_myrank(_, q):
     display = get_display_title(coins, hosted)
     ge, gn  = get_guesser_title(coins)
     he, hn  = get_host_title(hosted)
-    speed   = data.get("best_speed", 0.0)
     next_g  = _next_guesser_title(coins)
     next_h  = _next_host_title(hosted)
     next_block = ""
@@ -1503,7 +1403,6 @@ async def cb_myrank(_, q):
         )
     except Exception:
         pass
-
 # ================================================================
 # MODULE META
 # ================================================================
@@ -1515,14 +1414,12 @@ __help__     = """
 🔻 /stopmoviegame ➠ ꜱᴛᴏᴘ ɢᴀᴍᴇ
 🔻 /movietop ➠ ʟᴇᴀᴅᴇʀʙᴏᴀʀᴅ
 🔻 /mymovrank ➠ ᴍʏ ʀᴀɴᴋ & ꜱᴛᴀᴛꜱ
-
 💡 ʜɪɴᴛ ᴍᴏᴅᴇꜱ:
   📝 ᴛᴇxᴛ ʜɪɴᴛ
   🧩 ᴇᴍᴏᴊɪ ᴘᴜᴢᴢʟᴇ
   💬 ᴅɪᴀʟᴏɢᴜᴇ
   🖼 ɪᴍᴀɢᴇ (ʙʟᴜʀ ʀᴇᴠᴇᴀʟ)
   🎵 ᴀᴜᴅɪᴏ (ᴠᴄ ᴘʟᴀʏ)
-
 🌐 ʟᴀɴɢᴜᴀɢᴇꜱ: ᴛᴀᴍɪʟ | ʜɪɴᴅɪ | ᴇɴɢʟɪꜱʜ | ʀᴀɴᴅᴏᴍ
 ⏱ ᴛɪᴍᴇᴏᴜᴛ: 30ꜱ | 60ꜱ | 120ꜱ | 300ꜱ
 """
