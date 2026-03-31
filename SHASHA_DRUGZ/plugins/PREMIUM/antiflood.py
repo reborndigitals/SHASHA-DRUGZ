@@ -11,6 +11,10 @@ from config import MONGO_DB_URI, BANNED_USERS
 from motor.motor_asyncio import AsyncIOMotorClient
 from SHASHA_DRUGZ import app
 from SHASHA_DRUGZ.misc import SUDOERS
+
+# ─── Custom filter: passes only non-command messages ─────────────────────────
+non_command = filters.create(lambda _, __, m: not (m.text and m.text.startswith("/")))
+
 # ─── MongoDB Setup ───────────────────────────────────────────────────────────
 mongo    = AsyncIOMotorClient(MONGO_DB_URI)
 _db      = mongo["SHASHA_DRUGZ"]
@@ -135,7 +139,7 @@ async def list_approved(client, message: Message):
     )
 # ── Enforcement: delete messages from unapproved users ───────────────────────
 # FIX: Added ~filters.command so commands are never blocked by approval enforcement
-@app.on_message(filters.group & ~filters.service & ~filters.command & ~BANNED_USERS)
+@app.on_message(filters.group & ~filters.service & non_command & ~BANNED_USERS)
 async def enforce_approval(client, message: Message):
     if not message.from_user or message.from_user.is_bot:
         return
@@ -268,7 +272,7 @@ async def toggle_flood(client, message: Message):
         await message.reply_text("**» ❌ Flood Protection: OFF**")
 # ── Flood checker (runs on every group message) ───────────────────────────────
 # FIX: Added ~filters.command so commands are never counted or blocked by flood checker
-@app.on_message(filters.group & ~filters.service & ~filters.command & ~BANNED_USERS)
+@app.on_message(filters.group & ~filters.service & non_command & ~BANNED_USERS)
 async def flood_checker(client, message: Message):
     if not message.from_user or message.from_user.is_bot:
         return
