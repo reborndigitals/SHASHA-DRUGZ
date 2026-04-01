@@ -3,20 +3,19 @@
 # ║  MERGED SINGLE FILE — No external imports needed                         ║
 # ║                                                                           ║
 # ║  RULES:                                                                   ║
-# ║  • Normal message (no feature ON)           → NEVER deleted              ║
-# ║  • Admin / SUDOER / Approved user           → exempt from everything     ║
-# ║  • Approval ON + user NOT approved          → message deleted            ║
+# ║  • Approved user / Admin / SUDOER           → exempt from locks & flood  ║
+# ║  • Unapproved user, lock matches msg type   → delete that message only   ║
+# ║  • Unapproved user, lock does NOT match     → NEVER deleted              ║
+# ║  • Normal messages (no lock active)         → NEVER deleted              ║
+# ║  • Approval ON/OFF                          → zero effect on deletion    ║
 # ║  • Flood ON + limit exceeded + NOT exempt   → delete + mute 60s         ║
-# ║  • Lock active + msg matches + NOT exempt   → delete                    ║
 # ║  • Commands (/)                             → NEVER deleted              ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-
 import re
 import time
 import unicodedata
 from typing import List
 from collections import defaultdict
-
 from pyrogram import filters, enums
 from pyrogram.types import (
     Message,
@@ -26,7 +25,6 @@ from pyrogram.types import (
     CallbackQuery,
 )
 from pyrogram.enums import ChatMemberStatus
-
 from SHASHA_DRUGZ import app
 from SHASHA_DRUGZ.misc import SUDOERS
 from config import MONGO_DB_URI, BANNED_USERS
@@ -54,7 +52,6 @@ LOCK_TYPES = [
     "text", "url", "video", "videonote", "voice", "zalgo"
 ]
 
-
 # ═════════════════════════════════════════════════════════════════════════════
 # CORE HELPERS
 # ═════════════════════════════════════════════════════════════════════════════
@@ -69,20 +66,10 @@ async def _is_admin(client, chat_id: int, user_id: int) -> bool:
     except Exception:
         return False
 
-
 async def _is_approved(chat_id: int, user_id: int) -> bool:
     """True if user was /approved in this chat."""
     doc = await approval_col.find_one({"chat_id": chat_id, "user_id": user_id})
     return doc is not None
-
-
-async def _is_approval_on(chat_id: int) -> bool:
-    """True ONLY when approval is stored as boolean True in DB."""
-    data = await settings_col.find_one({"chat_id": chat_id})
-    if data is None:
-        return False
-    return data.get("approval") is True  # strict — not just truthy
-
 
 async def _is_cleanservice_on(chat_id: int) -> bool:
     """True ONLY when cleanservice is stored as boolean True in DB."""
@@ -91,7 +78,6 @@ async def _is_cleanservice_on(chat_id: int) -> bool:
         return False
     return data.get("cleanservice") is True
 
-
 async def _get_flood_settings(chat_id: int) -> tuple:
     """Returns (limit: int|None, enabled: bool)."""
     data = await flood_col.find_one({"chat_id": chat_id})
@@ -99,12 +85,11 @@ async def _get_flood_settings(chat_id: int) -> tuple:
         return data.get("limit"), (data.get("enabled") is True)
     return None, False
 
-
-async def is_exempt(client, chat_id: int, user_id: int) -> bool:
+async def is_admin_or_sudo(client, chat_id: int, user_id: int) -> bool:
     """
-    Central exemption check — used by ALL enforcement handlers.
-    Exempt = SUDOER  OR  admin/owner  OR  approved user.
-    Approved users are whitelisted — locks + flood do NOT apply to them.
+    Exemption for LOCKS and FLOOD:
+    Exempt = SUDOER OR admin/owner OR approved user.
+    Approved users are fully whitelisted — locks + flood do NOT apply to them.
     """
     if user_id in SUDOERS:
         return True
@@ -116,6 +101,8 @@ async def is_exempt(client, chat_id: int, user_id: int) -> bool:
         pass
     return await _is_approved(chat_id, user_id)
 
+# Keep old name as alias so flood_checker still works
+is_exempt = is_admin_or_sudo
 
 # ═════════════════════════════════════════════════════════════════════════════
 # LOCKS — DB HELPERS
@@ -127,12 +114,10 @@ async def get_locks(chat_id: int) -> List[str]:
         return []
     return row.get("locks", [])
 
-
 async def update_locks(chat_id: int, locks: List[str]):
     await locks_col.update_one(
         {"chat_id": chat_id}, {"$set": {"locks": locks}}, upsert=True
     )
-
 
 # ═════════════════════════════════════════════════════════════════════════════
 # LOCKS — KEYBOARD UI
@@ -151,7 +136,6 @@ def locks_keyboard(active: List[str]) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton("⌯ Close ⌯", callback_data="locks::close")])
     return InlineKeyboardMarkup(rows)
 
-
 # ═════════════════════════════════════════════════════════════════════════════
 # LOCKS — COMMANDS
 # ═════════════════════════════════════════════════════════════════════════════
@@ -166,14 +150,12 @@ async def open_lock_panel(client, message: Message):
         reply_markup=locks_keyboard(locks),
     )
 
-
 @app.on_message(filters.command("locks") & filters.group & ~BANNED_USERS)
 async def show_locks(client, message: Message):
     locks = await get_locks(message.chat.id)
     if not locks:
         return await message.reply_text("No active locks in this chat.")
     await message.reply_text("Active locks:\n" + "\n".join(f"🔒 {x}" for x in locks))
-
 
 # ═════════════════════════════════════════════════════════════════════════════
 # LOCKS — CALLBACKS
@@ -183,10 +165,8 @@ async def show_locks(client, message: Message):
 async def toggle_callback(client, query: CallbackQuery):
     if not await _is_admin(client, query.message.chat.id, query.from_user.id):
         return await query.answer("Admins only.", show_alert=True)
-
     _, lock_type = query.data.split("::", 1)
     locks = await get_locks(query.message.chat.id)
-
     if lock_type in locks:
         locks.remove(lock_type)
         await update_locks(query.message.chat.id, locks)
@@ -195,7 +175,6 @@ async def toggle_callback(client, query: CallbackQuery):
         locks.append(lock_type)
         await update_locks(query.message.chat.id, locks)
         await query.answer(f"🍎 Locked: {lock_type}", show_alert=True)
-
     try:
         await query.message.edit_text(
             "<blockquote>🔐 Available Locks</blockquote>",
@@ -204,7 +183,6 @@ async def toggle_callback(client, query: CallbackQuery):
     except Exception:
         pass
 
-
 @app.on_callback_query(filters.regex(r"^locks::close$"))
 async def close_callback(_, query: CallbackQuery):
     try:
@@ -212,7 +190,6 @@ async def close_callback(_, query: CallbackQuery):
     except Exception:
         pass
     await query.answer()
-
 
 # ═════════════════════════════════════════════════════════════════════════════
 # LOCKS — DETECTION UTILITIES
@@ -231,10 +208,8 @@ EMOJI_RE = re.compile(
     "]+"
 )
 
-
 def _has_emoji(t: str) -> bool:
     return bool(EMOJI_RE.search(t or ""))
-
 
 def _only_emoji(t: str) -> bool:
     if not t:
@@ -242,38 +217,29 @@ def _only_emoji(t: str) -> bool:
     s = re.sub(r"[\s\U0000FE0F\U0000200D]", "", t)
     return bool(s) and all(EMOJI_RE.fullmatch(ch) for ch in s)
 
-
 def _has_cjk(t: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7a3]", t or ""))
-
 
 def _has_cyrillic(t: str) -> bool:
     return bool(re.search(r"[\u0400-\u04FF]", t or ""))
 
-
 def _has_rtl(t: str) -> bool:
     return bool(re.search(r"[\u0590-\u06FF]", t or ""))
-
 
 def _has_email(t: str) -> bool:
     return bool(re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", t or ""))
 
-
 def _has_url(t: str) -> bool:
     return bool(re.search(r"(https?://|www\.)", t or ""))
-
 
 def _has_phone(t: str) -> bool:
     return bool(re.search(r"\+?\d[\d\-\s]{6,}\d", t or ""))
 
-
 def _has_cashtag(t: str) -> bool:
     return bool(re.search(r"[\$₹€£¥]", t or ""))
 
-
 def _has_checklist(t: str) -> bool:
     return bool(re.search(r"[☐☑✔️\u2705\U0001F5F8]", t or ""))
-
 
 def _is_zalgo(t: str) -> bool:
     if not t:
@@ -282,33 +248,26 @@ def _is_zalgo(t: str) -> bool:
     total = len(t)
     return combining > 10 or (total > 0 and combining / total > 0.30)
 
-
 def _has_invite(t: str) -> bool:
     return bool(re.search(
         r"(t\.me\/joinchat|t\.me\/\+|t\.me\/|telegram\.me\/|joinchat|invite\.link|telegram\.dog\/)",
         t or "", re.IGNORECASE,
     ))
 
-
 def _has_botlink(t: str) -> bool:
     return bool(re.search(r"@\w*bot\b", t or "", re.IGNORECASE))
 
-
 def _detect_type(message: Message) -> str:
     """Inspect message and return a single lock-type string. Pure detection, no deletion."""
-
     if message.media_group_id:
         return "album"
-
     if message.sender_chat and getattr(message.sender_chat, "type", "") == "channel":
         return "anonchannel"
-
     if message.new_chat_members:
         for m in message.new_chat_members:
             if m.is_bot:
                 return "bot"
         return "text"
-
     if message.audio:       return "audio"
     if message.voice:       return "voice"
     if message.video_note:  return "videonote"
@@ -316,16 +275,13 @@ def _detect_type(message: Message) -> str:
     if message.photo:       return "photo"
     if message.document:    return "document"
     if message.animation:   return "gif"
-
     if message.sticker:
         if getattr(message.sticker, "is_animated", False): return "stickeranimated"
         if getattr(message.sticker, "is_premium", False):  return "stickerpremium"
         return "sticker"
-
     if message.poll:  return "poll"
     if message.game:  return "game"
     if message.dice:  return "emojigame"
-
     if message.forward_from or message.forward_from_chat or message.forward_sender_name:
         if message.forward_from and getattr(message.forward_from, "is_bot", False):
             return "forwardbot"
@@ -336,24 +292,18 @@ def _detect_type(message: Message) -> str:
         if message.forward_sender_name and not message.forward_from:
             return "forwardstory"
         return "forward"
-
     if message.via_bot:
         return "inline"
-
     if message.reply_to_message:
         rto = message.reply_to_message
         if rto.forward_from_chat and rto.forward_from_chat.id != message.chat.id:
             return "externalreply"
-
-    # Spoiler entity check
     for attr in ("entities", "caption_entities"):
         for e in (getattr(message, attr, None) or []):
             if getattr(e, "type", None) == "spoiler":
                 return "spoiler"
-
     if getattr(message, "reply_markup", None):
         return "button"
-
     if message.caption:
         cap = message.caption
         if _has_invite(cap):  return "invitelink"
@@ -361,7 +311,6 @@ def _detect_type(message: Message) -> str:
         if _has_email(cap):   return "email"
         if _has_phone(cap):   return "phone"
         return "text"
-
     if message.text:
         t = message.text
         if t.strip().startswith("/"):  return "command"
@@ -381,9 +330,7 @@ def _detect_type(message: Message) -> str:
         if message.sender_chat and not message.from_user:
             return "comment"
         return "text"
-
     return "text"
-
 
 # ═════════════════════════════════════════════════════════════════════════════
 # LOCKS — ENFORCER  (group=10, runs last)
@@ -392,73 +339,47 @@ def _detect_type(message: Message) -> str:
 @app.on_message(filters.group, group=10)
 async def lock_enforcer(client, message: Message):
     """
-    Step 1 — Any locks active?          No  → return (never delete)
-    Step 2 — Is user exempt?            Yes → return (never delete)
-    Step 3 — Detect message type
-    Step 4 — Type matches active lock?  Yes → delete
-    """
+    RULES (strictly in order):
+      1. Any locks active?               No  → return immediately (NEVER delete)
+      2. Is user exempt?                 Yes → return immediately (admin/sudo/approved)
+      3. Detect message type
+      4. Type matches active lock?       Yes → delete
+      5. No match                             → return (NEVER delete)
 
-    # Step 1
+    Approval ON/OFF has NO role here.
+    Only active locks + non-exempt user triggers deletion.
+    """
+    # ── Step 1: skip entirely if no locks are set ──────────────────────────
     locks = await get_locks(message.chat.id)
     if not locks:
         return
 
-    # Step 2 — from_user is None for anon channel posts; those are never exempt
+    # ── Step 2: exempt check (admin / sudoer / approved) ──────────────────
+    # anon-channel posts have no from_user — never exempt, always checked
     if message.from_user:
         if await is_exempt(client, message.chat.id, message.from_user.id):
             return
 
-    # Step 3
+    # ── Step 3: detect what kind of message this is ────────────────────────
     msg_type = _detect_type(message)
 
-    # Step 4
+    # ── Step 4: delete only if type matches an active lock ─────────────────
     if "all" in locks or msg_type in locks:
         try:
             await message.delete()
         except Exception:
             pass
-
+    # ── Step 5: no match → do nothing (message stays) ─────────────────────
 
 # ═════════════════════════════════════════════════════════════════════════════
 # APPROVAL — COMMANDS
 # ═════════════════════════════════════════════════════════════════════════════
-
-@app.on_message(filters.command("approval") & filters.group & ~BANNED_USERS)
-async def cmd_approval(client, message: Message):
-    if not await _is_admin(client, message.chat.id, message.from_user.id):
-        return await message.reply_text("**» Only admins can use this.**")
-
-    if len(message.command) < 2:
-        on = await _is_approval_on(message.chat.id)
-        return await message.reply_text(
-            f"**» Approval Mode:** {'**ON** ✅' if on else '**OFF** ❌'}"
-        )
-
-    arg = message.command[1].lower()
-    if arg not in ("on", "off"):
-        return await message.reply_text("**» Usage:** `/approval on` or `/approval off`")
-
-    enabled = arg == "on"
-    await settings_col.update_one(
-        {"chat_id": message.chat.id}, {"$set": {"approval": enabled}}, upsert=True
-    )
-    if enabled:
-        await message.reply_text(
-            "**» Approval Mode: ON ✅**\n"
-            "Only approved users can send messages.\n"
-            "Use /approve (reply) to approve someone."
-        )
-    else:
-        await message.reply_text(
-            "**» Approval Mode: OFF ❌**\nAll users can chat freely."
-        )
 
 
 @app.on_message(filters.command("approve") & filters.group & ~BANNED_USERS)
 async def cmd_approve(client, message: Message):
     if not await _is_admin(client, message.chat.id, message.from_user.id):
         return await message.reply_text("**» Only admins can approve users.**")
-
     user = None
     if message.reply_to_message and message.reply_to_message.from_user:
         user = message.reply_to_message.from_user
@@ -467,13 +388,10 @@ async def cmd_approve(client, message: Message):
             user = await client.get_users(message.command[1])
         except Exception:
             return await message.reply_text("**» User not found.**")
-
     if not user:
         return await message.reply_text("**» Reply to a user or provide username/ID.**")
-
     if await _is_approved(message.chat.id, user.id):
         return await message.reply_text(f"**» {user.mention} is already approved.**")
-
     await approval_col.update_one(
         {"chat_id": message.chat.id, "user_id": user.id},
         {"$set": {"name": user.first_name}},
@@ -484,12 +402,10 @@ async def cmd_approve(client, message: Message):
         "They bypass all locks and flood limits."
     )
 
-
 @app.on_message(filters.command("unapprove") & filters.group & ~BANNED_USERS)
 async def cmd_unapprove(client, message: Message):
     if not await _is_admin(client, message.chat.id, message.from_user.id):
         return await message.reply_text("**» Only admins can unapprove.**")
-
     user = None
     if message.reply_to_message and message.reply_to_message.from_user:
         user = message.reply_to_message.from_user
@@ -498,10 +414,8 @@ async def cmd_unapprove(client, message: Message):
             user = await client.get_users(message.command[1])
         except Exception:
             return await message.reply_text("**» User not found.**")
-
     if not user:
         return await message.reply_text("**» Reply to a user or provide username/ID.**")
-
     result = await approval_col.delete_one(
         {"chat_id": message.chat.id, "user_id": user.id}
     )
@@ -510,60 +424,19 @@ async def cmd_unapprove(client, message: Message):
     else:
         await message.reply_text(f"**» {user.mention} was not approved.**")
 
-
 @app.on_message(filters.command("approved") & filters.group & ~BANNED_USERS)
 async def cmd_approved_list(client, message: Message):
     if not await _is_admin(client, message.chat.id, message.from_user.id):
         return await message.reply_text("**» Only admins can view this.**")
-
     entries = [doc async for doc in approval_col.find({"chat_id": message.chat.id})]
     if not entries:
         return await message.reply_text("**» No approved users.**")
-
     lines = ["**» ✅ Approved Users:**\n"]
     for i, doc in enumerate(entries, 1):
         uid  = doc["user_id"]
         name = doc.get("name", "Unknown")
         lines.append(f"**{i}.** [{name}](tg://user?id={uid}) — `{uid}`")
     await message.reply_text("\n".join(lines), disable_web_page_preview=True)
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# APPROVAL — ENFORCER  (group=3, runs before flood at group=6)
-# ═════════════════════════════════════════════════════════════════════════════
-
-@app.on_message(filters.group & ~filters.service & ~BANNED_USERS, group=3)
-async def enforce_approval(client, message: Message):
-    """
-    DELETE only when ALL true:
-      • Real non-bot user
-      • Not a command
-      • Approval is strictly ON  ← was the main bug (truthy check)
-      • User is NOT exempt
-
-    Every other case → return immediately. Message untouched.
-    """
-    if not message.from_user or message.from_user.is_bot:
-        return
-
-    # Commands always pass — admins need /approve, /flood, etc.
-    if message.text and message.text.startswith("/"):
-        return
-
-    # HARD GUARD — approval must be boolean True, not just truthy
-    if not await _is_approval_on(message.chat.id):
-        return
-
-    # Exempt (admin / approved) → pass
-    if await is_exempt(client, message.chat.id, message.from_user.id):
-        return
-
-    # Unapproved user + approval ON → delete
-    try:
-        await message.delete()
-    except Exception:
-        pass
-
 
 # ═════════════════════════════════════════════════════════════════════════════
 # CLEAN SERVICE — COMMANDS + HANDLERS
@@ -573,17 +446,14 @@ async def enforce_approval(client, message: Message):
 async def cmd_cleanservice(client, message: Message):
     if not await _is_admin(client, message.chat.id, message.from_user.id):
         return await message.reply_text("**» Only admins can use this.**")
-
     if len(message.command) < 2:
         on = await _is_cleanservice_on(message.chat.id)
         return await message.reply_text(
             f"**» Clean Service:** {'**ON** 🧹' if on else '**OFF** ❌'}"
         )
-
     arg = message.command[1].lower()
     if arg not in ("on", "off"):
         return await message.reply_text("**» Usage:** `/cleanservice on` or `/cleanservice off`")
-
     enabled = arg == "on"
     await settings_col.update_one(
         {"chat_id": message.chat.id}, {"$set": {"cleanservice": enabled}}, upsert=True
@@ -595,7 +465,6 @@ async def cmd_cleanservice(client, message: Message):
     else:
         await message.reply_text("**» ❌ Clean Service: OFF**")
 
-
 @app.on_message(filters.new_chat_members)
 async def auto_del_join(_, message: Message):
     if await _is_cleanservice_on(message.chat.id):
@@ -603,7 +472,6 @@ async def auto_del_join(_, message: Message):
             await message.delete()
         except Exception:
             pass
-
 
 @app.on_message(filters.left_chat_member)
 async def auto_del_leave(_, message: Message):
@@ -613,7 +481,6 @@ async def auto_del_leave(_, message: Message):
         except Exception:
             pass
 
-
 # ═════════════════════════════════════════════════════════════════════════════
 # ANTI-FLOOD — COMMANDS
 # ═════════════════════════════════════════════════════════════════════════════
@@ -622,7 +489,6 @@ async def auto_del_leave(_, message: Message):
 async def cmd_antiflood(client, message: Message):
     if not await _is_admin(client, message.chat.id, message.from_user.id):
         return await message.reply_text("**» Only admins can use this.**")
-
     if len(message.command) < 2:
         limit, enabled = await _get_flood_settings(message.chat.id)
         status   = "**ON** ✅" if enabled else "**OFF** ❌"
@@ -631,7 +497,6 @@ async def cmd_antiflood(client, message: Message):
             f"**» Flood Protection:** {status}\n"
             f"**» Limit:** `{lim_text}` msgs / 10 sec"
         )
-
     try:
         limit = int(message.command[1])
         if limit < 1:
@@ -640,7 +505,6 @@ async def cmd_antiflood(client, message: Message):
         return await message.reply_text(
             "**» Valid number > 0 needed.**\nEx: `/antiflood 5`"
         )
-
     await flood_col.update_one(
         {"chat_id": message.chat.id}, {"$set": {"limit": limit}}, upsert=True
     )
@@ -649,34 +513,27 @@ async def cmd_antiflood(client, message: Message):
         "Use `/flood on` to enable."
     )
 
-
 @app.on_message(filters.command("flood") & filters.group & ~BANNED_USERS)
 async def cmd_flood_toggle(client, message: Message):
     if not await _is_admin(client, message.chat.id, message.from_user.id):
         return await message.reply_text("**» Only admins can use this.**")
-
     if len(message.command) < 2:
         _, enabled = await _get_flood_settings(message.chat.id)
         return await message.reply_text(
             f"**» Flood Protection:** {'**ON** ✅' if enabled else '**OFF** ❌'}"
         )
-
     arg = message.command[1].lower()
     if arg not in ("on", "off"):
         return await message.reply_text("**» Usage:** `/flood on` or `/flood off`")
-
     enabled = arg == "on"
     limit, _ = await _get_flood_settings(message.chat.id)
-
     if enabled and not limit:
         return await message.reply_text(
             "**» Set limit first.**\nEx: `/antiflood 5`"
         )
-
     await flood_col.update_one(
         {"chat_id": message.chat.id}, {"$set": {"enabled": enabled}}, upsert=True
     )
-
     if enabled:
         await message.reply_text(
             f"**» ✅ Flood Protection: ON**\n"
@@ -687,9 +544,8 @@ async def cmd_flood_toggle(client, message: Message):
             del _flood_cache[k]
         await message.reply_text("**» ❌ Flood Protection: OFF**")
 
-
 # ═════════════════════════════════════════════════════════════════════════════
-# ANTI-FLOOD — ENFORCER  (group=6, after approval at group=3)
+# ANTI-FLOOD — ENFORCER  (group=6)
 # ═════════════════════════════════════════════════════════════════════════════
 
 @app.on_message(filters.group & ~filters.service & ~BANNED_USERS, group=6)
@@ -700,18 +556,15 @@ async def flood_checker(client, message: Message):
       • Not a command
       • Flood is strictly enabled AND limit is set
       • User is NOT exempt
-
     Every other case → return immediately. Message untouched.
     """
     if not message.from_user or message.from_user.is_bot:
         return
-
     if message.text and message.text.startswith("/"):
         return
 
     chat_id = message.chat.id
     user_id = message.from_user.id
-
     limit, enabled = await _get_flood_settings(chat_id)
 
     # HARD GUARD — flood must be boolean True AND limit must exist
@@ -737,7 +590,6 @@ async def flood_checker(client, message: Message):
         await message.delete()
     except Exception:
         pass
-
     try:
         await client.restrict_chat_member(
             chat_id,
@@ -749,10 +601,9 @@ async def flood_checker(client, message: Message):
             chat_id,
             f"**» ⚠️ {message.from_user.mention} muted 60s — flooding.**",
         )
-        _flood_cache[key] = []  # reset so post-mute messages don't re-trigger
+        _flood_cache[key] = []
     except Exception:
         pass
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 __menu__     = "CMD_MANAGE"
@@ -762,7 +613,6 @@ __help__ = """
 🔻 /locks — show active locks
 
 ✅ **APPROVAL**
-🔻 /approval on|off — enable/disable approval mode
 🔻 /approve — reply to approve a user (bypasses locks + flood)
 🔻 /unapprove — remove approval
 🔻 /approved — list approved users
