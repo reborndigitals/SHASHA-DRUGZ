@@ -55,7 +55,6 @@ LOCK_TYPES = [
 # ═════════════════════════════════════════════════════════════════════════════
 # CORE HELPERS
 # ═════════════════════════════════════════════════════════════════════════════
-
 async def _is_admin(client, chat_id: int, user_id: int) -> bool:
     """True if SUDOER, group admin, or owner."""
     if user_id in SUDOERS:
@@ -101,13 +100,12 @@ async def is_admin_or_sudo(client, chat_id: int, user_id: int) -> bool:
         pass
     return await _is_approved(chat_id, user_id)
 
-# Keep old name as alias so flood_checker still works
+# Alias used by flood_checker
 is_exempt = is_admin_or_sudo
 
 # ═════════════════════════════════════════════════════════════════════════════
 # LOCKS — DB HELPERS
 # ═════════════════════════════════════════════════════════════════════════════
-
 async def get_locks(chat_id: int) -> List[str]:
     row = await locks_col.find_one({"chat_id": chat_id})
     if not row:
@@ -122,7 +120,6 @@ async def update_locks(chat_id: int, locks: List[str]):
 # ═════════════════════════════════════════════════════════════════════════════
 # LOCKS — KEYBOARD UI
 # ═════════════════════════════════════════════════════════════════════════════
-
 def locks_keyboard(active: List[str]) -> InlineKeyboardMarkup:
     rows, row = [], []
     for i, lt in enumerate(LOCK_TYPES, 1):
@@ -139,7 +136,6 @@ def locks_keyboard(active: List[str]) -> InlineKeyboardMarkup:
 # ═════════════════════════════════════════════════════════════════════════════
 # LOCKS — COMMANDS
 # ═════════════════════════════════════════════════════════════════════════════
-
 @app.on_message(filters.command("locktypes") & filters.group & ~BANNED_USERS)
 async def open_lock_panel(client, message: Message):
     if not await _is_admin(client, message.chat.id, message.from_user.id):
@@ -160,7 +156,6 @@ async def show_locks(client, message: Message):
 # ═════════════════════════════════════════════════════════════════════════════
 # LOCKS — CALLBACKS
 # ═════════════════════════════════════════════════════════════════════════════
-
 @app.on_callback_query(filters.regex(r"^toggle::"))
 async def toggle_callback(client, query: CallbackQuery):
     if not await _is_admin(client, query.message.chat.id, query.from_user.id):
@@ -194,7 +189,6 @@ async def close_callback(_, query: CallbackQuery):
 # ═════════════════════════════════════════════════════════════════════════════
 # LOCKS — DETECTION UTILITIES
 # ═════════════════════════════════════════════════════════════════════════════
-
 EMOJI_RE = re.compile(
     "["
     "\U0001F300-\U0001F6FF"
@@ -257,97 +251,184 @@ def _has_invite(t: str) -> bool:
 def _has_botlink(t: str) -> bool:
     return bool(re.search(r"@\w*bot\b", t or "", re.IGNORECASE))
 
-def _detect_type(message: Message) -> str:
-    """Inspect message and return a single lock-type string. Pure detection, no deletion."""
+def _detect_types(message: Message) -> List[str]:
+    """
+    Returns ALL matching lock-type strings for this message.
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │  WHY a list instead of a single string?                     │
+    │  A sticker that is also animated matches BOTH "sticker"     │
+    │  and "stickeranimated". Returning a list lets the enforcer  │
+    │  delete if ANY of the active locks appear in the list —     │
+    │  so locking "sticker" catches all stickers, while locking   │
+    │  "stickeranimated" only catches animated ones.              │
+    └─────────────────────────────────────────────────────────────┘
+    """
+    types: List[str] = []
+
+    # ── album ──────────────────────────────────────────────────────────────
     if message.media_group_id:
-        return "album"
+        types.append("album")
+
+    # ── anonchannel ────────────────────────────────────────────────────────
     if message.sender_chat and getattr(message.sender_chat, "type", "") == "channel":
-        return "anonchannel"
+        types.append("anonchannel")
+        return types  # channel post — nothing else applies
+
+    # ── new chat members ───────────────────────────────────────────────────
     if message.new_chat_members:
         for m in message.new_chat_members:
             if m.is_bot:
-                return "bot"
-        return "text"
-    if message.audio:       return "audio"
-    if message.voice:       return "voice"
-    if message.video_note:  return "videonote"
-    if message.video:       return "video"
-    if message.photo:       return "photo"
-    if message.document:    return "document"
-    if message.animation:   return "gif"
+                types.append("bot")
+        if not types:
+            types.append("text")
+        return types
+
+    # ── media types ────────────────────────────────────────────────────────
+    if message.audio:
+        types.append("audio")
+
+    if message.voice:
+        types.append("voice")
+
+    if message.video_note:
+        types.append("videonote")
+
+    if message.video:
+        types.append("video")
+
+    if message.photo:
+        types.append("photo")
+
+    if message.document:
+        types.append("document")
+
+    if message.animation:
+        types.append("gif")
+
     if message.sticker:
-        if getattr(message.sticker, "is_animated", False): return "stickeranimated"
-        if getattr(message.sticker, "is_premium", False):  return "stickerpremium"
-        return "sticker"
-    if message.poll:  return "poll"
-    if message.game:  return "game"
-    if message.dice:  return "emojigame"
+        # Always tag as "sticker" so a plain "sticker" lock catches everything
+        types.append("sticker")
+        if getattr(message.sticker, "is_animated", False):
+            types.append("stickeranimated")
+        if getattr(message.sticker, "is_premium", False):
+            types.append("stickerpremium")
+
+    if message.poll:
+        types.append("poll")
+
+    if message.game:
+        types.append("game")
+
+    if message.dice:
+        types.append("emojigame")
+
+    # ── forward ────────────────────────────────────────────────────────────
     if message.forward_from or message.forward_from_chat or message.forward_sender_name:
+        types.append("forward")
         if message.forward_from and getattr(message.forward_from, "is_bot", False):
-            return "forwardbot"
+            types.append("forwardbot")
         if message.forward_from_chat and getattr(message.forward_from_chat, "type", "") == "channel":
-            return "forwardchannel"
-        if message.forward_from:
-            return "forwarduser"
+            types.append("forwardchannel")
+        if message.forward_from and not getattr(message.forward_from, "is_bot", False):
+            types.append("forwarduser")
         if message.forward_sender_name and not message.forward_from:
-            return "forwardstory"
-        return "forward"
+            types.append("forwardstory")
+
+    # ── inline bot ─────────────────────────────────────────────────────────
     if message.via_bot:
-        return "inline"
+        types.append("inline")
+
+    # ── external reply ─────────────────────────────────────────────────────
     if message.reply_to_message:
         rto = message.reply_to_message
         if rto.forward_from_chat and rto.forward_from_chat.id != message.chat.id:
-            return "externalreply"
+            types.append("externalreply")
+
+    # ── spoiler entities ───────────────────────────────────────────────────
     for attr in ("entities", "caption_entities"):
         for e in (getattr(message, attr, None) or []):
             if getattr(e, "type", None) == "spoiler":
-                return "spoiler"
+                types.append("spoiler")
+                break
+
+    # ── inline keyboard button ─────────────────────────────────────────────
     if getattr(message, "reply_markup", None):
-        return "button"
-    if message.caption:
+        types.append("button")
+
+    # ── caption-based checks (photos/videos/docs with captions) ───────────
+    if message.caption and not types:
         cap = message.caption
-        if _has_invite(cap):  return "invitelink"
-        if _has_url(cap):     return "url"
-        if _has_email(cap):   return "email"
-        if _has_phone(cap):   return "phone"
-        return "text"
-    if message.text:
+        if _has_invite(cap):
+            types.append("invitelink")
+        elif _has_url(cap):
+            types.append("url")
+        elif _has_email(cap):
+            types.append("email")
+        elif _has_phone(cap):
+            types.append("phone")
+        else:
+            types.append("text")
+
+    # ── pure text message ──────────────────────────────────────────────────
+    if message.text and not types:
         t = message.text
-        if t.strip().startswith("/"):  return "command"
-        if _has_invite(t):             return "invitelink"
-        if _has_botlink(t):            return "botlink"
-        if _has_url(t):                return "url"
-        if _has_email(t):              return "email"
-        if _has_phone(t):              return "phone"
-        if _has_cashtag(t):            return "cashtags"
-        if _has_checklist(t):          return "checklist"
-        if _has_cjk(t):                return "cjk"
-        if _has_cyrillic(t):           return "cyrillic"
-        if _has_rtl(t):                return "rtl"
-        if _is_zalgo(t):               return "zalgo"
-        if _only_emoji(t):             return "emojionly"
-        if _has_emoji(t):              return "emoji"
-        if message.sender_chat and not message.from_user:
-            return "comment"
-        return "text"
-    return "text"
+        if t.strip().startswith("/"):
+            types.append("command")
+        elif _has_invite(t):
+            types.append("invitelink")
+        elif _has_botlink(t):
+            types.append("botlink")
+        elif _has_url(t):
+            types.append("url")
+        elif _has_email(t):
+            types.append("email")
+        elif _has_phone(t):
+            types.append("phone")
+        elif _has_cashtag(t):
+            types.append("cashtags")
+        elif _has_checklist(t):
+            types.append("checklist")
+        elif _has_cjk(t):
+            types.append("cjk")
+        elif _has_cyrillic(t):
+            types.append("cyrillic")
+        elif _has_rtl(t):
+            types.append("rtl")
+        elif _is_zalgo(t):
+            types.append("zalgo")
+        elif _only_emoji(t):
+            types.append("emojionly")
+        elif _has_emoji(t):
+            types.append("emoji")
+        elif message.sender_chat and not message.from_user:
+            types.append("comment")
+        else:
+            types.append("text")
+
+    # ── fallback ───────────────────────────────────────────────────────────
+    if not types:
+        types.append("text")
+
+    return types
 
 # ═════════════════════════════════════════════════════════════════════════════
 # LOCKS — ENFORCER  (group=10, runs last)
 # ═════════════════════════════════════════════════════════════════════════════
-
 @app.on_message(filters.group, group=10)
 async def lock_enforcer(client, message: Message):
     """
     RULES (strictly in order):
       1. Any locks active?               No  → return immediately (NEVER delete)
       2. Is user exempt?                 Yes → return immediately (admin/sudo/approved)
-      3. Detect message type
-      4. Type matches active lock?       Yes → delete
-      5. No match                             → return (NEVER delete)
+      3. Detect ALL message types
+      4. ANY detected type matches an active lock?  Yes → delete
+      5. No match                                        → NEVER delete
 
     Approval ON/OFF has NO role here.
     Only active locks + non-exempt user triggers deletion.
+    Commands (/) are NEVER deleted (they resolve to "command" type and
+    "command" lock must be explicitly enabled to affect them).
     """
     # ── Step 1: skip entirely if no locks are set ──────────────────────────
     locks = await get_locks(message.chat.id)
@@ -360,22 +441,22 @@ async def lock_enforcer(client, message: Message):
         if await is_exempt(client, message.chat.id, message.from_user.id):
             return
 
-    # ── Step 3: detect what kind of message this is ────────────────────────
-    msg_type = _detect_type(message)
+    # ── Step 3: detect ALL matching types for this message ─────────────────
+    msg_types = _detect_types(message)
 
-    # ── Step 4: delete only if type matches an active lock ─────────────────
-    if "all" in locks or msg_type in locks:
+    # ── Step 4: delete only if at least one type matches an active lock ────
+    #   "all" lock → delete everything regardless of type
+    if "all" in locks or any(t in locks for t in msg_types):
         try:
             await message.delete()
         except Exception:
             pass
+
     # ── Step 5: no match → do nothing (message stays) ─────────────────────
 
 # ═════════════════════════════════════════════════════════════════════════════
 # APPROVAL — COMMANDS
 # ═════════════════════════════════════════════════════════════════════════════
-
-
 @app.on_message(filters.command("approve") & filters.group & ~BANNED_USERS)
 async def cmd_approve(client, message: Message):
     if not await _is_admin(client, message.chat.id, message.from_user.id):
@@ -441,7 +522,6 @@ async def cmd_approved_list(client, message: Message):
 # ═════════════════════════════════════════════════════════════════════════════
 # CLEAN SERVICE — COMMANDS + HANDLERS
 # ═════════════════════════════════════════════════════════════════════════════
-
 @app.on_message(filters.command("cleanservice") & filters.group & ~BANNED_USERS)
 async def cmd_cleanservice(client, message: Message):
     if not await _is_admin(client, message.chat.id, message.from_user.id):
@@ -484,7 +564,6 @@ async def auto_del_leave(_, message: Message):
 # ═════════════════════════════════════════════════════════════════════════════
 # ANTI-FLOOD — COMMANDS
 # ═════════════════════════════════════════════════════════════════════════════
-
 @app.on_message(filters.command("antiflood") & filters.group & ~BANNED_USERS)
 async def cmd_antiflood(client, message: Message):
     if not await _is_admin(client, message.chat.id, message.from_user.id):
@@ -547,7 +626,6 @@ async def cmd_flood_toggle(client, message: Message):
 # ═════════════════════════════════════════════════════════════════════════════
 # ANTI-FLOOD — ENFORCER  (group=6)
 # ═════════════════════════════════════════════════════════════════════════════
-
 @app.on_message(filters.group & ~filters.service & ~BANNED_USERS, group=6)
 async def flood_checker(client, message: Message):
     """
@@ -555,7 +633,7 @@ async def flood_checker(client, message: Message):
       • Real non-bot user
       • Not a command
       • Flood is strictly enabled AND limit is set
-      • User is NOT exempt
+      • User is NOT exempt (admin / sudo / approved)
     Every other case → return immediately. Message untouched.
     """
     if not message.from_user or message.from_user.is_bot:
@@ -565,6 +643,7 @@ async def flood_checker(client, message: Message):
 
     chat_id = message.chat.id
     user_id = message.from_user.id
+
     limit, enabled = await _get_flood_settings(chat_id)
 
     # HARD GUARD — flood must be boolean True AND limit must exist
