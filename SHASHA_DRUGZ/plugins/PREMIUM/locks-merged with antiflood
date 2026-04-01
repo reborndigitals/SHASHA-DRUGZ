@@ -25,7 +25,7 @@ from config import MONGO_DB_URI
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # Import shared exemption check from antiflood module
-from SHASHA_DRUGZ.modules.antiflood import is_exempt
+from SHASHA_DRUGZ.plugins.antiflood import is_exempt
 
 # ─── MongoDB ──────────────────────────────────────────────────────────────────
 mongo = AsyncIOMotorClient(MONGO_DB_URI)
