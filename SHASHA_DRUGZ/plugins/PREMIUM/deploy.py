@@ -59,19 +59,22 @@ MODULES_PATH = "SHASHA_DRUGZ/dplugins"
 COMMON_PATH  = "COMMON"
 
 AUTO_BOT_TYPES = {
-    "MANAGEMENT": {"path": "MANAGE",   "price": 650, "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ ʙᴏᴛ"},
-    "MUSIC":      {"path": "MUSIC",    "price": 450, "display": "ᴍᴜsɪᴄ ʙᴏᴛ"},
-    "CHAT":       {"path": "CHAT",     "price": 250, "display": "ᴄʜᴀᴛ ʙᴏᴛ"},
     "REACTION":   {"path": "REACTION", "price": 100, "display": "ʀᴇᴀᴄᴛɪᴏɴ ʙᴏᴛ"},
-    "GAME":       {"path": "GAMES",    "price": 300, "display": "ɢᴀᴍᴇ ʙᴏᴛ"},
-    "PRO-BOTS":   {"path": "PRO-BOTS", "price": 350, "display": "ᴘʀᴏ ʙᴏᴛs"},
+    "CHAT":       {"path": "CHAT",     "price": 250, "display": "ᴄʜᴀᴛ ʙᴏᴛ"},
+    "MUSIC":      {"path": "MUSIC",    "price": 450, "display": "ᴍᴜsɪᴄ ʙᴏᴛ"},
+    "MANAGEMENT": {"path": "MANAGE",   "price": 650, "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ ʙᴏᴛ"},
+    "PRO-BOTS":   {"path": "PRO-BOTS", "price": 899, "display": "ᴘʀᴏ ʙᴏᴛs"},    
+    "GAME":       {"path": "GAMES",    "price": 1999, "display": "ɢᴀᴍᴇ ʙᴏᴛ"},
 }
 
 AUTO_COMBOS = {
-    "MANAGEMENT+MUSIC":    {"bots": ["MANAGEMENT","MUSIC"],    "price": 999,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴍᴜsɪᴄ"},
-    "MUSIC+CHAT":          {"bots": ["MUSIC","CHAT"],          "price": 599,  "display": "ᴍᴜsɪᴄ+ᴄʜᴀᴛ"},
-    "CHAT+REACTION":       {"bots": ["CHAT","REACTION"],       "price": 299,  "display": "ᴄʜᴀᴛ+ʀᴇᴀᴄᴛɪᴏɴ"},
-    "MANAGEMENT+PRO-BOTS": {"bots": ["MANAGEMENT","PRO-BOTS"], "price": 850,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴘʀᴏ"},
+    "CHAT+REACTION":              {"bots": ["CHAT","REACTION"],               "price": 299,  "display": "ᴄʜᴀᴛ+ʀᴇᴀᴄᴛɪᴏɴ"},
+    "MUSIC+CHAT":                 {"bots": ["MUSIC","CHAT"],                  "price": 599,  "display": "ᴍᴜsɪᴄ+ᴄʜᴀᴛ"},
+    "MANAGEMENT+MUSIC":           {"bots": ["MANAGEMENT","MUSIC"],            "price": 799,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴍᴜsɪᴄ"},
+    "MUSIC+PRO-BOTS+":            {"bots": ["MUSIC","PRO-BOTS"],              "price": 999,  "display": "ᴍᴜsɪᴄ+ᴘʀᴏ"},
+    "MANAGEMENT+PRO-BOTS":        {"bots": ["MANAGEMENT","PRO-BOTS"],         "price": 1199,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴘʀᴏ"},
+    "MUSIC+MANAGEMENT+PRO-BOTS+": {"bots": ["MUSIC","MANAGEMENT","PRO-BOTS"], "price": 1499,  "display": "ᴍᴜsɪᴄ+ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴘʀᴏ"},
+    "MUSIC+GAMES":                {"bots": ["MUSIC","GAMES"],                 "price": 2299,  "display": "ᴍᴜsɪᴄ+ᴄʜᴀᴛ"},
 }
 
 # ─── Plugin helpers ────────────────────────────────────────────────────────────
