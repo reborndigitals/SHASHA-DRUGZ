@@ -16,6 +16,7 @@ from pyrogram.types import (
     CallbackQuery,
 )
 from SHASHA_DRUGZ.core.mongo import mongodb
+
 logger = logging.getLogger("BioProtect")
 
 _URL_RE = re.compile(
@@ -23,16 +24,13 @@ _URL_RE = re.compile(
     re.IGNORECASE,
 )
 
-@filters.create
-async def _not_command(_, __, message):
-    if message.text and message.text.startswith("/"):
-        return False
-    return True
-
+# ── DB Collections ────────────────────────────────────────────
 _cfg_col  = mongodb["bioprotect_config"]
 _warn_col = mongodb["bioprotect_warns"]
 _wl_col   = mongodb["bioprotect_whitelist"]
 
+
+# ── DB Helpers ────────────────────────────────────────────────
 async def _get_cfg(chat_id: int) -> dict:
     doc = await _cfg_col.find_one({"chat_id": chat_id})
     if doc is None:
@@ -46,6 +44,7 @@ async def _get_cfg(chat_id: int) -> dict:
         await _cfg_col.insert_one(doc)
     return doc
 
+
 async def _set_cfg(chat_id: int, **fields):
     await _cfg_col.update_one(
         {"chat_id": chat_id},
@@ -53,9 +52,11 @@ async def _set_cfg(chat_id: int, **fields):
         upsert=True,
     )
 
+
 async def _get_warns(chat_id: int, user_id: int) -> int:
     doc = await _warn_col.find_one({"chat_id": chat_id, "user_id": user_id})
     return doc["count"] if doc else 0
+
 
 async def _inc_warns(chat_id: int, user_id: int) -> int:
     doc = await _warn_col.find_one_and_update(
@@ -64,38 +65,53 @@ async def _inc_warns(chat_id: int, user_id: int) -> int:
         upsert=True,
         return_document=True,
     )
-    return doc["count"] if doc else 1
+    # find_one_and_update with upsert returns the OLD doc before increment on first insert
+    # so if doc is None it means it was just created with count=1
+    return (doc["count"] + 1) if doc else 1
+
 
 async def _reset_warns(chat_id: int, user_id: int):
     await _warn_col.delete_one({"chat_id": chat_id, "user_id": user_id})
 
+
 async def _is_wl(chat_id: int, user_id: int) -> bool:
     return bool(await _wl_col.find_one({"chat_id": chat_id, "user_id": user_id}))
+
 
 async def _add_wl(chat_id: int, user_id: int):
     if not await _is_wl(chat_id, user_id):
         await _wl_col.insert_one({"chat_id": chat_id, "user_id": user_id})
 
+
 async def _rm_wl(chat_id: int, user_id: int):
     await _wl_col.delete_one({"chat_id": chat_id, "user_id": user_id})
+
 
 async def _get_wl(chat_id: int) -> list:
     return [d["user_id"] async for d in _wl_col.find({"chat_id": chat_id})]
 
+
+# ── Permission Helpers ────────────────────────────────────────
 async def _is_admin(client, chat_id: int, user_id: int) -> bool:
     try:
         m = await client.get_chat_member(chat_id, user_id)
-        return m.status.value in ("administrator", "creator", "owner")
+        return m.status in (
+            ChatMemberStatus.ADMINISTRATOR,
+            ChatMemberStatus.OWNER,
+        )
     except Exception:
         return False
+
 
 async def _is_owner(client, chat_id: int, user_id: int) -> bool:
     try:
         m = await client.get_chat_member(chat_id, user_id)
-        return m.status.value in ("creator", "owner")
+        return m.status == ChatMemberStatus.OWNER
     except Exception:
         return False
 
+
+# ── Auto-enable on bot add ────────────────────────────────────
 @app.on_chat_member_updated(filters.group)
 async def on_bot_added(client, update):
     try:
@@ -117,68 +133,92 @@ async def on_bot_added(client, update):
                     },
                     upsert=True,
                 )
-                logger.info("BioProtect auto-enabled for chat %s (%s)", chat_id, getattr(update.chat, "title", "?"))
+                logger.info(
+                    "BioProtect auto-enabled for chat %s (%s)",
+                    chat_id, getattr(update.chat, "title", "?")
+                )
     except Exception as e:
         logger.warning("on_bot_added error: %s", e)
 
+
+# ── Keyboard Builders ─────────────────────────────────────────
 def _biolink_kb(enabled: bool, chat_id: int) -> InlineKeyboardMarkup:
     if enabled:
         return InlineKeyboardMarkup([[
-            InlineKeyboardButton("🟢 ᴇɴᴀʙʟᴇᴅ — ᴛᴀᴘ ᴛᴏ ᴅɪsᴀʙʟᴇ",
-                                 callback_data=f"biolink_toggle_{chat_id}")
+            InlineKeyboardButton(
+                "🟢 ᴇɴᴀʙʟᴇᴅ — ᴛᴀᴘ ᴛᴏ ᴅɪsᴀʙʟᴇ",
+                callback_data=f"biolink_toggle_{chat_id}"
+            )
         ]])
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔴 ᴅɪsᴀʙʟᴇᴅ — ᴛᴀᴘ ᴛᴏ ᴇɴᴀʙʟᴇ",
-                             callback_data=f"biolink_toggle_{chat_id}")
+        InlineKeyboardButton(
+            "🔴 ᴅɪsᴀʙʟᴇᴅ — ᴛᴀᴘ ᴛᴏ ᴇɴᴀʙʟᴇ",
+            callback_data=f"biolink_toggle_{chat_id}"
+        )
     ]])
 
+
 def _config_main_kb(mode: str, penalty: str) -> InlineKeyboardMarkup:
+    def _m(label, key):
+        return InlineKeyboardButton(
+            f"🍏 {label}" if mode == key else label,
+            callback_data=f"bp_mode_{key}"
+        )
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🍏 ᴅᴇʟᴇᴛᴇ ᴏɴʟʏ" if mode == "delete" else "ᴅᴇʟᴇᴛᴇ ᴏɴʟʏ", callback_data="bp_mode_delete"),
-            InlineKeyboardButton("🍏 ᴡᴀʀɴ" if mode == "warn" else "ᴡᴀʀɴ", callback_data="bp_mode_warn"),
-        ],
-        [
-            InlineKeyboardButton("🍏 ᴍᴜᴛᴇ" if mode == "mute" else "ᴍᴜᴛᴇ", callback_data="bp_mode_mute"),
-            InlineKeyboardButton("🍏 ʙᴀɴ" if mode == "ban" else "ʙᴀɴ", callback_data="bp_mode_ban"),
-        ],
+        [_m("ᴅᴇʟᴇᴛᴇ ᴏɴʟʏ", "delete"), _m("ᴡᴀʀɴ", "warn")],
+        [_m("ᴍᴜᴛᴇ", "mute"),           _m("ʙᴀɴ", "ban")],
         [InlineKeyboardButton("⚙️ ᴡᴀʀɴ ʟɪᴍɪᴛ", callback_data="bp_warn_limit")],
         [InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻",    callback_data="bp_close")],
     ])
 
+
 def _warn_limit_kb(current: int) -> InlineKeyboardMarkup:
     nums = [
-        InlineKeyboardButton(f"🍏 {n}" if n == current else str(n), callback_data=f"bp_limit_{n}")
+        InlineKeyboardButton(
+            f"🍏 {n}" if n == current else str(n),
+            callback_data=f"bp_limit_{n}"
+        )
         for n in range(1, 6)
     ]
     return InlineKeyboardMarkup([
         nums[:3],
         nums[3:],
-        [InlineKeyboardButton("◀ ʙᴀᴄᴋ", callback_data="bp_back"),
-         InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="bp_close")],
+        [
+            InlineKeyboardButton("◀ ʙᴀᴄᴋ",      callback_data="bp_back"),
+            InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="bp_close"),
+        ],
     ])
+
 
 def _after_penalty_kb(penalty: str) -> InlineKeyboardMarkup:
+    def _p(label, key):
+        return InlineKeyboardButton(
+            f"🍏 {label}" if penalty == key else label,
+            callback_data=f"bp_penalty_{key}"
+        )
     return InlineKeyboardMarkup([
+        [_p("ᴅᴇʟᴇᴛᴇ", "delete"), _p("ᴍᴜᴛᴇ", "mute"), _p("ʙᴀɴ", "ban")],
         [
-            InlineKeyboardButton("🍏 ᴅᴇʟᴇᴛᴇ" if penalty == "delete" else "ᴅᴇʟᴇᴛᴇ", callback_data="bp_penalty_delete"),
-            InlineKeyboardButton("🍏 ᴍᴜᴛᴇ" if penalty == "mute" else "ᴍᴜᴛᴇ", callback_data="bp_penalty_mute"),
-            InlineKeyboardButton("🍏 ʙᴀɴ" if penalty == "ban" else "ʙᴀɴ", callback_data="bp_penalty_ban"),
+            InlineKeyboardButton("◀ ʙᴀᴄᴋ",      callback_data="bp_back"),
+            InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="bp_close"),
         ],
-        [InlineKeyboardButton("◀ ʙᴀᴄᴋ", callback_data="bp_back"),
-         InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="bp_close")],
     ])
 
+
+# ── /biolink command ──────────────────────────────────────────
 @app.on_message(filters.group & filters.command("biolink"))
 async def biolink_cmd(client, message):
     chat_id = message.chat.id
     user_id = message.from_user.id
+
     if not await _is_owner(client, chat_id, user_id):
         return await message.reply_text(
             "<blockquote>❌ ᴏɴʟʏ ɢʀᴏᴜᴘ ᴏᴡɴᴇʀ ᴄᴀɴ ᴛᴏɢɢʟᴇ ʙɪᴏ ʟɪɴᴋ ᴘʀᴏᴛᴇᴄᴛɪᴏɴ.</blockquote>"
         )
-    cfg = await _get_cfg(chat_id)
+
+    cfg  = await _get_cfg(chat_id)
     args = message.command
+
     if len(args) > 1:
         arg = args[1].lower()
         if arg == "enable":
@@ -187,10 +227,12 @@ async def biolink_cmd(client, message):
         elif arg == "disable":
             await _set_cfg(chat_id, enabled=False)
             cfg["enabled"] = False
+
     status  = cfg["enabled"]
     mode    = cfg["mode"]
     limit   = cfg["limit"]
     penalty = cfg["penalty"]
+
     status_text = "🟢 ᴇɴᴀʙʟᴇᴅ" if status else "🔴 ᴅɪsᴀʙʟᴇᴅ"
     text = (
         f"<blockquote>🛡 **ʙɪᴏ ʟɪɴᴋ ᴘʀᴏᴛᴇᴄᴛɪᴏɴ**</blockquote>\n"
@@ -203,15 +245,20 @@ async def biolink_cmd(client, message):
     )
     await message.reply_text(text, reply_markup=_biolink_kb(status, chat_id))
 
+
+# ── Toggle callback ───────────────────────────────────────────
 @app.on_callback_query(filters.regex(r"^biolink_toggle_(-?\d+)$"))
 async def biolink_toggle_cb(client, cq):
     chat_id = int(cq.data.split("_")[2])
     user_id = cq.from_user.id
+
     if not await _is_owner(client, chat_id, user_id):
         return await cq.answer("❌ ɢʀᴏᴜᴘ ᴏᴡɴᴇʀ ᴏɴʟʏ.", show_alert=True)
+
     cfg     = await _get_cfg(chat_id)
     new_val = not cfg["enabled"]
     await _set_cfg(chat_id, enabled=new_val)
+
     status_text = "🟢 ᴇɴᴀʙʟᴇᴅ" if new_val else "🔴 ᴅɪsᴀʙʟᴇᴅ"
     text = (
         f"<blockquote>🛡 **ʙɪᴏ ʟɪɴᴋ ᴘʀᴏᴛᴇᴄᴛɪᴏɴ**</blockquote>\n"
@@ -228,16 +275,21 @@ async def biolink_toggle_cb(client, cq):
         pass
     await cq.answer("🟢 ᴇɴᴀʙʟᴇᴅ" if new_val else "🔴 ᴅɪsᴀʙʟᴇᴅ")
 
+
+# ── /bioconfig command ────────────────────────────────────────
 @app.on_message(filters.group & filters.command("bioconfig"))
 async def config_cmd(client, message):
     chat_id = message.chat.id
     user_id = message.from_user.id
+
     if not await _is_admin(client, chat_id, user_id):
         return
+
     cfg     = await _get_cfg(chat_id)
     mode    = cfg["mode"]
     penalty = cfg["penalty"]
     limit   = cfg["limit"]
+
     text = (
         f"<blockquote>⚙️ **ʙɪᴏ ᴘʀᴏᴛᴇᴄᴛ sᴇᴛᴛɪɴɢs**</blockquote>\n"
         f"<blockquote>"
@@ -252,22 +304,30 @@ async def config_cmd(client, message):
     except Exception:
         pass
 
+
+# ── bp_ callbacks ─────────────────────────────────────────────
 @app.on_callback_query(filters.regex(r"^bp_"))
 async def bp_callbacks(client, cq):
     data    = cq.data
     chat_id = cq.message.chat.id
     user_id = cq.from_user.id
+
     if not await _is_admin(client, chat_id, user_id):
         return await cq.answer("❌ ɴᴏᴛ ᴀɴ ᴀᴅᴍɪɴ.", show_alert=True)
+
     cfg = await _get_cfg(chat_id)
+
+    # ── close ──
     if data == "bp_close":
         try:
             await cq.message.delete()
         except Exception:
             pass
         return await cq.answer()
+
+    # ── back ──
     if data == "bp_back":
-        cfg = await _get_cfg(chat_id)
+        cfg  = await _get_cfg(chat_id)
         text = (
             f"<blockquote>⚙️ **ʙɪᴏ ᴘʀᴏᴛᴇᴄᴛ sᴇᴛᴛɪɴɢs**</blockquote>\n"
             f"<blockquote>"
@@ -277,14 +337,19 @@ async def bp_callbacks(client, cq):
             f"</blockquote>"
         )
         try:
-            await cq.message.edit_text(text, reply_markup=_config_main_kb(cfg["mode"], cfg["penalty"]))
+            await cq.message.edit_text(
+                text, reply_markup=_config_main_kb(cfg["mode"], cfg["penalty"])
+            )
         except Exception:
             pass
         return await cq.answer()
+
+    # ── mode select ──
     if data.startswith("bp_mode_"):
         new_mode = data.replace("bp_mode_", "")
         await _set_cfg(chat_id, mode=new_mode)
         cfg = await _get_cfg(chat_id)
+
         if new_mode == "warn":
             text = (
                 f"<blockquote>⚙️ **ᴡᴀʀɴ ᴍᴏᴅᴇ sᴇʟᴇᴄᴛᴇᴅ**\n"
@@ -292,7 +357,9 @@ async def bp_callbacks(client, cq):
                 f"sᴇʟᴇᴄᴛ ᴀᴄᴛɪᴏɴ ᴀғᴛᴇʀ ʟɪᴍɪᴛ ʀᴇᴀᴄʜᴇᴅ:</blockquote>"
             )
             try:
-                await cq.message.edit_text(text, reply_markup=_after_penalty_kb(cfg["penalty"]))
+                await cq.message.edit_text(
+                    text, reply_markup=_after_penalty_kb(cfg["penalty"])
+                )
             except Exception:
                 pass
         else:
@@ -305,14 +372,18 @@ async def bp_callbacks(client, cq):
                 f"</blockquote>"
             )
             try:
-                await cq.message.edit_text(text, reply_markup=_config_main_kb(cfg["mode"], cfg["penalty"]))
+                await cq.message.edit_text(
+                    text, reply_markup=_config_main_kb(cfg["mode"], cfg["penalty"])
+                )
             except Exception:
                 pass
         return await cq.answer(f"ᴍᴏᴅᴇ → {new_mode}")
+
+    # ── penalty select ──
     if data.startswith("bp_penalty_"):
         new_penalty = data.replace("bp_penalty_", "")
         await _set_cfg(chat_id, penalty=new_penalty)
-        cfg = await _get_cfg(chat_id)
+        cfg  = await _get_cfg(chat_id)
         text = (
             f"<blockquote>⚙️ **ᴡᴀʀɴ ᴍᴏᴅᴇ sᴇʟᴇᴄᴛᴇᴅ**\n"
             f"➤ ᴡᴀʀɴ ʟɪᴍɪᴛ: `{cfg['limit']}`\n"
@@ -323,6 +394,8 @@ async def bp_callbacks(client, cq):
         except Exception:
             pass
         return await cq.answer(f"ᴘᴇɴᴀʟᴛʏ → {new_penalty}")
+
+    # ── warn limit menu ──
     if data == "bp_warn_limit":
         cfg = await _get_cfg(chat_id)
         try:
@@ -333,6 +406,8 @@ async def bp_callbacks(client, cq):
         except Exception:
             pass
         return await cq.answer()
+
+    # ── set warn limit ──
     if data.startswith("bp_limit_"):
         new_limit = int(data.replace("bp_limit_", ""))
         await _set_cfg(chat_id, limit=new_limit)
@@ -341,17 +416,23 @@ async def bp_callbacks(client, cq):
         except Exception:
             pass
         return await cq.answer(f"ᴡᴀʀɴ ʟɪᴍɪᴛ → {new_limit}")
+
+    # ── unmute ──
     if data.startswith("bp_unmute_"):
         target_id = int(data.split("_")[2])
         try:
             await client.restrict_chat_member(
                 chat_id, target_id,
-                ChatPermissions(can_send_messages=True, can_send_media_messages=True,
-                                can_send_other_messages=True, can_add_web_page_previews=True)
+                ChatPermissions(
+                    can_send_messages=True,
+                    can_send_media_messages=True,
+                    can_send_other_messages=True,
+                    can_add_web_page_previews=True,
+                )
             )
             await _reset_warns(chat_id, target_id)
-            user = await client.get_users(target_id)
-            name = user.first_name or str(target_id)
+            user    = await client.get_chat(target_id)
+            name    = user.first_name or str(target_id)
             mention = f"[{name}](tg://user?id={target_id})"
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔻 ᴡʜɪᴛᴇʟɪsᴛ ✅", callback_data=f"bp_whitelist_{target_id}"),
@@ -364,13 +445,15 @@ async def bp_callbacks(client, cq):
         except errors.ChatAdminRequired:
             await cq.answer("❌ ɪ ᴅᴏɴ'ᴛ ʜᴀᴠᴇ ᴘᴇʀᴍɪssɪᴏɴ.", show_alert=True)
         return await cq.answer()
+
+    # ── unban ──
     if data.startswith("bp_unban_"):
         target_id = int(data.split("_")[2])
         try:
             await client.unban_chat_member(chat_id, target_id)
             await _reset_warns(chat_id, target_id)
-            user = await client.get_users(target_id)
-            name = user.first_name or str(target_id)
+            user    = await client.get_chat(target_id)
+            name    = user.first_name or str(target_id)
             mention = f"[{name}](tg://user?id={target_id})"
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔻 ᴡʜɪᴛᴇʟɪsᴛ ✅", callback_data=f"bp_whitelist_{target_id}"),
@@ -383,10 +466,12 @@ async def bp_callbacks(client, cq):
         except errors.ChatAdminRequired:
             await cq.answer("❌ ɪ ᴅᴏɴ'ᴛ ʜᴀᴠᴇ ᴘᴇʀᴍɪssɪᴏɴ.", show_alert=True)
         return await cq.answer()
+
+    # ── cancel warn ──
     if data.startswith("bp_cancel_warn_"):
         target_id = int(data.split("_")[3])
         await _reset_warns(chat_id, target_id)
-        user = await client.get_users(target_id)
+        user    = await client.get_chat(target_id)
         name    = user.first_name or str(target_id)
         mention = f"[{name}](tg://user?id={target_id})"
         kb = InlineKeyboardMarkup([[
@@ -401,11 +486,13 @@ async def bp_callbacks(client, cq):
         except Exception:
             pass
         return await cq.answer()
+
+    # ── whitelist ──
     if data.startswith("bp_whitelist_"):
         target_id = int(data.split("_")[2])
         await _add_wl(chat_id, target_id)
         await _reset_warns(chat_id, target_id)
-        user = await client.get_users(target_id)
+        user    = await client.get_chat(target_id)
         name    = user.first_name or str(target_id)
         mention = f"[{name}](tg://user?id={target_id})"
         kb = InlineKeyboardMarkup([[
@@ -420,10 +507,12 @@ async def bp_callbacks(client, cq):
         except Exception:
             pass
         return await cq.answer()
+
+    # ── unwhitelist ──
     if data.startswith("bp_unwhitelist_"):
         target_id = int(data.split("_")[2])
         await _rm_wl(chat_id, target_id)
-        user = await client.get_users(target_id)
+        user    = await client.get_chat(target_id)
         name    = user.first_name or str(target_id)
         mention = f"[{name}](tg://user?id={target_id})"
         kb = InlineKeyboardMarkup([[
@@ -438,26 +527,33 @@ async def bp_callbacks(client, cq):
         except Exception:
             pass
         return await cq.answer()
+
     await cq.answer()
 
+
+# ── /biofree ──────────────────────────────────────────────────
 @app.on_message(filters.group & filters.command("biofree"))
 async def cmd_free(client, message):
     chat_id = message.chat.id
     if not await _is_admin(client, chat_id, message.from_user.id):
         return
+
     target = None
     if message.reply_to_message and message.reply_to_message.from_user:
         target = message.reply_to_message.from_user
     elif len(message.command) > 1:
         arg = message.command[1]
         try:
-            target = await client.get_users(int(arg) if arg.lstrip("-").isdigit() else arg)
+            target = await client.get_users(
+                int(arg) if arg.lstrip("-").isdigit() else arg
+            )
         except Exception:
             return await message.reply_text("<blockquote>❌ ᴜsᴇʀ ɴᴏᴛ ғᴏᴜɴᴅ.</blockquote>")
     else:
         return await message.reply_text(
             "<blockquote>**ᴜsᴀɢᴇ:** `/biofree` _(reply)_ ᴏʀ `/biofree @username/id`</blockquote>"
         )
+
     await _add_wl(chat_id, target.id)
     await _reset_warns(chat_id, target.id)
     name    = target.first_name or str(target.id)
@@ -471,93 +567,119 @@ async def cmd_free(client, message):
         reply_markup=kb
     )
 
+
+# ── /biounfree ────────────────────────────────────────────────
 @app.on_message(filters.group & filters.command("biounfree"))
 async def cmd_unfree(client, message):
     chat_id = message.chat.id
     if not await _is_admin(client, chat_id, message.from_user.id):
         return
+
     target = None
     if message.reply_to_message and message.reply_to_message.from_user:
         target = message.reply_to_message.from_user
     elif len(message.command) > 1:
         arg = message.command[1]
         try:
-            target = await client.get_users(int(arg) if arg.lstrip("-").isdigit() else arg)
+            target = await client.get_users(
+                int(arg) if arg.lstrip("-").isdigit() else arg
+            )
         except Exception:
             return await message.reply_text("<blockquote>❌ ᴜsᴇʀ ɴᴏᴛ ғᴏᴜɴᴅ.</blockquote>")
     else:
         return await message.reply_text(
             "<blockquote>**ᴜsᴀɢᴇ:** `/biounfree` _(reply)_ ᴏʀ `/biounfree @username/id`</blockquote>"
         )
+
     name    = target.first_name or str(target.id)
     mention = f"[{name}](tg://user?id={target.id})"
+
     if await _is_wl(chat_id, target.id):
         await _rm_wl(chat_id, target.id)
         text = f"<blockquote>🚫 {mention} `[{target.id}]` **ʀᴇᴍᴏᴠᴇᴅ ғʀᴏᴍ ᴡʜɪᴛᴇʟɪsᴛ**.</blockquote>"
     else:
         text = f"<blockquote>ℹ️ {mention} ɪs ɴᴏᴛ ɪɴ ᴡʜɪᴛᴇʟɪsᴛ.</blockquote>"
+
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("🔻 ᴡʜɪᴛᴇʟɪsᴛ ✅", callback_data=f"bp_whitelist_{target.id}"),
         InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻",      callback_data="bp_close"),
     ]])
     await message.reply_text(text, reply_markup=kb)
 
+
+# ── /biofreelist ──────────────────────────────────────────────
 @app.on_message(filters.group & filters.command("biofreelist"))
 async def cmd_freelist(client, message):
     chat_id = message.chat.id
     if not await _is_admin(client, chat_id, message.from_user.id):
         return
+
     ids = await _get_wl(chat_id)
     if not ids:
         return await message.reply_text(
             "<blockquote>⚠️ ɴᴏ ᴜsᴇʀs ᴀʀᴇ ᴡʜɪᴛᴇʟɪsᴛᴇᴅ ɪɴ ᴛʜɪs ɢʀᴏᴜᴘ.</blockquote>"
         )
+
     lines = ["<blockquote>📋 **ᴡʜɪᴛᴇʟɪsᴛᴇᴅ ᴜsᴇʀs:**\n"]
     for i, uid in enumerate(ids, 1):
         try:
-            u    = await client.get_users(uid)
+            u    = await client.get_chat(uid)
             name = f"{u.first_name}{(' ' + u.last_name) if u.last_name else ''}"
         except Exception:
             name = "Unknown"
         lines.append(f"{i}. {name} [`{uid}`]")
     lines.append("</blockquote>")
+
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ ᴄʟᴏsᴇ", callback_data="bp_close")]])
     await message.reply_text("\n".join(lines), reply_markup=kb)
 
-@app.on_message(filters.group & ~filters.bot & _not_command, group=1)
+
+# ── Core: check every group message for bio links ─────────────
+@app.on_message(filters.group & ~filters.bot & ~filters.service, group=1)
 async def check_bio(client, message):
+    # Skip commands
     if message.text and message.text.startswith("/"):
         return
+    # Must have a real user sender
     if not message.from_user:
         return
+
     chat_id = message.chat.id
     user_id = message.from_user.id
+
     cfg = await _get_cfg(chat_id)
     if not cfg["enabled"]:
         return
+
     if await _is_admin(client, chat_id, user_id):
         return
+
     if await _is_wl(chat_id, user_id):
         return
+
+    # ── FIX: use get_chat() not get_users() ──
+    # get_users() calls GetUsers which does NOT return the bio.
+    # get_chat() on a user calls GetFullUser which DOES return the bio.
     try:
-        user = await client.get_users(user_id)
+        user = await client.get_chat(user_id)
     except Exception:
         return
-    bio = getattr(user, "bio", None) or ""
-    def _bio_has_link(bio_text: str) -> bool:
-        return bool(_URL_RE.search(bio_text))
-    if not _bio_has_link(bio):
-        warns = await _get_warns(chat_id, user_id)
-        if warns > 0:
+
+    bio = user.bio or ""
+
+    if not _URL_RE.search(bio):
+        # Clean up leftover warns if user removed their bio link
+        if await _get_warns(chat_id, user_id) > 0:
             await _reset_warns(chat_id, user_id)
         return
+
+    # Bio has a link — take action
     name    = user.first_name or str(user_id)
     mention = f"[{name}](tg://user?id={user_id})"
     mode    = cfg["mode"]
     limit   = cfg["limit"]
     penalty = cfg["penalty"]
 
-    # ── Helper coroutines ─────────────────────────────────────
     async def _delete_msg():
         try:
             await message.delete()
@@ -579,15 +701,15 @@ async def check_bio(client, message):
         except Exception:
             pass
 
-    # DEFAULT: delete only — instant parallel (delete + report at same time)
+    # ── DELETE mode (default) ──
     if mode == "delete":
         await asyncio.gather(_delete_msg(), _send_bio_report())
         return
 
-    # Other modes: delete first, then handle
+    # All other modes: delete first
     await _delete_msg()
 
-    # WARN MODE
+    # ── WARN mode ──
     if mode == "warn":
         count = await _inc_warns(chat_id, user_id)
         warn_text = (
@@ -605,6 +727,7 @@ async def check_bio(client, message):
             [InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="bp_close")],
         ])
         sent = await message.reply_text(warn_text, reply_markup=kb)
+
         if count >= limit:
             try:
                 if penalty == "mute":
@@ -628,9 +751,10 @@ async def check_bio(client, message):
                         reply_markup=kb2
                     )
                 else:
+                    # penalty == "delete" — no escalation action
                     await sent.edit_text(
                         f"<blockquote>⚠️ {mention} ʜɪᴛ ᴡᴀʀɴ ʟɪᴍɪᴛ ʙᴜᴛ ᴘᴇɴᴀʟᴛʏ ɪs ᴅᴇʟᴇᴛᴇ-ᴏɴʟʏ.\n"
-                        f"ᴄᴏɴsɪᴅᴇʀ /bioconfig ᴛᴏ sᴇᴛ ᴍᴜᴛᴇ/ʙᴀɴ ᴘᴇɴᴀʟᴛʏ.</blockquote>",
+                        f"ᴜsᴇ /bioconfig ᴛᴏ sᴇᴛ ᴍᴜᴛᴇ/ʙᴀɴ ᴘᴇɴᴀʟᴛʏ.</blockquote>",
                         reply_markup=InlineKeyboardMarkup([[
                             InlineKeyboardButton("🔻 ᴄʟᴏsᴇ 🔻", callback_data="bp_close")
                         ]])
@@ -642,7 +766,7 @@ async def check_bio(client, message):
                 )
         return
 
-    # DIRECT MUTE
+    # ── MUTE mode ──
     if mode == "mute":
         try:
             await client.restrict_chat_member(chat_id, user_id, ChatPermissions())
@@ -658,7 +782,7 @@ async def check_bio(client, message):
             pass
         return
 
-    # DIRECT BAN
+    # ── BAN mode ──
     if mode == "ban":
         try:
             await client.ban_chat_member(chat_id, user_id)
@@ -674,6 +798,7 @@ async def check_bio(client, message):
             pass
         return
 
+
 __menu__     = "CMD_PRO"
 __mod_name__ = "H_B_81"
 __help__ = """
@@ -681,13 +806,16 @@ __help__ = """
 🔻 `/biolink` ➠ sʜᴏᴡ sᴛᴀᴛᴜs + ᴛᴏɢɢʟᴇ ʙᴜᴛᴛᴏɴ
 🔻 `/biolink enable` ➠ ᴇɴᴀʙʟᴇ ʙɪᴏ ʟɪɴᴋ ᴘʀᴏᴛᴇᴄᴛɪᴏɴ
 🔻 `/biolink disable` ➠ ᴅɪsᴀʙʟᴇ ʙɪᴏ ʟɪɴᴋ ᴘʀᴏᴛᴇᴄᴛɪᴏɴ
+
 **sᴇᴛᴛɪɴɢs (ᴀᴅᴍɪɴs):**
 🔻 `/bioconfig` ➠ ᴏᴘᴇɴ sᴇᴛᴛɪɴɢs ᴘᴀɴᴇʟ
+
 **ᴍᴏᴅᴇs:**
 🔻 `delete` _(ᴅᴇғᴀᴜʟᴛ)_ ➠ ᴊᴜsᴛ ᴅᴇʟᴇᴛᴇ ᴛʜᴇ ᴍᴇssᴀɢᴇ
 🔻 `warn` ➠ ᴡᴀʀɴ ᴜsᴇʀ ᴜᴘ ᴛᴏ ʟɪᴍɪᴛ ᴛʜᴇɴ ᴀᴘᴘʟʏ ᴘᴇɴᴀʟᴛʏ
 🔻 `mute` ➠ ɪᴍᴍᴇᴅɪᴀᴛᴇʟʏ ᴍᴜᴛᴇ
 🔻 `ban` ➠ ɪᴍᴍᴇᴅɪᴀᴛᴇʟʏ ʙᴀɴ
+
 **ᴡʜɪᴛᴇʟɪsᴛ (ᴀᴅᴍɪɴs):**
 🔻 `/biofree` _(reply/id)_ ➠ ᴡʜɪᴛᴇʟɪsᴛ ᴜsᴇʀ
 🔻 `/biounfree` _(reply/id)_ ➠ ʀᴇᴍᴏᴠᴇ ғʀᴏᴍ ᴡʜɪᴛᴇʟɪsᴛ
