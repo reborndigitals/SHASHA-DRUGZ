@@ -8,23 +8,24 @@ from SHASHA_DRUGZ.mongo.deploydb import get_deployed_bot_by_id
 
 PLUGINS_PATH = "SHASHA_DRUGZ/dplugins"
 
-
 # ─── Scanners ─────────────────────────────────────────────────────────────────
 
-def scan_all_modules():
+def scan_modules_from_path(path: str):
     """
-    Return ALL modules that define MOD_NAME.
+    Return all modules that define MOD_NAME from a specific subdirectory.
     price = 0 if MOD_PRICE is missing or "0".
     """
     modules = []
     seen    = set()
-    for root, _, files in os.walk(PLUGINS_PATH):
+    if not os.path.isdir(path):
+        return modules
+    for root, _, files in os.walk(path):
         for file in files:
             if not file.endswith(".py") or file.startswith("_"):
                 continue
-            path = os.path.join(root, file)
+            fpath = os.path.join(root, file)
             try:
-                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
                 name_m = re.search(r'MOD_NAME\s*=\s*[\'"](.+?)[\'"]', content)
                 if not name_m:
@@ -39,6 +40,14 @@ def scan_all_modules():
             except Exception:
                 continue
     return sorted(modules, key=lambda x: x["price"])
+
+
+def scan_all_modules():
+    """
+    Return ALL modules that define MOD_NAME.
+    price = 0 if MOD_PRICE is missing or "0".
+    """
+    return scan_modules_from_path(PLUGINS_PATH)
 
 
 # ─── Formatters ───────────────────────────────────────────────────────────────
@@ -102,7 +111,6 @@ async def list_all_modules_with_price(client: Client, message: Message):
     modules = scan_all_modules()
     free    = sum(1 for m in modules if m["price"] == 0)
     paid    = len(modules) - free
-
     text = (
         "📦 **ᴀᴠᴀɪʟᴀʙʟᴇ ᴍᴏᴅᴜʟᴇs & ᴘʀɪᴄᴇʟɪsᴛ**\n\n"
         f"{fmt_with_price(modules)}\n\n"
@@ -136,15 +144,12 @@ async def list_all_plugins_no_price(client: Client, message: Message):
 @Client.on_message(filters.command("mymodules"))
 async def list_my_modules_with_price(client: Client, message: Message):
     user_id = message.from_user.id
-
-    # Admins get a full pricelist view
     if user_id in ADMINS_ID:
         modules = scan_all_modules()
         return await _send(message,
             "📦 **ᴀʟʟ ᴍᴏᴅᴜʟᴇs — ᴀᴅᴍɪɴ ᴠɪᴇᴡ (ᴡɪᴛʜ ᴘʀɪᴄᴇ)**\n\n"
             f"{fmt_with_price(modules)}"
         )
-
     bot = await _resolve_bot(client)
     if not bot:
         return await message.reply_text(
@@ -154,19 +159,16 @@ async def list_my_modules_with_price(client: Client, message: Message):
         return await message.reply_text(
             "<blockquote>❌ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴛʜᴇ ᴏᴡɴᴇʀ ᴏғ ᴛʜɪs ʙᴏᴛ.</blockquote>"
         )
-
     enabled_names = set(bot.get("modules", []))
     if not enabled_names:
         return await message.reply_text(
             "<blockquote>⚠️ ɴᴏ ᴍᴏᴅᴜʟᴇs ᴇɴᴀʙʟᴇᴅ ᴏɴ ᴛʜɪs ʙᴏᴛ ʏᴇᴛ.</blockquote>"
         )
-
     all_mods      = scan_all_modules()
     owned         = [m for m in all_mods if m["name"] in enabled_names]
     monthly_cost  = sum(m["price"] for m in owned)
     expiry        = bot.get("expiry_date")
     expiry_str    = expiry.strftime("%d-%m-%Y %I:%M %p IST") if expiry else "N/A"
-
     text = (
         f"<blockquote>📦 **ʏᴏᴜʀ ᴇɴᴀʙʟᴇᴅ ᴍᴏᴅᴜʟᴇs — ᴡɪᴛʜ ᴘʀɪᴄᴇ**\n"
         f"🤖 ʙᴏᴛ: @{bot.get('username', 'unknown')}\n"
@@ -186,8 +188,6 @@ async def list_my_modules_with_price(client: Client, message: Message):
 @Client.on_message(filters.command("myplugins"))
 async def list_my_plugins_no_price(client: Client, message: Message):
     user_id = message.from_user.id
-
-    # Admins get a full list without prices
     if user_id in ADMINS_ID:
         modules = scan_all_modules()
         return await _send(message,
@@ -195,7 +195,6 @@ async def list_my_plugins_no_price(client: Client, message: Message):
             f"{fmt_without_price(modules)}\n\n"
             f"📊 ᴛᴏᴛᴀʟ: `{len(modules)}`"
         )
-
     bot = await _resolve_bot(client)
     if not bot:
         return await message.reply_text(
@@ -205,18 +204,15 @@ async def list_my_plugins_no_price(client: Client, message: Message):
         return await message.reply_text(
             "<blockquote>❌ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴛʜᴇ ᴏᴡɴᴇʀ ᴏғ ᴛʜɪs ʙᴏᴛ.</blockquote>"
         )
-
     enabled_names = set(bot.get("modules", []))
     if not enabled_names:
         return await message.reply_text(
             "<blockquote>⚠️ ɴᴏ ᴍᴏᴅᴜʟᴇs ᴇɴᴀʙʟᴇᴅ ᴏɴ ᴛʜɪs ʙᴏᴛ ʏᴇᴛ.</blockquote>"
         )
-
     all_mods   = scan_all_modules()
     owned      = [m for m in all_mods if m["name"] in enabled_names]
     expiry     = bot.get("expiry_date")
     expiry_str = expiry.strftime("%d-%m-%Y %I:%M %p IST") if expiry else "N/A"
-
     text = (
         f"<blockquote>🔌 **ᴀᴄᴛɪᴠᴇ ᴘʟᴜɢɪɴs — ɴᴏ ᴘʀɪᴄᴇ**\n"
         f"🤖 ʙᴏᴛ: @{bot.get('username', 'unknown')}\n"
@@ -227,8 +223,118 @@ async def list_my_plugins_no_price(client: Client, message: Message):
     await _send(message, text)
 
 
-# ─── Module meta ──────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# /probots
+# → List PRO-BOTS modules WITHOUT price
+# ─────────────────────────────────────────────────────────────────────────────
 
+@Client.on_message(filters.command("probots"))
+async def list_probots_no_price(client: Client, message: Message):
+    path    = os.path.join(PLUGINS_PATH, "PRO-BOTS")
+    modules = scan_modules_from_path(path)
+    text = (
+        "<blockquoat>🤖 **ᴘʀᴏ-ʙᴏᴛs ᴍᴏᴅᴜʟᴇs**</blockquoat>"
+        f"<blockquoat>{fmt_without_price(modules)}</blockquoat>"
+        f"<blockquoat>📊 ᴛᴏᴛᴀʟ ᴍᴏᴅᴜʟᴇs: `{len(modules)}`</blockquoat>"
+    )
+    await _send(message, text)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /probotsprice
+# → List PRO-BOTS modules WITH price
+# ─────────────────────────────────────────────────────────────────────────────
+
+@Client.on_message(filters.command("probotsprice"))
+async def list_probots_with_price(client: Client, message: Message):
+    path    = os.path.join(PLUGINS_PATH, "PRO-BOTS")
+    modules = scan_modules_from_path(path)
+    free    = sum(1 for m in modules if m["price"] == 0)
+    paid    = len(modules) - free
+    text = (
+        "<blockquoat>🤖 **ᴘʀᴏ-ʙᴏᴛs ᴍᴏᴅᴜʟᴇs & ᴘʀɪᴄᴇʟɪsᴛ**</blockquoat>"
+        f"<blockquoat>{fmt_with_price(modules)}</blockquoat>"
+        f"<blockquoat>📊 ᴛᴏᴛᴀʟ: `{len(modules)}` | ғʀᴇᴇ: `{free}` | ᴘᴀɪᴅ: `{paid}`</blockquoat>"
+        "<blockquoat>🧾 ᴘʀɪᴄᴇs ᴀʀᴇ ᴍᴏɴᴛʜʟʏ.</blockquoat>"
+    )
+    await _send(message, text)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /manage
+# → List MANAGE modules WITHOUT price
+# ─────────────────────────────────────────────────────────────────────────────
+
+@Client.on_message(filters.command("manage"))
+async def list_manage_no_price(client: Client, message: Message):
+    path    = os.path.join(PLUGINS_PATH, "MANAGE")
+    modules = scan_modules_from_path(path)
+    text = (
+        "<blockquoat>⚙️ **ᴍᴀɴᴀɢᴇ ᴍᴏᴅᴜʟᴇs**</blockquoat>"
+        f"<blockquoat>{fmt_without_price(modules)}</blockquoat>"
+        f"<blockquoat>📊 ᴛᴏᴛᴀʟ ᴍᴏᴅᴜʟᴇs: `{len(modules)}`</blockquoat>"
+    )
+    await _send(message, text)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /manageprice
+# → List MANAGE modules WITH price
+# ─────────────────────────────────────────────────────────────────────────────
+
+@Client.on_message(filters.command("manageprice"))
+async def list_manage_with_price(client: Client, message: Message):
+    path    = os.path.join(PLUGINS_PATH, "MANAGE")
+    modules = scan_modules_from_path(path)
+    free    = sum(1 for m in modules if m["price"] == 0)
+    paid    = len(modules) - free
+    text = (
+        "<blockquoat>⚙️ **ᴍᴀɴᴀɢᴇ ᴍᴏᴅᴜʟᴇs & ᴘʀɪᴄᴇʟɪsᴛ**</blockquoat>"
+        f"<blockquoat>{fmt_with_price(modules)}</blockquoat>"
+        f"<blockquoat>📊 ᴛᴏᴛᴀʟ: `{len(modules)}` | ғʀᴇᴇ: `{free}` | ᴘᴀɪᴅ: `{paid}`</blockquoat>"
+        "<blockquoat>🧾 ᴘʀɪᴄᴇs ᴀʀᴇ ᴍᴏɴᴛʜʟʏ.</blockquoat>"
+    )
+    await _send(message, text)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /games
+# → List GAMES modules WITHOUT price
+# ─────────────────────────────────────────────────────────────────────────────
+
+@Client.on_message(filters.command("games"))
+async def list_games_no_price(client: Client, message: Message):
+    path    = os.path.join(PLUGINS_PATH, "GAMES")
+    modules = scan_modules_from_path(path)
+    text = (
+        "<blockquoat>🎮 **ɢᴀᴍᴇs ᴍᴏᴅᴜʟᴇs**</blockquoat>"
+        f"<blockquoat>{fmt_without_price(modules)}</blockquoat>"
+        f"<blockquoat>📊 ᴛᴏᴛᴀʟ ᴍᴏᴅᴜʟᴇs: `{len(modules)}`</blockquoat>"
+    )
+    await _send(message, text)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /gamesprice
+# → List GAMES modules WITH price
+# ─────────────────────────────────────────────────────────────────────────────
+
+@Client.on_message(filters.command("gamesprice"))
+async def list_games_with_price(client: Client, message: Message):
+    path    = os.path.join(PLUGINS_PATH, "GAMES")
+    modules = scan_modules_from_path(path)
+    free    = sum(1 for m in modules if m["price"] == 0)
+    paid    = len(modules) - free
+    text = (
+        "<blockquoat>🎮 **ɢᴀᴍᴇs ᴍᴏᴅᴜʟᴇs & ᴘʀɪᴄᴇʟɪsᴛ**</blockquoat>"
+        f"<blockquoat>{fmt_with_price(modules)}</blockquoat>"
+        f"<blockquoat>📊 ᴛᴏᴛᴀʟ: `{len(modules)}` | ғʀᴇᴇ: `{free}` | ᴘᴀɪᴅ: `{paid}`</blockquoat>"
+        "<blockquoat>🧾 ᴘʀɪᴄᴇs ᴀʀᴇ ᴍᴏɴᴛʜʟʏ.</blockquoat>"
+    )
+    await _send(message, text)
+
+
+# ─── Module meta ──────────────────────────────────────────────────────────────
 __menu__ = "CMD_MANAGE"
 __mod_name__ = "H_B_34"
 __help__ = """
@@ -236,6 +342,12 @@ __help__ = """
 🔻 /plugins ➠ ᴠɪᴇᴡ ᴀʟʟ ᴘʟᴜɢɪɴꜱ / ᴍᴏᴅᴜʟᴇꜱ (ɴᴏ ᴘʀɪᴄᴇ)
 🔻 /mymodules ➠ ꜱʜᴏᴡ ʏᴏᴜʀ ᴅᴇᴘʟᴏʏᴇᴅ ᴍᴏᴅᴜʟᴇꜱ ᴡɪᴛʜ ᴘʀɪᴄᴇ
 🔻 /myplugins ➠ ꜱʜᴏᴡ ʏᴏᴜʀ ᴅᴇᴘʟᴏʏᴇᴅ ᴍᴏᴅᴜʟᴇꜱ ᴡɪᴛʜᴏᴜᴛ ᴘʀɪᴄᴇ
+🔻 /probots ➠ ʟɪꜱᴛ ᴘʀᴏ-ʙᴏᴛꜱ ᴍᴏᴅᴜʟᴇꜱ (ɴᴏ ᴘʀɪᴄᴇ)
+🔻 /probotsprice ➠ ʟɪꜱᴛ ᴘʀᴏ-ʙᴏᴛꜱ ᴍᴏᴅᴜʟᴇꜱ ᴡɪᴛʜ ᴘʀɪᴄᴇ
+🔻 /manage ➠ ʟɪꜱᴛ ᴍᴀɴᴀɢᴇ ᴍᴏᴅᴜʟᴇꜱ (ɴᴏ ᴘʀɪᴄᴇ)
+🔻 /manageprice ➠ ʟɪꜱᴛ ᴍᴀɴᴀɢᴇ ᴍᴏᴅᴜʟᴇꜱ ᴡɪᴛʜ ᴘʀɪᴄᴇ
+🔻 /games ➠ ʟɪꜱᴛ ɢᴀᴍᴇꜱ ᴍᴏᴅᴜʟᴇꜱ (ɴᴏ ᴘʀɪᴄᴇ)
+🔻 /gamesprice ➠ ʟɪꜱᴛ ɢᴀᴍᴇꜱ ᴍᴏᴅᴜʟᴇꜱ ᴡɪᴛʜ ᴘʀɪᴄᴇ
 """
 MOD_TYPE = "TOOLS"
 MOD_NAME = "Modules"
