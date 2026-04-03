@@ -1,3 +1,4 @@
+#Protect-Group.py
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║         BLOCKWORD MODULE — Pyrogram + MongoDB                    ║
 # ║  • Auto-detect bad words (multilingual, all cases/leetspeak)    ║
