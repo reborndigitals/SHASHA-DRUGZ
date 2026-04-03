@@ -10,7 +10,7 @@ import re
 import unicodedata
 from os import getenv
 from datetime import datetime, timedelta
-
+from SHASHA_DRUGZ import app
 from pyrogram import Client, filters
 from pyrogram.enums import ChatMemberStatus
 from pyrogram.types import (
@@ -21,14 +21,7 @@ from pyrogram.types import (
     ChatPermissions,
 )
 from motor.motor_asyncio import AsyncIOMotorClient
-
-from config import MONGO_DB_URI
-
-# ──────────────────────────────────────────────────────────────────
-# ⚙️  BOT OWNER / ADMIN CONFIG
-# ──────────────────────────────────────────────────────────────────
-ADMINS_ID_STR = getenv("ADMINS_ID", "1281282633 6773435708").split()
-ADMINS_ID = [int(x) for x in ADMINS_ID_STR if x.isdigit()]
+from config import MONGO_DB_URI, ADMINS_ID
 
 # ──────────────────────────────────────────────────────────────────
 # 🗃️  MONGO SETUP
@@ -305,7 +298,7 @@ def wordlist_kb() -> InlineKeyboardMarkup:
 # ──────────────────────────────────────────────────────────────────
 # 📌  /blockword  — dashboard + quick on/off
 # ──────────────────────────────────────────────────────────────────
-@Client.on_message(filters.command("blockword") & filters.group)
+@app.on_message(filters.command("blockword") & filters.group)
 async def blockword_cmd(client: Client, message: Message):
     if not await is_admin_or_owner(client, message.chat.id, message.from_user.id):
         return await message.reply("❌ Admins only.")
@@ -333,7 +326,7 @@ async def blockword_cmd(client: Client, message: Message):
 # ──────────────────────────────────────────────────────────────────
 # 📝  /addword  — admin adds per-group word (stored normalised)
 # ──────────────────────────────────────────────────────────────────
-@Client.on_message(filters.command("addword") & filters.group)
+@app.on_message(filters.command("addword") & filters.group)
 async def add_word_cmd(client: Client, message: Message):
     if not await is_admin_or_owner(client, message.chat.id, message.from_user.id):
         return await message.reply("❌ Admins only.")
@@ -374,7 +367,7 @@ async def add_word_cmd(client: Client, message: Message):
 # ──────────────────────────────────────────────────────────────────
 # 🗑️  /removeword  — GROUP OWNER ONLY
 # ──────────────────────────────────────────────────────────────────
-@Client.on_message(filters.command("removeword") & filters.group)
+@app.on_message(filters.command("removeword") & filters.group)
 async def remove_word_cmd(client: Client, message: Message):
     if not await is_group_owner(client, message.chat.id, message.from_user.id):
         return await message.reply("❌ Only the **group owner** can remove words.")
@@ -406,7 +399,7 @@ async def remove_word_cmd(client: Client, message: Message):
 # ──────────────────────────────────────────────────────────────────
 # 📋  /blockwords  — list words (admin)
 # ──────────────────────────────────────────────────────────────────
-@Client.on_message(filters.command("blockwords") & filters.group)
+@app.on_message(filters.command("blockwords") & filters.group)
 async def list_words_cmd(client: Client, message: Message):
     if not await is_admin_or_owner(client, message.chat.id, message.from_user.id):
         return await message.reply("❌ Admins only.")
@@ -424,7 +417,7 @@ async def list_words_cmd(client: Client, message: Message):
 # ──────────────────────────────────────────────────────────────────
 # 🌍  /ownerblockword  — bot owner adds a GLOBAL word
 # ──────────────────────────────────────────────────────────────────
-@Client.on_message(filters.command("ownerblockword"))
+@app.on_message(filters.command("ownerblockword"))
 async def owner_block_word_cmd(client: Client, message: Message):
     if message.from_user.id not in ADMINS_ID:
         return await message.reply("❌ Bot owner only.")
@@ -451,7 +444,7 @@ async def owner_block_word_cmd(client: Client, message: Message):
 # ──────────────────────────────────────────────────────────────────
 # 🌍  /ownerrmword  — bot owner removes one global word
 # ──────────────────────────────────────────────────────────────────
-@Client.on_message(filters.command("ownerrmword"))
+@app.on_message(filters.command("ownerrmword"))
 async def owner_rm_word_cmd(client: Client, message: Message):
     if message.from_user.id not in ADMINS_ID:
         return await message.reply("❌ Bot owner only.")
@@ -478,7 +471,7 @@ async def owner_rm_word_cmd(client: Client, message: Message):
 # ──────────────────────────────────────────────────────────────────
 # 🧹  /rmallwords  — bot owner clears ALL global words
 # ──────────────────────────────────────────────────────────────────
-@Client.on_message(filters.command("rmallwords"))
+@app.on_message(filters.command("rmallwords"))
 async def rm_all_words_cmd(client: Client, message: Message):
     if message.from_user.id not in ADMINS_ID:
         return await message.reply("❌ Bot owner only.")
@@ -495,7 +488,7 @@ async def rm_all_words_cmd(client: Client, message: Message):
 # ──────────────────────────────────────────────────────────────────
 # ⚙️  /setwarnlimit & /setpunishment
 # ──────────────────────────────────────────────────────────────────
-@Client.on_message(filters.command("setwarnlimit") & filters.group)
+@app.on_message(filters.command("setwarnlimit") & filters.group)
 async def set_warn_limit_cmd(client: Client, message: Message):
     if not await is_admin_or_owner(client, message.chat.id, message.from_user.id):
         return await message.reply("❌ Admins only.")
@@ -511,7 +504,7 @@ async def set_warn_limit_cmd(client: Client, message: Message):
     await message.reply(f"✅ Warn limit set to **{limit}**.", reply_markup=back_kb("bw_settings_menu"))
 
 
-@Client.on_message(filters.command("setpunishment") & filters.group)
+@app.on_message(filters.command("setpunishment") & filters.group)
 async def set_punishment_cmd(client: Client, message: Message):
     if not await is_admin_or_owner(client, message.chat.id, message.from_user.id):
         return await message.reply("❌ Admins only.")
@@ -533,7 +526,7 @@ async def set_punishment_cmd(client: Client, message: Message):
 #  ✅ ~filters.service      → skips service messages (joins, pins, etc.)
 #  ✅ filters.group         → only fires in group chats
 # ──────────────────────────────────────────────────────────────────
-@Client.on_message(
+@app.on_message(
     filters.group
     & ~filters.command("")    # ← NEVER intercept any /command message
     & ~filters.bot
@@ -652,7 +645,7 @@ async def enforce_blockword(client: Client, message: Message):
 # ──────────────────────────────────────────────────────────────────
 # 🔘  CALLBACK QUERY HANDLERS
 # ──────────────────────────────────────────────────────────────────
-@Client.on_callback_query(filters.regex(r"^bw_"))
+@app.on_callback_query(filters.regex(r"^bw_"))
 async def blockword_callbacks(client: Client, query: CallbackQuery):
     chat_id = query.message.chat.id
     user_id = query.from_user.id
