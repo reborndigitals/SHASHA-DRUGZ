@@ -1,3 +1,4 @@
+#locks.py
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║  SHASHA_DRUGZ — Locks + Approval + CleanService + AntiFlood              ║
 # ║  MERGED SINGLE FILE — No external imports needed                         ║
