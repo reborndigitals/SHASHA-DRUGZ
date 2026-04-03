@@ -821,3 +821,7 @@ __help__ = """
 🔻 `/biounfree` _(reply/id)_ ➠ ʀᴇᴍᴏᴠᴇ ғʀᴏᴍ ᴡʜɪᴛᴇʟɪsᴛ
 🔻 `/biofreelist` ➠ sʜᴏᴡ ᴀʟʟ ᴡʜɪᴛᴇʟɪsᴛᴇᴅ ᴜsᴇʀs
 """
+
+MOD_TYPE = "PRO-BOTS"
+MOD_NAME = "BioProtect"
+MOD_PRICE = "250"
