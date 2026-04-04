@@ -63,18 +63,21 @@ async def save_vc_logger_status(chat_id: int, status: bool):
 
 
 async def get_vc_logger_status(chat_id: int) -> bool:
-    """Return the current VC logger status for a chat (cached or from DB)."""
+    """Return the current VC logger status for a chat (cached or from DB).
+    Defaults to True (enabled) if no record exists for the chat."""
     if chat_id in vc_logging_status:
         return vc_logging_status[chat_id]
     try:
         doc = await vcloggerdb.find_one({"chat_id": chat_id})
         if doc:
-            status = doc.get("status", False)
+            status = doc.get("status", True)
             vc_logging_status[chat_id] = status
             return status
     except Exception as e:
         LOGGER.error(f"get_vc_logger_status error for {chat_id}: {e}")
-    return False
+    # No DB record found — default to enabled
+    vc_logging_status[chat_id] = True
+    return True
 
 
 # ════════════════════════════════════════════
@@ -236,7 +239,7 @@ async def handle_user_join(chat_id: int, user_id: int, userbot):
             f"🎵 {mention} <b>ʜᴀs ᴊᴏɪɴᴇᴅ – ʟᴇᴛ's ʀᴏᴄᴋ ᴛʜɪs ᴠɪʙᴇ! 🔥</b>",
         ]
         sent = await app.send_message(
-            chat_id, random.choice(messages) # parse_mode="html"
+            chat_id, random.choice(messages), parse_mode="html"
         )
         asyncio.create_task(delete_after_delay(sent, 10))
     except Exception as e:
@@ -254,7 +257,7 @@ async def handle_user_leave(chat_id: int, user_id: int, userbot):
             f"✌️ {mention} <b>sᴀɪᴅ ɢᴏᴏᴅʙʏᴇ – ᴄᴏᴍᴇ ʙᴀᴄᴋ sᴏᴏɴ! 🎶</b>",
         ]
         sent = await app.send_message(
-            chat_id, random.choice(messages) # parse_mode="html"
+            chat_id, random.choice(messages), parse_mode="html"
         )
         asyncio.create_task(delete_after_delay(sent, 10))
     except Exception as e:
@@ -277,7 +280,7 @@ async def vclogger_command(_, message: Message):
             f"📌 <b>VC Logger Status:</b> <b>{current_state_ui}</b>\n\n"
             f"Usage: <b>/vclogger on</b> | <b>/vclogger off</b>"
         )
-        await message.reply(text, disable_web_page_preview=True)
+        await message.reply(text, parse_mode="html", disable_web_page_preview=True)
 
     elif len(args) >= 2:
         arg = args[1].lower()
@@ -288,7 +291,7 @@ async def vclogger_command(_, message: Message):
             await message.reply(
                 "✅ <b>VC Logging Enabled!</b>\n"
                 "ɪ ᴡɪʟʟ ɴᴏᴡ ᴛʀᴀᴄᴋ ᴊᴏɪɴs & ʟᴇᴀᴠᴇs ɪɴ ᴛʜᴇ ᴠᴄ.",
-                #parse_mode="html",
+                parse_mode="html",
                 disable_web_page_preview=True,
             )
             asyncio.create_task(check_and_monitor_vc(chat_id))
@@ -301,14 +304,14 @@ async def vclogger_command(_, message: Message):
             await message.reply(
                 "🚫 <b>VC Logging Disabled!</b>\n"
                 "ɴᴏ ʟᴏɴɢᴇʀ ᴛʀᴀᴄᴋɪɴɢ ᴠᴄ ᴀᴄᴛɪᴠɪᴛʏ.",
-                #parse_mode="html",
+                parse_mode="html",
                 disable_web_page_preview=True,
             )
 
         else:
             await message.reply(
                 "❌ <b>Invalid option.</b> Use <b>/vclogger on</b> or <b>/vclogger off</b>.",
-                #parse_mode="html",
+                parse_mode="html",
             )
 
 
@@ -322,7 +325,7 @@ async def manual_reload(_, message: Message):
     await load_vc_logger_status()
     await message.reply(
         "♻️ <b>VC Logger status reloaded from database!</b>",
-        #parse_mode="html",
+        parse_mode="html",
     )
 
 
