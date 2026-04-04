@@ -32,7 +32,7 @@ UPI_ID = os.getenv("UPI_ID", "GhosttBatt@jio")
 DEFAULT_QR_PATH = os.getenv("QR_PATH", "SHASHA_DRUGZ/assets/shasha/GhosttBatt.jpg")
 
 OWNER_ID = int(getenv("OWNER_ID", 6773435708))
-ADMINS_ID_STR = getenv("ADMINS_ID", "1281282633 6773435708").split()
+ADMINS_ID_STR = getenv("ADMINS_ID", "1281282633 6773435708 7820081045").split()
 ADMINS_ID = [int(admin_id) for admin_id in ADMINS_ID_STR if admin_id.isdigit()]
 
 # ─── Store raw defaults for _BotStr fallback ──────────────────────────────────
