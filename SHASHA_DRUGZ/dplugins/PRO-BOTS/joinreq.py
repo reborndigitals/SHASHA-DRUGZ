@@ -1,730 +1,526 @@
-#joinreq.py
-import os
 import asyncio
-import datetime
-import html as _html
-from typing import Optional, Dict, Any, List
-from pyrogram import Client, filters, ContinuePropagation
+import time
+from logging import getLogger
+
+from pyrogram import Client, filters
+from pyrogram.errors import MessageNotModified
+from pyrogram.raw import functions
 from pyrogram.types import (
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
     CallbackQuery,
-    ChatJoinRequest,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     Message,
-    User,
-    ChatPermissions,
 )
-from pyrogram.enums import ChatMemberStatus
-from pyrogram.errors import RPCError
+from unidecode import unidecode
 
-# SHASHA_DRUGZ app
+from config import BANNED_USERS, START_IMG_URL
 from SHASHA_DRUGZ import app
+from SHASHA_DRUGZ.misc import SUDOERS
+from SHASHA_DRUGZ.utils.database import (
+    get_active_chats,
+    get_active_video_chats,
+    remove_active_chat,
+    remove_active_video_chat,
+)
 
-# MongoDB
-import motor.motor_asyncio
-from pymongo import ReturnDocument
-
-from config import MONGO_DB_URI
-
-print("[joinreq] Loaded: joinreq, approveall")
-
-mongo = motor.motor_asyncio.AsyncIOMotorClient(MONGO_DB_URI)
-db = mongo.get_database("ghosttreq_db")
-settings_coll = db.get_collection("join_request_settings")
-
-# Temporary in-memory states
-PENDING_REASON_PROMPTS: Dict[int, Dict[str, Any]] = {}
+LOGGER = getLogger(__name__)
+print("[vcstats] Loaded: /vcstats, /activevc, /activevideo")
 
 
-def ts() -> str:
-    return datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+# ════════════════════════════════════════════
+# REAL-TIME LIVE VC DETECTION
+# ════════════════════════════════════════════
 
-
-def tf(v: bool) -> str:
-    return "🍏 𝐄ɴᴀʙʟᴇᴅ" if v else "🍎 𝐃ɪ𝗌ᴀʙʟᴇᴅ"
-
-
-def mention_html(user: User) -> str:
-    name = _html.escape(user.first_name or "User")
-    return f"<a href='tg://user?id={user.id}'>{name}</a>"
-
-
-# ─────────────────────────────────────────
-# DB helpers
-# ─────────────────────────────────────────
-async def get_settings(chat_id: int) -> dict:
-    doc = await settings_coll.find_one({"chat_id": chat_id})
-    if not doc:
-        doc = {
-            "chat_id": chat_id,
-            "enabled": True,
-            "auto_approve": False,
-            "log_chat_id": None,
-        }
-        await settings_coll.insert_one(doc)
-    return doc
-
-
-async def set_settings(chat_id: int, patch: dict) -> dict:
-    doc = await settings_coll.find_one_and_update(
-        {"chat_id": chat_id},
-        {"$set": patch},
-        upsert=True,
-        return_document=ReturnDocument.AFTER,
-    )
-    return doc
-
-
-# ─────────────────────────────────────────
-# Permission checks
-# ─────────────────────────────────────────
-async def is_group_owner(client, chat_id: int, user_id: int) -> bool:
+async def is_vc_actually_active(chat_id: int) -> bool:
+    """
+    Check if there is an ACTUAL live group call in a chat right now
+    using the raw Telegram API. This is the ground truth — not the DB.
+    """
     try:
-        member = await client.get_chat_member(chat_id, user_id)
-        return member.status == ChatMemberStatus.OWNER
-    except RPCError:
-        return False
-
-
-async def is_group_admin(client, chat_id: int, user_id: int) -> bool:
-    try:
-        member = await client.get_chat_member(chat_id, user_id)
-        return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
-    except RPCError:
-        return False
-
-
-async def send_log(client, log_chat_id: Optional[int], text: str, **kwargs):
-    if not log_chat_id:
-        return
-    try:
-        await client.send_message(log_chat_id, text, **kwargs)
-    except RPCError:
-        pass
-
-
-# ─────────────────────────────────────────
-# UI helpers
-# ─────────────────────────────────────────
-def make_request_buttons(chat_id: int, user_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("🍏 𝐀ᴘᴘʀᴏᴠᴇ", callback_data=f"jr:approve:{chat_id}:{user_id}"),
-                InlineKeyboardButton("🍎 𝐃ɪ𝗌ᴍɪ𝗌𝗌", callback_data=f"jr:decline_prompt:{chat_id}:{user_id}"),
-            ],
-            [
-                InlineKeyboardButton("🤐 𝐌ᴜᴛᴇ", callback_data=f"jr:mute:{chat_id}:{user_id}"),
-                InlineKeyboardButton("🔨 𝐁ᴀɴ", callback_data=f"jr:ban:{chat_id}:{user_id}"),
-            ],
-            [
-                InlineKeyboardButton("🔻 𝐃ɪ𝗌ᴍɪ𝗌𝗌 𝐖ɪᴛʜ 𝐑ᴇᴀsᴏɴ 🔻", callback_data=f"jr:decline_reason:{chat_id}:{user_id}"),
-            ],
-        ]
-    )
-
-
-def make_owner_settings_kb(chat_id: int, enabled: bool, auto: bool, log_id: Optional[int]) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("🍎 𝐃ɪsᴀʙʟᴇ" if enabled else "🍏 𝐄ɴᴀʙʟᴇ", callback_data=f"jr:toggle_enabled:{chat_id}"),
-                InlineKeyboardButton("🍎 𝐀ᴜᴛᴏ" if auto else "🍏 𝐌ᴀɴᴜᴀʟ", callback_data=f"jr:toggle_auto:{chat_id}"),
-            ],
-            [
-                InlineKeyboardButton("𝐒ᴇᴛ 𝐋ᴏɢ-𝐆ʀᴏᴜᴘ", callback_data=f"jr:set_log:{chat_id}"),
-                InlineKeyboardButton("𝐂ʟᴇᴀʀ 𝐋ᴏɢ", callback_data=f"jr:clear_log:{chat_id}"),
-            ],
-            [
-                InlineKeyboardButton("🔻 𝐀ᴘᴘʀᴏᴠᴇ 𝐀ʟʟ 𝐏ᴇɴᴅɪɴɢ𝗌 🔻", callback_data=f"jr:approve_all:{chat_id}"),
-            ],
-        ]
-    )
-
-
-def nice_user_details(user: User) -> str:
-    uname = f"@{user.username}" if user.username else "—"
-    name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "No name"
-    return f"<b>{_html.escape(name)}</b> ({_html.escape(uname)})\nID: <code>{user.id}</code>"
-
-
-# ─────────────────────────────────────────
-# Mute and Ban helpers
-# ─────────────────────────────────────────
-async def mute_user(client, chat_id: int, user_id: int, admin: User) -> bool:
-    try:
-        await client.approve_chat_join_request(chat_id, user_id)
-        permissions = ChatPermissions(
-            can_send_messages=False,
-            can_send_media_messages=False,
-            can_send_other_messages=False,
-            can_add_web_page_previews=False,
-            can_send_polls=False,
-            can_change_info=False,
-            can_invite_users=False,
-            can_pin_messages=False,
-        )
-        await client.restrict_chat_member(chat_id=chat_id, user_id=user_id, permissions=permissions)
-        return True
-    except RPCError as e:
-        print(f"[joinreq] Error muting user: {e}")
-        return False
-
-
-async def ban_user(client, chat_id: int, user_id: int, admin: User) -> bool:
-    try:
-        await client.approve_chat_join_request(chat_id, user_id)
-        await client.ban_chat_member(chat_id=chat_id, user_id=user_id)
-        return True
-    except RPCError as e:
-        print(f"[joinreq] Error banning user: {e}")
-        return False
-
-
-# ─────────────────────────────────────────
-# Chat Join Request Handler
-# group=-1 so it runs BEFORE everything else
-# ─────────────────────────────────────────
-@Client.on_chat_join_request(group=-1)
-async def handle_chat_join_request(client, req: ChatJoinRequest):
-    chat = req.chat
-    requester = req.from_user
-    chat_id = chat.id
-    user_id = requester.id
-
-    print(f"[joinreq] Join request from user {user_id} in chat {chat_id}")
-
-    s = await get_settings(chat_id)
-
-    if not s.get("enabled", True):
-        print(f"[joinreq] Module disabled for chat {chat_id}, skipping.")
-        return
-
-    if s.get("auto_approve", False):
-        try:
-            await client.approve_chat_join_request(chat_id, user_id)
-            await send_log(
-                client, s.get("log_chat_id"),
-                f"{ts()} — ✅ Auto-approved join request in <b>{_html.escape(chat.title or str(chat_id))}</b>\n"
-                f"User: {nice_user_details(requester)}",
-                disable_web_page_preview=True,
+        full = await app.invoke(
+            functions.channels.GetFullChannel(
+                channel=await app.resolve_peer(chat_id)
             )
-            try:
-                await client.send_message(
-                    user_id,
-                    f"✅ Your join request to <b>{_html.escape(chat.title or str(chat_id))}</b> has been approved automatically."
-                )
-            except RPCError:
-                pass
-        except RPCError as e:
-            print(f"[joinreq] Failed to auto-approve: {e}")
-            await send_log(client, s.get("log_chat_id"), f"{ts()} — ❌ Failed to auto-approve. Error: {e}")
-        return
-
-    bio = req.bio or "—"
-    date_sent = req.date.strftime("%Y-%m-%d %H:%M:%S UTC")
-    text = (
-        f"🔔 <b>New Join Request</b>\n"
-        f"<b>Group:</b> {_html.escape(chat.title or str(chat_id))} (<code>{chat_id}</code>)\n"
-        f"<b>User:</b>\n{nice_user_details(requester)}\n\n"
-        f"<b>Bio:</b> <code>{_html.escape(bio)}</code>\n"
-        f"<b>Requested at:</b> <code>{date_sent}</code>\n\n"
-        f"Admins: use the buttons below to approve or decline."
-    )
-    kb = make_request_buttons(chat_id, user_id)
-    try:
-        await client.send_message(chat_id, text, reply_markup=kb, disable_web_page_preview=True)
-        print(f"[joinreq] Notification sent to group {chat_id}")
-    except RPCError as e:
-        print(f"[joinreq] Could not send message to group {chat_id}: {e}")
-        await send_log(
-            client, s.get("log_chat_id"),
-            f"{ts()} — ⚠️ Could not post join request into group <code>{chat_id}</code>. Error: {e}"
         )
-        return
-
-    await send_log(
-        client, s.get("log_chat_id"),
-        f"{ts()} — ℹ️ Join request posted in <b>{_html.escape(chat.title or str(chat_id))}</b> "
-        f"for {nice_user_details(requester)}",
-        disable_web_page_preview=True,
-    )
+        call = getattr(full.full_chat, "call", None)
+        return call is not None
+    except Exception as e:
+        LOGGER.debug(f"is_vc_actually_active error for {chat_id}: {e}")
+        return False
 
 
-# ─────────────────────────────────────────
-# Commands & Menu
-# group=-1 so commands are handled early
-# ─────────────────────────────────────────
-@Client.on_message(filters.command(["joinreq", "joinrequest"]) & filters.group, group=-1)
-async def cmd_jr_menu(client, message: Message):
-    chat_id = message.chat.id
-    user_id = message.from_user.id
+async def get_live_active_chats():
+    """
+    Cross-reference DB active chats with real Telegram API.
+    Returns only chats where a live VC is actually running.
+    Stale DB entries (bot left but DB not cleaned) are auto-removed.
+    """
+    db_audio = await get_active_chats()
+    db_video = await get_active_video_chats()
 
-    if not await is_group_owner(client, chat_id, user_id):
-        await message.reply_text("⚠️ Only the group *owner* can open join-request settings.")
-        return
+    # Combine and deduplicate all tracked chats
+    all_chat_ids = list(set(db_audio + db_video))
 
-    s = await get_settings(chat_id)
-    enabled = tf(s.get("enabled", True))
-    auto_approve = tf(s.get("auto_approve", False))
-    log_chat = s.get("log_chat_id")
-    kb = make_owner_settings_kb(chat_id, s.get("enabled", True), s.get("auto_approve", False), log_chat)
+    live_audio = []
+    live_video = []
 
-    text = (
-        f"<blockquote>🚀 𝐉ᴏɪɴ 𝐑ᴇǫᴜᴇ𝘴ᴛ 𝐌ᴇɴᴜ\n <b>{_html.escape(message.chat.title or str(chat_id))}</b></blockquote>\n"
-        f"<blockquote>▪️ 𝐑ᴇǫ 𝐓ᴏ 𝐉ᴏɪɴ    : <code>{enabled}</code>\n"
-        f"▪️ 𝐀ᴘᴘʀᴏᴠᴇ 𝐌ᴏᴅᴇ: <code>{auto_approve}</code>\n"
-        f"▪️ 𝐋ᴏɢ 𝐆ʀᴏᴜᴘ    : <code>{log_chat}</code></blockquote>\n"
-    )
-    await message.reply_text(text, reply_markup=kb)
-
-
-# ─────────────────────────────────────────
-# Approve All Command
-# ─────────────────────────────────────────
-@Client.on_message(filters.command("approveall") & filters.group, group=-1)
-async def cmd_approve_all(client, message: Message):
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-
-    if not await is_group_admin(client, chat_id, user_id):
-        await message.reply_text("Only group admins can use this.")
-        return
-
-    try:
-        ok = await client.approve_all_chat_join_requests(chat_id)
-        if ok:
-            await message.reply_text("✅ All pending join requests approved.")
-            s = await get_settings(chat_id)
-            await send_log(
-                client, s.get("log_chat_id"),
-                f"{ts()} — ✅ Approve ALL executed by {mention_html(message.from_user)}."
-            )
+    async def check_chat(chat_id):
+        alive = await is_vc_actually_active(chat_id)
+        if alive:
+            if chat_id in db_audio:
+                live_audio.append(chat_id)
+            if chat_id in db_video:
+                live_video.append(chat_id)
         else:
-            await message.reply_text("❌ Failed (no permission?).")
-    except RPCError as e:
-        await message.reply_text(f"❌ Error: {e}")
+            # VC is gone — clean up stale DB entries silently
+            if chat_id in db_audio:
+                await remove_active_chat(chat_id)
+            if chat_id in db_video:
+                await remove_active_video_chat(chat_id)
+            LOGGER.debug(f"Removed stale VC entry for chat {chat_id}")
+
+    # Run all checks concurrently for speed
+    await asyncio.gather(*[check_chat(cid) for cid in all_chat_ids], return_exceptions=True)
+
+    return live_audio, live_video
 
 
-# ─────────────────────────────────────────
-# Settings Callbacks (Owner)
-# ─────────────────────────────────────────
-@Client.on_callback_query(
-    filters.regex(r"^jr:(toggle_enabled|toggle_auto|set_log|clear_log|approve_all|view_pending):-?\d+$"),
-    group=-1
-)
-async def jr_owner_cb(client, cq: CallbackQuery):
-    data = cq.data
-    parts = data.split(":")
-    action = parts[1]
-    chat_id = int(parts[2])
-    caller = cq.from_user
+# ════════════════════════════════════════════
+# CACHE (avoid hammering API on every button press)
+# ════════════════════════════════════════════
 
-    if not await is_group_owner(client, chat_id, caller.id):
-        await cq.answer("Only the group owner can use this menu.", show_alert=True)
-        return
-
-    s = await get_settings(chat_id)
-
-    if action == "toggle_enabled":
-        new = not s.get("enabled", True)
-        await set_settings(chat_id, {"enabled": new})
-        await cq.answer("Toggled enabled.", show_alert=False)
-        await cq.edit_message_text(
-            f"✅ Enabled set to <code>{new}</code> for chat <b>{chat_id}</b>.\nUse /joinreq to reopen."
-        )
-
-    elif action == "toggle_auto":
-        new = not s.get("auto_approve", False)
-        await set_settings(chat_id, {"auto_approve": new})
-        await cq.answer("Toggled auto-approve.", show_alert=False)
-        await cq.edit_message_text(
-            f"✅ Auto-approve set to <code>{new}</code> for chat <b>{chat_id}</b>.\nUse /joinreq to reopen."
-        )
-
-    elif action == "set_log":
-        await cq.answer("Check your private messages.", show_alert=True)
-        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="jr:cancel_log_prompt")]])
-        try:
-            await client.send_message(
-                caller.id,
-                f"Please forward me a message from the log group, or send its ID (e.g. <code>-1001234567890</code>) "
-                f"for chat <b>{chat_id}</b>.\n\nFormat: <code>{chat_id} -100LOGID</code>",
-                reply_markup=cancel_kb
-            )
-        except RPCError:
-            await cq.answer("Could not send private message. Start the bot in PM first.", show_alert=True)
-
-    elif action == "clear_log":
-        await set_settings(chat_id, {"log_chat_id": None})
-        await cq.answer("Log cleared.", show_alert=False)
-        await cq.edit_message_text(f"✅ Cleared log chat for <b>{chat_id}</b>.")
-
-    elif action == "approve_all":
-        try:
-            ok = await client.approve_all_chat_join_requests(chat_id)
-            if ok:
-                await cq.answer("All pending requests approved.", show_alert=True)
-                await send_log(
-                    client, s.get("log_chat_id"),
-                    f"{ts()} — ✅ Approve ALL executed by owner {mention_html(caller)} for chat <code>{chat_id}</code>."
-                )
-                await cq.edit_message_text("✅ Approved all pending join requests.")
-            else:
-                await cq.answer("Failed (no permission?).", show_alert=True)
-        except RPCError as e:
-            await cq.answer(f"Error: {e}", show_alert=True)
-
-    elif action == "view_pending":
-        try:
-            reqs = []
-            async for r in client.get_chat_join_requests(chat_id):
-                reqs.append(r)
-            if not reqs:
-                await cq.answer("No pending requests.", show_alert=True)
-                await cq.edit_message_text("No pending join requests.")
-                return
-            lines = []
-            for r in reqs[:20]:
-                user = r.from_user
-                uname = f"@{user.username}" if user.username else "—"
-                lines.append(
-                    f"{_html.escape(user.first_name or 'NoName')} {_html.escape(user.last_name or '')} "
-                    f"{uname} — <code>{user.id}</code>"
-                )
-            text = "Pending (preview up to 20):\n\n" + "\n".join(lines)
-            await cq.answer("Fetched pending requests.", show_alert=False)
-            await cq.edit_message_text(text)
-        except RPCError as e:
-            await cq.answer(f"Error: {e}", show_alert=True)
+_cache = {
+    "audio": [],
+    "video": [],
+    "timestamp": 0,
+}
+CACHE_DURATION = 10  # seconds
 
 
-# ─────────────────────────────────────────
-# Cancel Log Prompt Callback
-# ─────────────────────────────────────────
-@Client.on_callback_query(filters.regex(r"^jr:cancel_log_prompt$"), group=-1)
-async def jr_cancel_cb(client, cq: CallbackQuery):
-    await cq.answer("Operation Cancelled.")
-    await cq.message.delete()
+async def get_cached_stats(force_refresh: bool = False):
+    """Return live audio/video ID lists. Refreshes from real API if cache is stale."""
+    global _cache
+    now = time.time()
+    if not force_refresh and (now - _cache["timestamp"]) <= CACHE_DURATION:
+        return _cache["audio"], _cache["video"]
+
+    audio, video = await get_live_active_chats()
+    _cache["audio"] = audio
+    _cache["video"] = video
+    _cache["timestamp"] = now
+    return audio, video
 
 
-# ─────────────────────────────────────────
-# Admin Action Callbacks
-# ─────────────────────────────────────────
-@Client.on_callback_query(
-    filters.regex(r"^jr:(approve|decline_prompt|decline_reason|view|mute|ban):-?\d+:\d+$"),
-    group=-1
-)
-async def jr_admin_cb(client, cq: CallbackQuery):
-    data = cq.data
-    parts = data.split(":")
-    action = parts[1]
-    chat_id = int(parts[2])
-    user_id = int(parts[3])
-    caller = cq.from_user
+# ════════════════════════════════════════════
+# UTILS
+# ════════════════════════════════════════════
 
-    if not await is_group_admin(client, chat_id, caller.id):
-        await cq.answer("Only group admins can perform this action.", show_alert=True)
-        return
+def paginate_list(items, page, per_page=5):
+    """Split list into pages. Returns (page_items, total_pages)."""
+    start = (page - 1) * per_page
+    end = start + per_page
+    sliced = items[start:end]
+    total_pages = max(1, (len(items) - 1) // per_page + 1) if items else 1
+    return sliced, total_pages
 
-    me = await client.get_me()
+
+async def safe_edit_caption(
+    msg: Message,
+    caption: str,
+    reply_markup: InlineKeyboardMarkup = None,
+):
+    """Edit caption safely without triggering MessageNotModified."""
     try:
-        me_member = await client.get_chat_member(chat_id, me.id)
-        if me_member.status != ChatMemberStatus.ADMINISTRATOR:
-            await cq.answer("I must be admin in the group to perform approvals.", show_alert=True)
+        existing = msg.caption or ""
+        if existing.strip() == (caption or "").strip():
+            if reply_markup is not None:
+                try:
+                    await msg.edit_reply_markup(reply_markup)
+                except Exception:
+                    pass
             return
-    except RPCError:
-        await cq.answer("Unable to verify my admin status.", show_alert=True)
-        return
-
-    s = await get_settings(chat_id)
-
-    if action == "approve":
-        try:
-            await client.approve_chat_join_request(chat_id, user_id)
-            await cq.edit_message_text(
-                f"<blockquote>🍏 𝐀ᴘᴘʀᴏᴠᴇᴅ 𝐁ʏ \n{mention_html(caller)}</blockquote>\n"
-                f"<blockquote>✨ 𝐔𝗌ᴇʀ: <code>{user_id}</code></blockquote>"
-            )
-            await send_log(
-                client, s.get("log_chat_id"),
-                f"<blockquote>{ts()} — 🚀 𝐑ᴇǫᴜᴇ𝗌ᴛ 𝐀ᴘᴘʀᴏᴠᴇᴅ 𝐈ɴ \n <b>{chat_id}</b>\n"
-                f"✨ 𝐔𝗌ᴇʀ: <code>{user_id}</code></blockquote>\n<blockquote>𝐁ʏ: {mention_html(caller)}</blockquote>"
-            )
+        await msg.edit_caption(caption, reply_markup=reply_markup, parse_mode="html")
+    except MessageNotModified:
+        if reply_markup is not None:
             try:
-                await client.send_message(
-                    user_id,
-                    f"💥 Your join request to <b>{_html.escape(str(chat_id))}</b> was approved by {mention_html(caller)}."
-                )
-            except RPCError:
+                await msg.edit_reply_markup(reply_markup)
+            except Exception:
                 pass
-            await cq.answer("User approved.", show_alert=False)
-        except RPCError as e:
-            await cq.answer(f"Failed to approve: {e}", show_alert=True)
-
-    elif action == "decline_prompt":
-        try:
-            await client.decline_chat_join_request(chat_id, user_id)
-            await cq.edit_message_text(
-                f"🍎 𝐃ᴇᴄʟɪɴᴇᴅ 𝐁ʏ \n{mention_html(caller)}\nUser: <code>{user_id}</code>"
-            )
-            await send_log(
-                client, s.get("log_chat_id"),
-                f"<blockquote>{ts()} — 🚀 𝐑ᴇǫᴜᴇ𝗌ᴛ 𝐃ᴇᴄʟɪɴᴇᴅ 𝐈ɴ <b>{chat_id}</b>\n"
-                f"✨ 𝐔𝗌ᴇʀ: <code>{user_id}</code></blockquote>\n<blockquote>𝐁ʏ: {mention_html(caller)}</blockquote>"
-            )
-            try:
-                await client.send_message(
-                    user_id,
-                    f"💥 Your join request to <b>{_html.escape(str(chat_id))}</b> was declined by {mention_html(caller)}."
-                )
-            except RPCError:
-                pass
-            await cq.answer("User declined.", show_alert=False)
-        except RPCError as e:
-            await cq.answer(f"Failed to decline: {e}", show_alert=True)
-
-    elif action == "decline_reason":
-        PENDING_REASON_PROMPTS[caller.id] = {
-            "chat_id": chat_id,
-            "user_id": user_id,
-            "action": "decline",
-            "expires_at": datetime.datetime.utcnow() + datetime.timedelta(minutes=5),
-        }
-        try:
-            await client.send_message(
-                caller.id,
-                f"You chose to decline user <code>{user_id}</code> from group <code>{chat_id}</code>.\n"
-                f"Please send me the reason now (you have 5 minutes)."
-            )
-            await cq.answer("Please send me the reason in private.", show_alert=True)
-        except RPCError:
-            PENDING_REASON_PROMPTS.pop(caller.id, None)
-            await cq.answer("Could not open private chat. Start the bot in PM first.", show_alert=True)
-
-    elif action == "mute":
-        try:
-            success = await mute_user(client, chat_id, user_id, caller)
-            if success:
-                await cq.edit_message_text(
-                    f"<blockquote>🤐 𝐌ᴜᴛᴇᴅ & 𝐀ᴘᴘʀᴏᴠᴇᴅ 𝐁ʏ \n{mention_html(caller)}</blockquote>\n"
-                    f"<blockquote>✨ 𝐔𝗌ᴇʀ: <code>{user_id}</code></blockquote>"
-                )
-                await send_log(
-                    client, s.get("log_chat_id"),
-                    f"<blockquote>{ts()} — 🚀 𝐑ᴇǫᴜᴇ𝗌ᴛ 𝐌ᴜᴛᴇᴅ & 𝐀ᴘᴘʀᴏᴠᴇᴅ 𝐈ɴ \n <b>{chat_id}</b>\n"
-                    f"✨ 𝐔𝗌ᴇʀ: <code>{user_id}</code></blockquote>\n<blockquote>𝐁ʏ: {mention_html(caller)}</blockquote>"
-                )
-                try:
-                    await client.send_message(
-                        user_id,
-                        f"🤐 You were approved and muted in <b>{_html.escape(str(chat_id))}</b> by {mention_html(caller)}."
-                    )
-                except RPCError:
-                    pass
-                await cq.answer("User approved and muted.", show_alert=False)
-            else:
-                await cq.answer("Failed to mute user.", show_alert=True)
-        except RPCError as e:
-            await cq.answer(f"Failed to mute: {e}", show_alert=True)
-
-    elif action == "ban":
-        try:
-            success = await ban_user(client, chat_id, user_id, caller)
-            if success:
-                await cq.edit_message_text(
-                    f"<blockquote>🔨 𝐁ᴀɴɴᴇᴅ & 𝐀ᴘᴘʀᴏᴠᴇᴅ 𝐁ʏ \n{mention_html(caller)}</blockquote>\n"
-                    f"<blockquote>✨ 𝐔𝗌ᴇʀ: <code>{user_id}</code></blockquote>"
-                )
-                await send_log(
-                    client, s.get("log_chat_id"),
-                    f"<blockquote>{ts()} — 🚀 𝐑ᴇǫᴜᴇ𝗌ᴛ 𝐁ᴀɴɴᴇᴅ & 𝐀ᴘᴘʀᴏᴠᴇᴅ 𝐈ɴ \n <b>{chat_id}</b>\n"
-                    f"✨ 𝐔𝗌ᴇʀ: <code>{user_id}</code></blockquote>\n<blockquote>𝐁ʏ: {mention_html(caller)}</blockquote>"
-                )
-                try:
-                    await client.send_message(
-                        user_id,
-                        f"🔨 You were approved and banned in <b>{_html.escape(str(chat_id))}</b> by {mention_html(caller)}."
-                    )
-                except RPCError:
-                    pass
-                await cq.answer("User approved and banned.", show_alert=False)
-            else:
-                await cq.answer("Failed to ban user.", show_alert=True)
-        except RPCError as e:
-            await cq.answer(f"Failed to ban: {e}", show_alert=True)
-
-    elif action == "view":
-        try:
-            user = await client.get_users(user_id)
-            txt = (
-                f"<b>User preview</b>\n{nice_user_details(user)}\n\n"
-                f"<a href='tg://user?id={user.id}'>Open profile</a>"
-            )
-            await cq.answer("Showing user details.", show_alert=False)
-            await cq.edit_message_text(txt)
-        except RPCError as e:
-            await cq.answer(f"Could not fetch user: {e}", show_alert=True)
+    except Exception as e:
+        LOGGER.debug(f"safe_edit_caption error: {e}")
 
 
-# ─────────────────────────────────────────
-# Owner Private Log Setup Handler
-# Uses a UNIQUE filter so it does NOT
-# conflict with other modules' private handlers
-# ─────────────────────────────────────────
-async def _is_log_setup_reply(_, client, message: Message) -> bool:
-    """Custom filter: only fires if this is a reply to our bot's log-setup prompt."""
-    if not message.reply_to_message:
-        return False
-    reply = message.reply_to_message
-    me = await client.get_me()
-    if not reply.from_user or reply.from_user.id != me.id:
-        return False
-    if not reply.text:
-        return False
-    return "Please forward me a message from the log group" in reply.text or \
-           "Please reply to this message with the target log chat id" in reply.text
-
-
-_log_setup_filter = filters.create(_is_log_setup_reply)
-
-
-@Client.on_message(filters.private & _log_setup_filter, group=-1)
-async def owner_private_handler(client, message: Message):
-    text = (message.text or "").strip()
-    if not text:
-        return
-
-    parts = text.split(maxsplit=1)
-    if len(parts) < 2:
-        return await message.reply_text("Format:\n<code>-100GROUPID -100LOGID</code>")
-
+async def get_chat_info_and_link(chat_id: int):
+    """
+    Fetch chat title and invite link.
+    Returns (title, invite_link, username) or None if chat is inaccessible.
+    """
     try:
-        target_chat = int(parts[0])
-    except ValueError:
-        return await message.reply_text("First argument must be the group ID (e.g. -1001234567890).")
+        chat = await app.get_chat(chat_id)
+        title = chat.title or "Private Group"
+        username = chat.username
+        try:
+            invite_link = await app.export_chat_invite_link(chat_id)
+        except Exception:
+            invite_link = f"https://t.me/{username}" if username else None
+        return title, invite_link, username
+    except Exception as e:
+        LOGGER.debug(f"get_chat_info_and_link error for {chat_id}: {e}")
+        await remove_active_chat(chat_id)
+        await remove_active_video_chat(chat_id)
+        return None
 
-    log_target_raw = parts[1].strip()
-    try:
-        if log_target_raw.startswith("@"):
-            resolved = await client.get_chat(log_target_raw)
-            log_target_id = resolved.id
-        else:
-            log_target_id = int(log_target_raw)
-            await client.get_chat(log_target_id)
-    except (RPCError, ValueError) as e:
-        return await message.reply_text(f"Invalid log chat: {e}")
 
-    if not await is_group_owner(client, target_chat, message.from_user.id):
-        return await message.reply_text("You are not the owner of that group.")
+def build_main_keyboard(auto: bool = False) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton("🎧 𝐀ᴜᴅɪᴏ 𝐂ʜᴀᴛ", callback_data="vc_audio_page_1"),
+            InlineKeyboardButton("🎥 𝐕ɪᴅᴇᴏ 𝐂ʜᴀᴛ", callback_data="vc_video_page_1"),
+        ],
+        [
+            InlineKeyboardButton("🔁 𝐑ᴇғʀᴇ𝗌ʜ", callback_data="vc_refresh_manual"),
+            InlineKeyboardButton("⏳ 𝐀ᴜᴛᴏ", callback_data="vc_enable_autorefresh"),
+        ],
+        [InlineKeyboardButton("🔻 𝐂ʟᴏ𝗌ᴇ 🔻", callback_data="vc_close")],
+    ]
+    if auto:
+        rows[1] = [InlineKeyboardButton("🛑 𝐒ᴛᴏᴘ 𝐀ᴜᴛᴏ", callback_data="vc_stop_autorefresh")]
+    return InlineKeyboardMarkup(rows)
 
-    await set_settings(target_chat, {"log_chat_id": log_target_id})
-    await message.reply_text(f"✅ Log chat set for <code>{target_chat}</code>")
-    await send_log(
-        client, log_target_id,
-        f"{ts()} — Log configured by {mention_html(message.from_user)}",
+
+def build_stats_caption(audio: list, video: list, mode: str = "") -> str:
+    audio_count = len(audio)
+    video_count = len(video)
+    audio_light = "🍏" if audio_count > 0 else "🍎"
+    video_light = "🍏" if video_count > 0 else "🍎"
+    mode_tag = f" ({mode})" if mode else ""
+    return (
+        f"<blockquote>💥 <b>𝐋ɪᴠᴇ 𝐕ᴄ𝐒ᴛᴀᴛ𝗌{mode_tag}</b></blockquote>\n"
+        f"<blockquote>•━━━━━━━━━━━━━━━━━━•\n"
+        f"{audio_light} <b>𝐀ᴜᴅɪᴏ 𝐂ʜᴀᴛ:</b> <code>{audio_count}</code>\n"
+        f"{video_light} <b>𝐕ɪᴅᴇᴏ 𝐂ʜᴀᴛ:</b> <code>{video_count}</code>\n"
+        f"•━━━━━━━━━━━━━━━━━━•</blockquote>"
     )
 
 
-# ─────────────────────────────────────────
-# Private Reason Handler
-# Uses a UNIQUE custom filter — only fires
-# when admin is in PENDING_REASON_PROMPTS.
-# Does NOT conflict with other modules.
-# ─────────────────────────────────────────
-async def _is_pending_reason(_, client, message: Message) -> bool:
-    """Custom filter: only fires if this user has a pending reason prompt."""
-    if not message.from_user:
-        return False
-    if message.text and message.text.startswith("/"):
-        return False
-    return message.from_user.id in PENDING_REASON_PROMPTS
+# ════════════════════════════════════════════
+# COMMAND: /vcstats
+# ════════════════════════════════════════════
 
-
-_pending_reason_filter = filters.create(_is_pending_reason)
-
-
-@Client.on_message(filters.private & _pending_reason_filter, group=-1)
-async def private_reason_handler(client, message: Message):
-    admin_id = message.from_user.id
-    state = PENDING_REASON_PROMPTS.get(admin_id)
-
-    if not state:
-        return
-
-    if datetime.datetime.utcnow() > state.get("expires_at"):
-        PENDING_REASON_PROMPTS.pop(admin_id, None)
-        return await message.reply_text("❌ Request expired. Please use the button again.")
-
-    reason = (message.text or "").strip()
-    if not reason:
-        return await message.reply_text("Please send a valid text reason.")
-
-    chat_id = state["chat_id"]
-    user_id = state["user_id"]
-
-    try:
-        await client.decline_chat_join_request(chat_id, user_id)
-    except RPCError as e:
-        PENDING_REASON_PROMPTS.pop(admin_id, None)
-        return await message.reply_text(f"Failed to decline: {e}")
-
-    s = await get_settings(chat_id)
-    await send_log(
-        client, s.get("log_chat_id"),
-        f"{ts()} — ❌ Declined with reason:\nUser: <code>{user_id}</code>\nReason: {_html.escape(reason)}",
+@Client.on_message(
+    filters.command(
+        ["vcstats", "vcstat", "vcs", "vct"],
+        prefixes=["/", "!", "%", ",", ".", "@", "#"],
     )
-    await message.reply_text("✅ Declined with reason.")
+    & ~BANNED_USERS
+)
+async def vcstats_handler(client, msg: Message):
+    if msg.from_user.id not in SUDOERS:
+        return await msg.reply_text("❌ Only SUDO users can use this command.")
+
+    wait = await msg.reply_text("⏳ Fetching live VC data...")
+    audio, video = await get_cached_stats(force_refresh=True)
+    caption = build_stats_caption(audio, video)
+    keyboard = build_main_keyboard()
+
     try:
-        await client.send_message(
-            user_id,
-            f"❌ Your join request was declined.\n\nReason:\n{_html.escape(reason)}"
-        )
-    except RPCError:
+        await wait.delete()
+    except Exception:
         pass
 
-    PENDING_REASON_PROMPTS.pop(admin_id, None)
+    await msg.reply_photo(
+        START_IMG_URL,
+        caption=caption,
+        reply_markup=keyboard,
+        parse_mode="html",
+    )
 
 
-# ─────────────────────────────────────────
-# Background cleanup task
-# ─────────────────────────────────────────
-async def reason_cleanup_task():
-    while True:
-        now = datetime.datetime.utcnow()
-        to_del = [
-            k for k, v in list(PENDING_REASON_PROMPTS.items())
-            if v.get("expires_at") and now > v["expires_at"]
-        ]
-        for k in to_del:
-            PENDING_REASON_PROMPTS.pop(k, None)
-        await asyncio.sleep(30)
+# ════════════════════════════════════════════
+# CALLBACK: Manual Refresh
+# ════════════════════════════════════════════
+
+@Client.on_callback_query(filters.regex("^vc_refresh_manual$"))
+async def vc_refresh_manual(client, cq: CallbackQuery):
+    if cq.from_user.id not in SUDOERS:
+        return await cq.answer("❌ Unauthorized", show_alert=True)
+
+    await cq.answer("🔁 Refreshing...")
+    audio, video = await get_cached_stats(force_refresh=True)
+    caption = build_stats_caption(audio, video, mode="Refreshed")
+    await safe_edit_caption(cq.message, caption, build_main_keyboard())
 
 
-# Call this from your main bot startup file after app.start():
-# asyncio.create_task(reason_cleanup_task())
-# e.g. in your __main__.py or runner.py:
-#   loop.create_task(reason_cleanup_task())
+# ════════════════════════════════════════════
+# CALLBACK: Auto Refresh (5 minutes, 10s interval)
+# ════════════════════════════════════════════
+
+_auto_refresh_active: set = set()  # track which messages have auto-refresh running
 
 
-__menu__ = "CMD_PRO"
-__mod_name__ = "H_B_30"
+@Client.on_callback_query(filters.regex("^vc_enable_autorefresh$"))
+async def vc_enable_autorefresh(client, cq: CallbackQuery):
+    if cq.from_user.id not in SUDOERS:
+        return await cq.answer("❌ Unauthorized", show_alert=True)
+
+    msg_id = cq.message.id
+    if msg_id in _auto_refresh_active:
+        return await cq.answer("⏳ Already running!", show_alert=True)
+
+    await cq.answer("⏳ Auto‑refresh started for 5 minutes")
+    _auto_refresh_active.add(msg_id)
+    msg = cq.message
+
+    for _ in range(30):  # 30 × 10s = 5 minutes
+        if msg_id not in _auto_refresh_active:
+            break
+        try:
+            audio, video = await get_cached_stats(force_refresh=True)
+            caption = build_stats_caption(audio, video, mode="Auto")
+            keyboard = build_main_keyboard(auto=True)
+            await safe_edit_caption(msg, caption, keyboard)
+        except Exception as e:
+            LOGGER.debug(f"auto-refresh error: {e}")
+            break
+        await asyncio.sleep(10)
+
+    _auto_refresh_active.discard(msg_id)
+
+    # Restore normal keyboard after auto ends
+    try:
+        audio, video = await get_cached_stats()
+        caption = build_stats_caption(audio, video)
+        await safe_edit_caption(msg, caption, build_main_keyboard())
+    except Exception:
+        pass
+
+
+@Client.on_callback_query(filters.regex("^vc_stop_autorefresh$"))
+async def stop_autorefresh(client, cq: CallbackQuery):
+    msg_id = cq.message.id
+    _auto_refresh_active.discard(msg_id)
+    await cq.answer("🛑 Auto‑refresh stopped", show_alert=True)
+
+
+# ════════════════════════════════════════════
+# CALLBACK: Close
+# ════════════════════════════════════════════
+
+@Client.on_callback_query(filters.regex("^vc_close$"))
+async def vc_close(client, cq: CallbackQuery):
+    try:
+        await cq.message.delete()
+    except Exception:
+        pass
+    await cq.answer("❌ Closed")
+
+
+# ════════════════════════════════════════════
+# CALLBACK: Audio Chat Pagination
+# ════════════════════════════════════════════
+
+@Client.on_callback_query(filters.regex("^vc_audio_page_"))
+async def audio_page(client, cq: CallbackQuery):
+    if cq.from_user.id not in SUDOERS:
+        return await cq.answer("❌ Unauthorized", show_alert=True)
+
+    page = int(cq.data.split("_")[-1])
+    audio, _ = await get_cached_stats()
+    page_items, total_pages = paginate_list(audio, page, per_page=5)
+
+    if not audio:
+        text = "<b>🎧 No active audio chats right now.</b>"
+        buttons = [[InlineKeyboardButton("🔻 𝐁ᴀᴄᴋ", callback_data="vc_refresh_manual")]]
+    else:
+        text = f"<b>🎧 Active Audio Chats (Page {page}/{total_pages})</b>\n\n"
+        chat_buttons = []
+
+        for idx, cid in enumerate(page_items, 1):
+            info = await get_chat_info_and_link(cid)
+            if info is None:
+                continue
+            title, link, username = info
+            display = unidecode(title).upper()
+            if username:
+                text += f"{idx}. <a href='https://t.me/{username}'>{display}</a> (<code>{cid}</code>)\n"
+            else:
+                text += f"{idx}. {display} (<code>{cid}</code>)\n"
+            short_title = (title[:20] + "…") if len(title) > 20 else title
+            if link:
+                chat_buttons.append([InlineKeyboardButton(f"🔊 Join {short_title}", url=link)])
+
+        nav = []
+        if page > 1:
+            nav.append(InlineKeyboardButton("⤌ Prev", callback_data=f"vc_audio_page_{page - 1}"))
+        if page < total_pages:
+            nav.append(InlineKeyboardButton("Next ⤍", callback_data=f"vc_audio_page_{page + 1}"))
+        if nav:
+            chat_buttons.append(nav)
+        chat_buttons.append([InlineKeyboardButton("🔻 𝐁ᴀᴄᴋ", callback_data="vc_refresh_manual")])
+        buttons = chat_buttons
+
+    await safe_edit_caption(cq.message, text, InlineKeyboardMarkup(buttons))
+    await cq.answer()
+
+
+# ════════════════════════════════════════════
+# CALLBACK: Video Chat Pagination
+# ════════════════════════════════════════════
+
+@Client.on_callback_query(filters.regex("^vc_video_page_"))
+async def video_page(client, cq: CallbackQuery):
+    if cq.from_user.id not in SUDOERS:
+        return await cq.answer("❌ Unauthorized", show_alert=True)
+
+    page = int(cq.data.split("_")[-1])
+    _, video = await get_cached_stats()
+    page_items, total_pages = paginate_list(video, page, per_page=5)
+
+    if not video:
+        text = "<b>🎥 No active video chats right now.</b>"
+        buttons = [[InlineKeyboardButton("🔻 𝐁ᴀᴄᴋ", callback_data="vc_refresh_manual")]]
+    else:
+        text = f"<b>🎥 Active Video Chats (Page {page}/{total_pages})</b>\n\n"
+        chat_buttons = []
+
+        for idx, cid in enumerate(page_items, 1):
+            info = await get_chat_info_and_link(cid)
+            if info is None:
+                continue
+            title, link, username = info
+            display = unidecode(title).upper()
+            if username:
+                text += f"{idx}. <a href='https://t.me/{username}'>{display}</a> (<code>{cid}</code>)\n"
+            else:
+                text += f"{idx}. {display} (<code>{cid}</code>)\n"
+            short_title = (title[:20] + "…") if len(title) > 20 else title
+            if link:
+                chat_buttons.append([InlineKeyboardButton(f"📺 Join {short_title}", url=link)])
+
+        nav = []
+        if page > 1:
+            nav.append(InlineKeyboardButton("⤌ Prev", callback_data=f"vc_video_page_{page - 1}"))
+        if page < total_pages:
+            nav.append(InlineKeyboardButton("Next ⤍", callback_data=f"vc_video_page_{page + 1}"))
+        if nav:
+            chat_buttons.append(nav)
+        chat_buttons.append([InlineKeyboardButton("🔻 𝐁ᴀᴄᴋ", callback_data="vc_refresh_manual")])
+        buttons = chat_buttons
+
+    await safe_edit_caption(cq.message, text, InlineKeyboardMarkup(buttons))
+    await cq.answer()
+
+
+# ════════════════════════════════════════════
+# LEGACY COMMANDS: /activevc and /activevideo
+# ════════════════════════════════════════════
+
+@Client.on_message(
+    filters.command(
+        ["activevc", "activevoice"],
+        prefixes=["/", "!", "%", ",", ".", "@", "#"],
+    )
+    & SUDOERS
+)
+async def activevc_direct(client, message: Message):
+    wait = await message.reply_text("⏳ Checking live audio chats...")
+    audio, _ = await get_cached_stats(force_refresh=True)
+    try:
+        await wait.delete()
+    except Exception:
+        pass
+
+    if not audio:
+        return await message.reply_text("» ɴᴏ ᴀᴄᴛɪᴠᴇ ᴠᴏɪᴄᴇ ᴄʜᴀᴛs ᴏɴ ᴛʜᴇ ʙᴏᴛ.")
+
+    page_items, total_pages = paginate_list(audio, 1, per_page=5)
+    text = f"<b>🎧 Active Audio Chats (Page 1/{total_pages})</b>\n\n"
+    chat_buttons = []
+
+    for cid in page_items:
+        info = await get_chat_info_and_link(cid)
+        if info is None:
+            continue
+        title, link, username = info
+        display = unidecode(title).upper()
+        if username:
+            text += f"• <a href='https://t.me/{username}'>{display}</a> (<code>{cid}</code>)\n"
+        else:
+            text += f"• {display} (<code>{cid}</code>)\n"
+        short_title = (title[:20] + "…") if len(title) > 20 else title
+        if link:
+            chat_buttons.append([InlineKeyboardButton(f"🔊 Join {short_title}", url=link)])
+
+    if total_pages > 1:
+        chat_buttons.append([InlineKeyboardButton("Next ⤍", callback_data="vc_audio_page_2")])
+    chat_buttons.append([InlineKeyboardButton("📊 Main Stats", callback_data="vc_refresh_manual")])
+
+    await message.reply_photo(
+        START_IMG_URL,
+        caption=text,
+        reply_markup=InlineKeyboardMarkup(chat_buttons),
+        parse_mode="html",
+    )
+
+
+@Client.on_message(
+    filters.command(
+        ["activevideo", "activev"],
+        prefixes=["/", "!", "%", ",", ".", "@", "#"],
+    )
+    & SUDOERS
+)
+async def activevideo_direct(client, message: Message):
+    wait = await message.reply_text("⏳ Checking live video chats...")
+    _, video = await get_cached_stats(force_refresh=True)
+    try:
+        await wait.delete()
+    except Exception:
+        pass
+
+    if not video:
+        return await message.reply_text("» ɴᴏ ᴀᴄᴛɪᴠᴇ ᴠɪᴅᴇᴏ ᴄʜᴀᴛs ᴏɴ ᴛʜᴇ ʙᴏᴛ.")
+
+    page_items, total_pages = paginate_list(video, 1, per_page=5)
+    text = f"<b>🎥 Active Video Chats (Page 1/{total_pages})</b>\n\n"
+    chat_buttons = []
+
+    for cid in page_items:
+        info = await get_chat_info_and_link(cid)
+        if info is None:
+            continue
+        title, link, username = info
+        display = unidecode(title).upper()
+        if username:
+            text += f"• <a href='https://t.me/{username}'>{display}</a> (<code>{cid}</code>)\n"
+        else:
+            text += f"• {display} (<code>{cid}</code>)\n"
+        short_title = (title[:20] + "…") if len(title) > 20 else title
+        if link:
+            chat_buttons.append([InlineKeyboardButton(f"📺 Join {short_title}", url=link)])
+
+    if total_pages > 1:
+        chat_buttons.append([InlineKeyboardButton("Next ⤍", callback_data="vc_video_page_2")])
+    chat_buttons.append([InlineKeyboardButton("📊 Main Stats", callback_data="vc_refresh_manual")])
+
+    await message.reply_photo(
+        START_IMG_URL,
+        caption=text,
+        reply_markup=InlineKeyboardMarkup(chat_buttons),
+        parse_mode="html",
+    )
+
+
+# ════════════════════════════════════════════
+# MODULE METADATA
+# ════════════════════════════════════════════
+
+__menu__ = "CMD_MUSIC"
+__mod_name__ = "H_B_14"
 __help__ = """
-🔻 /joinreq ➠ ꜱᴇᴛ ᴊᴏɪɴ ʀᴇǫᴜᴇꜱᴛ ꜰᴏʀ ɢʀᴏᴜᴘ / ᴄʜᴀɴɴᴇʟ  
-🔻 /joinrequest ➠ ᴇɴᴀʙʟᴇ ᴏʀ ᴅɪꜱᴀʙʟᴇ ᴊᴏɪɴ ʀᴇǫᴜᴇꜱᴛ
-🔻 /approveall ➠ ᴀᴘᴘʀᴏᴠᴇꜱ ᴀʟʟ ᴘᴇɴᴅɪɴɢ ᴊᴏɪɴ ʀᴇǫᴜᴇꜱᴛꜱ ɪɴ ᴛʜᴇ ɢʀᴏᴜᴘ (ᴀᴅᴍɪɴꜱ ᴏɴʟʏ).
-🔻 (ᴀᴜᴛᴏ) ➠ ᴇɴᴀʙʟᴇꜱ / ᴅɪꜱᴀʙʟᴇꜱ ᴊᴏɪɴ ʀᴇǫᴜᴇꜱᴛ ꜱʏꜱᴛᴇᴍ ꜰᴏʀ ᴛʜᴇ ɢʀᴏᴜᴘ.
-🔻 (ᴀᴜᴛᴏ) ➠ ᴀᴜᴛᴏ-ᴀᴘᴘʀᴏᴠᴇꜱ ᴜꜱᴇʀꜱ ᴡʜᴇɴ ᴀᴜᴛᴏ ᴍᴏᴅᴇ ɪꜱ ᴇɴᴀʙʟᴇᴅ.
-🔻 (ᴀᴜᴛᴏ) ➠ ꜱᴇɴᴅꜱ ᴊᴏɪɴ ʀᴇǫᴜᴇꜱᴛ ɴᴏᴛɪꜰɪᴄᴀᴛɪᴏɴꜱ ᴛᴏ ᴛʜᴇ ɢʀᴏᴜᴘ.
-🔻 (ʙᴜᴛᴛᴏɴ) ➠ 🍏 𝐀ᴘᴘʀᴏᴠᴇ — ᴀᴘᴘʀᴏᴠᴇꜱ ᴛʜᴇ ᴊᴏɪɴ ʀᴇǫᴜᴇꜱᴛ.
-🔻 (ʙᴜᴛᴛᴏɴ) ➠ 🍎 𝐃ɪꜱᴍɪꜱꜱ — ᴅᴇᴄʟɪɴᴇꜱ ᴛʜᴇ ᴊᴏɪɴ ʀᴇǫᴜᴇꜱᴛ.
-🔻 (ʙᴜᴛᴛᴏɴ) ➠ 🔻 𝐃ɪꜱᴍɪꜱꜱ 𝐖ɪᴛʜ 𝐑ᴇᴀꜱᴏɴ — ᴅᴇᴄʟɪɴᴇꜱ ᴛʜᴇ ʀᴇǫᴜᴇꜱᴛ ᴡɪᴛʜ ᴀ ᴄᴜꜱᴛᴏᴍ ʀᴇᴀꜱᴏɴ.
-🔻 (ʙᴜᴛᴛᴏɴ) ➠ 🤐 𝐌ᴜᴛᴇ — ᴀᴘᴘʀᴏᴠᴇꜱ ᴛʜᴇ ᴜꜱᴇʀ ᴀɴᴅ ᴍᴜᴛᴇꜱ ᴛʜᴇᴍ.
-🔻 (ʙᴜᴛᴛᴏɴ) ➠ 🔨 𝐁ᴀɴ — ᴀᴘᴘʀᴏᴠᴇꜱ ᴀɴᴅ ɪᴍᴍᴇᴅɪᴀᴛᴇʟʏ ʙᴀɴꜱ ᴛʜᴇ ᴜꜱᴇʀ.
-🔻 (ᴀᴜᴛᴏ) ➠ ꜱᴇɴᴅꜱ ᴘʀɪᴠᴀᴛᴇ ɴᴏᴛɪꜰɪᴄᴀᴛɪᴏɴꜱ ᴛᴏ ᴜꜱᴇʀꜱ ᴏɴ ᴀᴘᴘʀᴏᴠᴀʟ ᴏʀ ᴅᴇᴄʟɪɴᴇ.
-🔻 (ᴀᴜᴛᴏ) ➠ ʟᴏɢꜱ ᴀʟʟ ᴊᴏɪɴ ʀᴇǫᴜᴇꜱᴛ ᴀᴄᴛɪᴠɪᴛʏ ᴛᴏ ᴛʜᴇ ꜱᴇᴛ ʟᴏɢ ɢʀᴏᴜᴘ.
-🔻 (ᴏᴡɴᴇʀ ᴍᴇɴᴜ) ➠ ꜱᴇᴛ / ᴄʟᴇᴀʀ ʟᴏɢ ɢʀᴏᴜᴘ ꜰᴏʀ ᴊᴏɪɴ ʀᴇǫᴜᴇꜱᴛꜱ.
-🔻 (ᴏᴡɴᴇʀ ᴍᴇɴᴜ) ➠ ᴀᴘᴘʀᴏᴠᴇꜱ ᴀʟʟ ᴘᴇɴᴅɪɴɢ ᴊᴏɪɴ ʀᴇǫᴜᴇꜱᴛꜱ ᴡɪᴛʜ ᴏɴᴇ ᴛᴀᴘ.
+🔻 /vcstats /vcstat /vcs ➠ sʜᴏᴡs ʟɪᴠᴇ ᴀᴜᴅɪᴏ & ᴠɪᴅᴇᴏ ᴄʜᴀᴛ sᴛᴀᴛs ᴡɪᴛʜ ɪɴᴛᴇʀᴀᴄᴛɪᴠᴇ ʙᴜᴛᴛᴏɴs
+🔻 /activevoice /activevc ➠ sʜᴏᴡs ᴀʟʟ ᴀᴄᴛɪᴠᴇ ᴀᴜᴅɪᴏ (ᴠᴏɪᴄᴇ) ᴄʜᴀᴛs
+🔻 /activevideo /activev ➠ sʜᴏᴡs ᴀʟʟ ᴀᴄᴛɪᴠᴇ ᴠɪᴅᴇᴏ ᴄʜᴀᴛs
 """
 
 MOD_TYPE = "PRO-BOTS"
