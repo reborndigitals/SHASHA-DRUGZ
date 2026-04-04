@@ -59,8 +59,8 @@ u_col   = db["chatfight_users"]   # { chat_id, user_id, xp, level, coins }
 g_col   = db["chatfight_groups"]  # { _id: chat_id, count, last_milestone, enabled, milestone_enabled }
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-XP_PER_MSG      = 2
-XP_BONUS_MAX    = 3     # random 0..XP_BONUS_MAX added per message
+XP_PER_MSG      = 100
+XP_BONUS_MAX    = 200     # random 0..XP_BONUS_MAX added per message
 COINS_PER_LEVEL = 10    # multiplied by new level
 COINS_MILESTONE = 50    # flat reward for triggering user on milestone
 
