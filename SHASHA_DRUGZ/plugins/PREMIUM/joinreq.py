@@ -1,3 +1,4 @@
+#joinreq.py
 import os
 import asyncio
 import datetime
@@ -23,16 +24,11 @@ from SHASHA_DRUGZ import app
 import motor.motor_asyncio
 from pymongo import ReturnDocument
 
-MONGO_URL = os.getenv(
-    "MONGO_URL",
-    "mongodb+srv://iamnobita1:nobitamusic1@cluster0.k08op.mongodb.net/?retryWrites=true&w=majority",
-)
-if not MONGO_URL:
-    raise RuntimeError("MONGO_URL environment variable is required by joinreq.py")
+from config import MONGO_DB_URI
 
 print("[joinreq] Loaded: joinreq, approveall")
 
-mongo = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URL)
+mongo = motor.motor_asyncio.AsyncIOMotorClient(MONGO_DB_URI)
 db = mongo.get_database("ghosttreq_db")
 settings_coll = db.get_collection("join_request_settings")
 
