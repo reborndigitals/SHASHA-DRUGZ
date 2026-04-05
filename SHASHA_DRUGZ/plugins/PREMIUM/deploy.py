@@ -71,7 +71,8 @@ AUTO_BOT_TYPES = {
 AUTO_COMBOS = {
     "CHAT+REACTION":              {"bots": ["CHAT","REACTION"],               "price": 299,  "display": "ᴄʜᴀᴛ+ʀᴇᴀᴄᴛɪᴏɴ"},
     "MUSIC+CHAT":                 {"bots": ["MUSIC","CHAT"],                  "price": 599,  "display": "ᴍᴜsɪᴄ+ᴄʜᴀᴛ"},
-    "MANAGEMENT+MUSIC":           {"bots": ["MANAGEMENT","MUSIC"],            "price": 799,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴍᴜsɪᴄ"},
+    "MANAGEMENT+MUSIC":           {"bots": ["MANAGEMENT","MUSIC"],            "price": 649,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴍᴜsɪᴄ"},
+    "MANAGEMENT+MUSIC+CHAT":      {"bots": ["MANAGEMENT","MUSIC","CHAT"],     "price": 799,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴍᴜsɪᴄ+ᴄʜᴀᴛ"},
     "MUSIC+PRO-BOTS+":            {"bots": ["MUSIC","PRO-BOTS"],              "price": 999,  "display": "ᴍᴜsɪᴄ+ᴘʀᴏ"},
     "MANAGEMENT+PRO-BOTS":        {"bots": ["MANAGEMENT","PRO-BOTS"],         "price": 1199,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴘʀᴏ"},
     "MUSIC+MANAGEMENT+PRO-BOTS+": {"bots": ["MUSIC","MANAGEMENT","PRO-BOTS"], "price": 1499,  "display": "ᴍᴜsɪᴄ+ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴘʀᴏ"},
