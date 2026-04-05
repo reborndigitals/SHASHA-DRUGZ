@@ -62,6 +62,7 @@ COMMON_PATH  = "COMMON"
 AUTO_BOT_TYPES = {
     "REACTION":   {"path": "REACTION", "price": 100, "display": "ʀᴇᴀᴄᴛɪᴏɴ ʙᴏᴛ"},
     "CHAT":       {"path": "CHAT",     "price": 250, "display": "ᴄʜᴀᴛ ʙᴏᴛ"},
+    "MENTION":    ("path": "MENTION",  "price": 350, "display": "ᴍᴇɴᴛɪᴏɴ"},
     "MUSIC":      {"path": "MUSIC",    "price": 450, "display": "ᴍᴜsɪᴄ ʙᴏᴛ"},
     "MANAGEMENT": {"path": "MANAGE",   "price": 650, "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ ʙᴏᴛ"},
     "PRO-BOTS":   {"path": "PRO-BOTS", "price": 899, "display": "ᴘʀᴏ ʙᴏᴛs"},    
@@ -70,8 +71,10 @@ AUTO_BOT_TYPES = {
 
 AUTO_COMBOS = {
     "CHAT+REACTION":              {"bots": ["CHAT","REACTION"],               "price": 299,  "display": "ᴄʜᴀᴛ+ʀᴇᴀᴄᴛɪᴏɴ"},
+    "MUSIC+MENTION":              {"bots": ["MUSIC","MENTION"],               "price": 549,  "display": "ᴍᴜsɪᴄ+ᴍᴇɴᴛɪᴏɴ"},
     "MUSIC+CHAT":                 {"bots": ["MUSIC","CHAT"],                  "price": 599,  "display": "ᴍᴜsɪᴄ+ᴄʜᴀᴛ"},
     "MANAGEMENT+MUSIC":           {"bots": ["MANAGEMENT","MUSIC"],            "price": 649,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴍᴜsɪᴄ"},
+    "MANAGEMENT+MENTION":         {"bots": ["MANAGEMENT","MENTION"],          "price": 799,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴍᴇɴᴛɪᴏɴ"},
     "MANAGEMENT+MUSIC+CHAT":      {"bots": ["MANAGEMENT","MUSIC","CHAT"],     "price": 799,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴍᴜsɪᴄ+ᴄʜᴀᴛ"},
     "MUSIC+PRO-BOTS+":            {"bots": ["MUSIC","PRO-BOTS"],              "price": 999,  "display": "ᴍᴜsɪᴄ+ᴘʀᴏ"},
     "MANAGEMENT+PRO-BOTS":        {"bots": ["MANAGEMENT","PRO-BOTS"],         "price": 1199,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴘʀᴏ"},
