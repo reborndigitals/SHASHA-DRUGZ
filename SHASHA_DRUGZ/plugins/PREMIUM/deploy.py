@@ -62,7 +62,7 @@ COMMON_PATH  = "COMMON"
 AUTO_BOT_TYPES = {
     "REACTION":   {"path": "REACTION", "price": 100, "display": "ʀᴇᴀᴄᴛɪᴏɴ ʙᴏᴛ"},
     "CHAT":       {"path": "CHAT",     "price": 250, "display": "ᴄʜᴀᴛ ʙᴏᴛ"},
-    "MENTION":    ("path": "MENTION",  "price": 350, "display": "ᴍᴇɴᴛɪᴏɴ"},
+    "MENTION":    {"path": "MENTION",  "price": 350, "display": "ᴍᴇɴᴛɪᴏɴ"},
     "MUSIC":      {"path": "MUSIC",    "price": 450, "display": "ᴍᴜsɪᴄ ʙᴏᴛ"},
     "MANAGEMENT": {"path": "MANAGE",   "price": 650, "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ ʙᴏᴛ"},
     "PRO-BOTS":   {"path": "PRO-BOTS", "price": 899, "display": "ᴘʀᴏ ʙᴏᴛs"},    
