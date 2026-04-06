@@ -1,5 +1,4 @@
 # SHASHA_DRUGZ/plugins/PREMIUM/deploy.py
-
 import re
 import os
 import logging
@@ -60,12 +59,12 @@ MODULES_PATH = "SHASHA_DRUGZ/dplugins"
 COMMON_PATH  = "COMMON"
 
 AUTO_BOT_TYPES = {
-    "REACTION":   {"path": "REACTION", "price": 100, "display": "ʀᴇᴀᴄᴛɪᴏɴ ʙᴏᴛ"},
-    "CHAT":       {"path": "CHAT",     "price": 250, "display": "ᴄʜᴀᴛ ʙᴏᴛ"},
-    "MENTION":    {"path": "MENTION",  "price": 350, "display": "ᴍᴇɴᴛɪᴏɴ"},
-    "MUSIC":      {"path": "MUSIC",    "price": 450, "display": "ᴍᴜsɪᴄ ʙᴏᴛ"},
-    "MANAGEMENT": {"path": "MANAGE",   "price": 650, "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ ʙᴏᴛ"},
-    "PRO-BOTS":   {"path": "PRO-BOTS", "price": 899, "display": "ᴘʀᴏ ʙᴏᴛs"},    
+    "REACTION":   {"path": "REACTION", "price": 100,  "display": "ʀᴇᴀᴄᴛɪᴏɴ ʙᴏᴛ"},
+    "CHAT":       {"path": "CHAT",     "price": 250,  "display": "ᴄʜᴀᴛ ʙᴏᴛ"},
+    "MENTION":    {"path": "MENTION",  "price": 350,  "display": "ᴍᴇɴᴛɪᴏɴ"},
+    "MUSIC":      {"path": "MUSIC",    "price": 450,  "display": "ᴍᴜsɪᴄ ʙᴏᴛ"},
+    "MANAGEMENT": {"path": "MANAGE",   "price": 650,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ ʙᴏᴛ"},
+    "PRO-BOTS":   {"path": "PRO-BOTS", "price": 899,  "display": "ᴘʀᴏ ʙᴏᴛs"},
     "GAME":       {"path": "GAMES",    "price": 1999, "display": "ɢᴀᴍᴇ ʙᴏᴛ"},
 }
 
@@ -77,9 +76,9 @@ AUTO_COMBOS = {
     "MANAGEMENT+MENTION":         {"bots": ["MANAGEMENT","MENTION"],          "price": 799,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴍᴇɴᴛɪᴏɴ"},
     "MANAGEMENT+MUSIC+CHAT":      {"bots": ["MANAGEMENT","MUSIC","CHAT"],     "price": 799,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴍᴜsɪᴄ+ᴄʜᴀᴛ"},
     "MUSIC+PRO-BOTS+":            {"bots": ["MUSIC","PRO-BOTS"],              "price": 999,  "display": "ᴍᴜsɪᴄ+ᴘʀᴏ"},
-    "MANAGEMENT+PRO-BOTS":        {"bots": ["MANAGEMENT","PRO-BOTS"],         "price": 1199,  "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴘʀᴏ"},
-    "MUSIC+MANAGEMENT+PRO-BOTS+": {"bots": ["MUSIC","MANAGEMENT","PRO-BOTS"], "price": 1499,  "display": "ᴍᴜsɪᴄ+ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴘʀᴏ"},
-    "MUSIC+GAMES":                {"bots": ["MUSIC","GAMES"],                 "price": 2299,  "display": "ᴍᴜsɪᴄ+ᴄʜᴀᴛ"},
+    "MANAGEMENT+PRO-BOTS":        {"bots": ["MANAGEMENT","PRO-BOTS"],         "price": 1199, "display": "ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴘʀᴏ"},
+    "MUSIC+MANAGEMENT+PRO-BOTS+": {"bots": ["MUSIC","MANAGEMENT","PRO-BOTS"], "price": 1499, "display": "ᴍᴜsɪᴄ+ᴍᴀɴᴀɢᴇᴍᴇɴᴛ+ᴘʀᴏ"},
+    "MUSIC+GAMES":                {"bots": ["MUSIC","GAMES"],                 "price": 2299, "display": "ᴍᴜsɪᴄ+ᴄʜᴀᴛ"},
 }
 
 # ─── Plugin helpers ────────────────────────────────────────────────────────────
@@ -143,11 +142,6 @@ def get_plugins_for_manual_modules(module_names: List[str]) -> List[str]:
 
 # ─── Full bot data cleanup ─────────────────────────────────────────────────────
 async def cleanup_bot_data(bot_id: int):
-    """
-    Drop ALL bot_{id}_* collections and wipe chats/users rows.
-    Also calls evict_bot_cache(bot_id) so stale settings never
-    leak to a future redeploy of the same bot_id.
-    """
     try:
         prefix = f"bot_{bot_id}_"
         for col_name in await raw_mongodb.list_collection_names():
@@ -161,7 +155,6 @@ async def cleanup_bot_data(bot_id: int):
         await raw_mongodb.deploy_users.delete_many({"bot_id": bot_id})
     except Exception as e:
         logging.error(f"[cleanup] chats/users wipe failed for {bot_id}: {e}")
-    # evict settings cache so stale data never leaks
     evict_bot_cache(bot_id)
 
 # ─── ISOLATION ────────────────────────────────────────────────────────────────
@@ -182,11 +175,6 @@ async def set_bot_commands_and_description(bot_token: str, bot_username: str):
     commands = [
         {"command": "start",  "description": "Start the bot"},
         {"command": "help",   "description": "Get help"},
-        {"command": "play",   "description": "Play music"},
-        {"command": "pause",  "description": "Pause playback"},
-        {"command": "resume", "description": "Resume playback"},
-        {"command": "skip",   "description": "Skip current track"},
-        {"command": "end",    "description": "Stop playback"},
         {"command": "ping",   "description": "Check bot status"},
         {"command": "id",     "description": "Get ID"},
     ]
@@ -211,11 +199,6 @@ async def _safe_edit(msg, text: str, reply_markup=None, **kwargs):
         logging.warning(f"[deploy] edit failed: {e}")
 
 async def _edit_approval_msg(msg, text: str, reply_markup=None):
-    """
-    Edit the admin approval message (which may be a photo OR a plain text
-    message depending on whether a screenshot was attached).
-    Always attaches the reply_markup regardless of message type.
-    """
     if msg.photo or msg.document or msg.video or msg.audio or msg.voice:
         try:
             await msg.edit_caption(text, reply_markup=reply_markup)
@@ -374,10 +357,17 @@ def cancel_button_kb():
     ]])
 
 DEPLOY_PROMPT = (
-    "<blockquote>**🤖 ʙᴏᴛ ᴅᴇᴘʟᴏʏᴍᴇɴᴛ**</blockquote>\n"
-    "<blockquote>ᴘʟᴇᴀsᴇ sᴇɴᴅ ʏᴏᴜʀ **ʙᴏᴛ ᴛᴏᴋᴇɴ** ɴᴏᴡ.\n\n"
-    "📌 ɢᴇᴛ ɪᴛ ғʀᴏᴍ @BotFather\n"
-    "📌 ғᴏʀᴍᴀᴛ: `123456789:ABCdefGhIJKlmNoPQRstu`</blockquote>"
+        "<blockquote>**🤖 ʙᴏᴛ ᴅᴇᴘʟᴏʏᴍᴇɴᴛ**</blockquote>\n"
+        "<blockquote>ᴘʟᴇᴀsᴇ sᴇɴᴅ ʏᴏᴜʀ **ʙᴏᴛ ᴛᴏᴋᴇɴ** ɴᴏᴡ.\n\n"
+        "📌 ɢᴇᴛ ɪᴛ ғʀᴏᴍ @BotFather\n"
+        "📌 ғᴏʀᴍᴀᴛ:\n"
+        "`123456789:ABCdefGhIJKlmNoPQRstu`</blockquote>\n\n"
+        "<blockquote>🔻 /deploy <bot_token> ➠ sᴛᴀʀᴛ ɴᴇᴡ ʙᴏᴛ ᴅᴇᴘʟᴏʏᴍᴇɴᴛ.\n"
+        "🔻 /updatemodule <bot_username | bot_token> ➠ ᴀᴅᴅ ɴᴇᴡ ᴍᴏᴅᴜʟᴇs ᴛᴏ ᴀʟʀᴇᴀᴅʏ ᴅᴇᴘʟᴏʏᴇᴅ ʙᴏᴛ.\n"
+        "🔻 /mybots ➠ sʜᴏᴡ ʏᴏᴜʀ ᴅᴇᴘʟᴏʏᴇᴅ ʙᴏᴛs.\n"
+        "🔻 /renew <bot_username> ➠ ʀᴇɴᴇᴡ ᴇxᴘɪʀᴇᴅ ᴏʀ ᴇxᴘɪʀɪɴɢ ʙᴏᴛ.\n"
+        "🔻 /rmdeploy <bot_username | bot_token> ➠ ʀᴇᴍᴏᴠᴇ ʏᴏᴜʀ ᴅᴇᴘʟᴏʏᴇᴅ ʙᴏᴛ.</blockquote>\n\n"
+        "<blockquote>🔻 /setbothelp - SHOW ALL DERPLOY OWNER COMMANDS & USAGE </blockquote>"
 )
 
 # ─── /deploy ──────────────────────────────────────────────────────────────────
@@ -722,6 +712,7 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
 async def handle_numeric_keypad(client, cq: CallbackQuery, user_id: int, session: dict):
     action      = cq.data.split("_", 1)[1]
     temp_amount = session.get("temp_amount", "")
+
     if action.isdigit():
         temp_amount += action
     elif action == "dot":
@@ -776,13 +767,17 @@ async def handle_numeric_keypad(client, cq: CallbackQuery, user_id: int, session
             if is_update or is_renewal:
                 pd["bot_id"]           = session["bot_id"]
                 pd["original_modules"] = session.get("original_modules", [])
-        pid   = await create_pending_payment(user_id, pd)
-        label = "Renewal" if is_renewal else ("Update" if is_update else "New")
+        pid = await create_pending_payment(user_id, pd)
+        # ── [4] Full admin notification caption from old code ─────────────────
         caption = (
-            f"<blockquote>**{label} ᴘᴀʏᴍᴇɴᴛ**\n"
-            f"👤 [{pd['full_name']}](tg://user?id={user_id}) | 🆔 `{user_id}`\n"
-            f"💰 ₹{amount} | 💳 {pm.upper()} | 📦 {mode.upper()}\n"
-            f"🤖 `{pd['token']}`</blockquote>"
+            f"<blockquote>**ɴᴇᴡ {'Update' if is_update else 'Deployment'} ᴘᴀʏᴍᴇɴᴛ ʀᴇǫᴜᴇsᴛ**</blockquote>\n"
+            f"<blockquote>👤 ᴜsᴇʀ: [{pd['full_name']}](tg://user?id={user_id})\n"
+            f"🆔 ᴜsᴇʀ-ɪᴅ: `{user_id}`\n"
+            f"💰 ᴀᴍᴏᴜɴᴛ: ₹{amount}\n"
+            f"💳 ᴍᴇᴛʜᴏᴅ: {pm.upper()}\n"
+            f"📦 ᴍᴏᴅᴇ: {mode.upper()}\n"
+            f"🤖 ʙᴏᴛ-ᴛᴏᴋᴇɴ: `{pd['token']}`</blockquote>\n\n"
+            f"<blockquote>ᴀᴘᴘʀᴏᴠᴇ ᴏʀ ʀᴇᴊᴇᴄᴛ:</blockquote>"
         )
         if session.get("screenshot_file_id"):
             await client.send_photo(DEPLOY_LOGGER, session["screenshot_file_id"],
@@ -791,6 +786,7 @@ async def handle_numeric_keypad(client, cq: CallbackQuery, user_id: int, session
             await client.send_message(DEPLOY_LOGGER, caption, reply_markup=admin_review_kb(pid))
         await _safe_edit(cq.message, "✅ ᴘᴀʏᴍᴇɴᴛ ʀᴇǫᴜᴇsᴛ sᴇɴᴛ. ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...")
         await save_deploy_session(user_id, {"temp_amount": ""}); return
+
     await save_deploy_session(user_id, {"temp_amount": temp_amount})
     await _safe_edit(cq.message,
         f"<blockquote>**ᴇɴᴛᴇʀ ᴀᴍᴏᴜɴᴛ ᴘᴀɪᴅ (₹):**</blockquote>\n\n`{temp_amount or '0'}`",
@@ -942,6 +938,7 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
                 ap     = list(set(get_plugins_for_manual_modules(payment.get("modules", [])) + COMMON_PLUGINS))
                 dm     = payment.get("modules", [])
                 bundle = "manual"
+
             sdir = f"deploy_sessions/{bot_id}"; os.makedirs(sdir, exist_ok=True)
             bc = Client(name=f"deploy_{bot_id}", api_id=API_ID, api_hash=API_HASH,
                         bot_token=token, workdir=sdir,
@@ -998,11 +995,27 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
                 f"ᴇxᴘɪʀᴇs: {to_ist(expiry).strftime('%d-%m-%Y %I:%M %p IST')}</blockquote>")
             ud  = await raw_mongodb.deploy_users.find_one({"_id": payment["user_id"]})
             isc = bool(ud and ud.get("connected_to_admin") == admin_id)
+            # ── [1] Full approval caption from old code ───────────────────────
+            caption = (
+                f"<blockquote>**✅ ᴘᴀʏᴍᴇɴᴛ ᴀᴘᴘʀᴏᴠᴇᴅ & ʙᴏᴛ ᴅᴇᴘʟᴏʏᴇᴅ**</blockquote>\n"
+                f"<blockquote>👤 ᴜsᴇʀ: [{payment['full_name']}](tg://user?id={payment['user_id']})\n"
+                f"🆔 ᴜsᴇʀ-ɪᴅ: `{payment['user_id']}`\n"
+                f"💰 ᴀᴍᴏᴜɴᴛ: ₹{payment['amount']}\n"
+                f"💳 ᴍᴇᴛʜᴏᴅ: {payment['method'].upper()}\n"
+                f"📦 ᴍᴏᴅᴇ: {mode.upper()}\n"
+                f"📦 ʙᴜɴᴅʟᴇs/ᴍᴏᴅᴜʟᴇs: {', '.join(dm)}\n"
+                f"🤖 ʙᴏᴛ: @{bot_username}\n"
+                f"🔑 ʙᴏᴛ ᴛᴏᴋᴇɴ: `{payment['token']}`\n"
+                f"📅 ᴘᴀʏᴍᴇɴᴛ ᴅᴀᴛᴇ: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n"
+                f"⏰ ᴇxᴘɪʀʏ ᴅᴀᴛᴇ: {expiry.strftime('%Y-%m-%d %H:%M UTC')}</blockquote>\n\n"
+                f"<blockquote>sᴛᴀᴛᴜs: {'✅ ᴄᴏɴɴᴇᴄᴛᴇᴅ' if isc else '❌ ɴᴏᴛ ᴄᴏɴɴᴇᴄᴛᴇᴅ'}</blockquote>"
+            )
             await _edit_approval_msg(
                 cq.message,
-                f"<blockquote>✅ ᴅᴇᴘʟᴏʏᴇᴅ @{bot_username} | ₹{payment['amount']}</blockquote>",
+                caption,
                 reply_markup=admin_connection_kb(payment["user_id"], isc)
             )
+
         await delete_pending_payment(payment_id)
         await clear_deploy_session(payment["user_id"])
 
@@ -1037,7 +1050,7 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             BOT_OWNERS.pop(bid, None)
             _iso_cache.pop(bid, None)
             await delete_deployed_bot(bid)
-            await cleanup_bot_data(bid)   # evict_bot_cache called inside here
+            await cleanup_bot_data(bid)
         await _send_to_user(client, payment["user_id"],
             f"<blockquote>💸 ʀᴇғᴜɴᴅ ₹{payment['amount']} ᴘʀᴏᴄᴇssᴇᴅ.</blockquote>")
         await _edit_approval_msg(cq.message, "💸 Refunded.")
@@ -1059,20 +1072,25 @@ async def expiry_checker():
                 BOT_OWNERS.pop(bid, None)
                 _iso_cache.pop(bid, None)
                 await cleanup_expired_bot(bid)
-                await cleanup_bot_data(bid)   # evict_bot_cache called inside here
+                await cleanup_bot_data(bid)
                 await app.send_message(bot["owner_id"],
                     f"<blockquote>⚠️ ʙᴏᴛ @{bot['username']} ᴇxᴘɪʀᴇᴅ ᴀɴᴅ ʀᴇᴍᴏᴠᴇᴅ.\n"
                     f"ᴅᴇᴘʟᴏʏ ᴀɢᴀɪɴ ᴛᴏ ʀᴇsᴛᴀʀᴛ ғʀᴇsʜ.</blockquote>")
                 for admin in ADMINS_ID:
                     await app.send_message(admin, f"⚠️ @{bot['username']} expired & wiped.")
                 await app.send_message(DEPLOY_LOGGER, f"⚠️ @{bot['username']} expired & cleaned.")
+
             for bot in await get_bots_expiring_soon(days=2):
                 if bot.get("warning_sent"):
                     continue
                 days_left = max((bot["expiry_date"] - datetime.utcnow()).days, 0)
-                await app.send_message(bot["owner_id"],
-                    f"<blockquote>🔔 ʙᴏᴛ @{bot['username']} ᴇxᴘɪʀᴇs ɪɴ {days_left} ᴅᴀʏ(s). ʀᴇɴᴇᴡ ɴᴏᴡ!</blockquote>",
-                    reply_markup=renew_kb(bot["bot_id"]))
+                # ── [2] Full reminder message from old code ───────────────────
+                await app.send_message(
+                    bot["owner_id"],
+                    f"<blockquote>🔔 **ʀᴇᴍɪɴᴅᴇʀ: ʏᴏᴜʀ ʙᴏᴛ @{bot['username']} ᴡɪʟʟ ᴇxᴘɪʀᴇ ɪɴ {days_left} ᴅᴀʏs.**</blockquote>\n"
+                    f"<blockquote>ʀᴇɴᴇᴡ ɴᴏᴡ ᴛᴏ ᴀᴠᴏɪᴅ ɪɴᴛᴇʀʀᴜᴘᴛɪᴏɴ.</blockquote>",
+                    reply_markup=renew_kb(bot["bot_id"])
+                )
                 await update_deployed_bot(bot["bot_id"], {"warning_sent": True})
         except Exception:
             logging.exception("expiry checker error")
@@ -1101,7 +1119,7 @@ async def handle_renew_cb(client, cq: CallbackQuery, user_id: int, bot_id: int):
         f"**ʀᴇɴᴇᴡᴀʟ ᴀᴍᴏᴜɴᴛ:** ₹{renewal_total}/ᴍᴏɴᴛʜ\n\n"
         f"ᴘʀᴏᴄᴇᴇᴅ?</blockquote>",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("💥 ᴘᴀʏ ɴᴏᴡ",  callback_data="deploy_pay_now")],
+            [InlineKeyboardButton("💸 ᴘᴀʏ ɴᴏᴡ",  callback_data="deploy_pay_now")],
             [InlineKeyboardButton("🔻 ᴄᴀɴᴄᴇʟ 🔻", callback_data="deploy_cancel")]
         ]))
     try: await cq.message.delete()
@@ -1136,7 +1154,7 @@ async def renew_command(client: Client, message: Message):
         f"**ʀᴇɴᴇᴡᴀʟ ᴀᴍᴏᴜɴᴛ:** ₹{renewal_total}/ᴍᴏɴᴛʜ\n\n"
         f"ᴘʀᴏᴄᴇᴇᴅ?</blockquote>",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("💥 ᴘᴀʏ ɴᴏᴡ",  callback_data="deploy_pay_now")],
+            [InlineKeyboardButton("💸 ᴘᴀʏ ɴᴏᴡ",  callback_data="deploy_pay_now")],
             [InlineKeyboardButton("🔻 ᴄᴀɴᴄᴇʟ 🔻", callback_data="deploy_cancel")]
         ]))
 
@@ -1280,7 +1298,7 @@ async def remove_deployed_bot_cmd(client: Client, message: Message):
     BOT_OWNERS.pop(bid, None)
     _iso_cache.pop(bid, None)
     await delete_deployed_bot(bid)
-    await cleanup_bot_data(bid)   # evict_bot_cache called inside here
+    await cleanup_bot_data(bid)
     await message.reply_text(
         f"<blockquote>✅ ʙᴏᴛ @{bot['username']} ʀᴇᴍᴏᴠᴇᴅ ᴀɴᴅ ᴀʟʟ ᴅᴀᴛᴀ ᴡɪᴘᴇᴅ.</blockquote>")
 
@@ -1304,7 +1322,6 @@ async def confirm_rmalldeploy_cb(_, cq: CallbackQuery):
             except Exception: pass
         DEPLOYED_CLIENTS.clear(); DEPLOYED_BOTS.clear()
         BOT_ALLOWED_PLUGINS.clear(); BOT_OWNERS.clear(); _iso_cache.clear()
-        # wipe the entire settings cache in one shot
         from SHASHA_DRUGZ.utils.bot_settings import _cache as _settings_cache
         _settings_cache.clear()
         await deploy_bots_col.delete_many({})
@@ -1344,13 +1361,21 @@ async def admin_earnings_dashboard(client, message):
     top  = sorted(usp.items(), key=lambda x: x[1], reverse=True)[:5]
     ttxt = "\n".join(f"• `{u}` → ₹{a}" for u, a in top) or "—"
     mtxt = "\n".join(f"• {m.upper()} → ₹{a}" for m, a in msp.items()) or "—"
-    await message.reply_text(
-        "<blockquote>📊 **ᴇᴀʀɴɪɴɢs**</blockquote>\n"
-        f"<blockquote>💰 ᴛᴏᴛᴀʟ: ₹{te} | 💸 ʀᴇғᴜɴᴅ: ₹{ref} | ✅ ɴᴇᴛ: ₹{te-ref}\n"
-        f"📅 ᴛᴏᴅᴀʏ: ₹{td} | 🗓️ ᴍᴏɴᴛʜ: ₹{tm_e}\n"
-        f"🤖 ᴀᴄᴛɪᴠᴇ: {ac} | ⌛ ᴇxᴘɪʀᴇᴅ: {ex_c}\n\n"
-        f"💳 ᴍᴇᴛʜᴏᴅs:\n{mtxt}\n\n👑 ᴛᴏᴘ:\n{ttxt}\n\n"
-        f"🕒 {now.strftime('%d-%m-%Y %I:%M %p IST')}</blockquote>")
+    # ── [3] Full earnings dashboard from old code ─────────────────────────────
+    text = (
+        "<blockquote>📊 **ᴀᴅᴍɪɴ ᴇᴀʀɴɪɴɢs ᴅᴀsʜʙᴏᴀʀᴅ**</blockquote>\n"
+        f"<blockquote>💰 **ᴛᴏᴛᴀʟ ᴇᴀʀɴɪɴɢs:** ₹{te}\n"
+        f"💸 **ʀᴇғᴜɴᴅᴇᴅ:** ₹{ref}\n"
+        f"✅ **ɴᴇᴛ ᴇᴀʀɴɪɴɢs:** ₹{te - ref}\n\n"
+        f"📅 **ᴛᴏᴅᴀʏ:** ₹{td}\n"
+        f"🗓️ **ᴛʜɪs ᴍᴏɴᴛʜ:** ₹{tm_e}\n\n"
+        f"🤖 **ᴀᴄᴛɪᴠᴇ ʙᴏᴛs:** {ac}\n"
+        f"⌛ **ᴇxᴘɪʀᴇᴅ ʙᴏᴛs:** {ex_c}\n\n"
+        f"💳 **ᴘᴀʏᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅs:**\n{mtxt}\n\n"
+        f"👑 **ᴛᴏᴘ ᴘᴀʏɪɴɢ ᴜsᴇʀs:**\n{ttxt}\n\n"
+        f"🕒 ᴜᴘᴅᴀᴛᴇᴅ: {now.strftime('%d-%m-%Y %I:%M %p IST')}</blockquote>"
+    )
+    await message.reply_text(text)
 
 # ─── Restart on startup ────────────────────────────────────────────────────────
 async def restart_bots():
