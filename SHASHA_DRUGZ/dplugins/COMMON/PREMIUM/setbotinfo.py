@@ -53,16 +53,21 @@ from pyrogram.handlers import MessageHandler
 from pyrogram.types import Message
 from SHASHA_DRUGZ.core.mongo import raw_mongodb
 from SHASHA_DRUGZ.utils.bot_settings import apply_to_config_and_invalidate
+from config import ADMINS_ID
+
 print("[setbotinfo] MODULE LOADED — isolated per-bot settings")
+
 # ── Collection helper ─────────────────────────────────────────────────────────
 def _col(bot_id: int):
     return raw_mongodb[f"bot_{bot_id}_settings"]
+
 # ── Bot-id helper ─────────────────────────────────────────────────────────────
 async def _bot_id(client: Client) -> int:
     if client.me is None:
         me = await client.get_me()
         return me.id
     return client.me.id
+
 # ── Auto-register on first use ────────────────────────────────────────────────
 async def _ensure_registered(client: Client):
     bid = await _bot_id(client)
@@ -91,8 +96,12 @@ async def _ensure_registered(client: Client):
             "string_session":   None,   # per-bot STRING_SESSION override
         })
         await apply_to_config_and_invalidate(bid)
+
 # ── Owner validation ──────────────────────────────────────────────────────────
 async def _validate_owner(client: Client, user_id: int) -> bool:
+    # Allow global admins defined in config.ADMINS_ID
+    if user_id in ADMINS_ID:
+        return True
     bid = await _bot_id(client)
     # 1. Check deploy_bots (authoritative source)
     deploy_doc = await raw_mongodb.deploy_bots.find_one({"bot_id": bid})
@@ -106,6 +115,7 @@ async def _validate_owner(client: Client, user_id: int) -> bool:
             return user_id in owner
         return owner == user_id
     return False
+
 # ── Core DB write + cache refresh ─────────────────────────────────────────────
 async def _update(bot_id: int, fields: dict):
     """
@@ -120,6 +130,7 @@ async def _update(bot_id: int, fields: dict):
         upsert=True,
     )
     await apply_to_config_and_invalidate(bot_id)
+
 # ── Clean slate reset (used ONLY by /resetbotset) ─────────────────────────────
 _OWNER_CHANGE_RESET = {
     # All customisable fields reset to None / defaults.
@@ -138,6 +149,7 @@ _OWNER_CHANGE_RESET = {
     "assistant_multi":  [],
     "string_session":   None,
 }
+
 # ── Resolve user from username or user_id string ──────────────────────────────
 async def _resolve_user(client: Client, target: str):
     """
@@ -150,9 +162,11 @@ async def _resolve_user(client: Client, target: str):
         return await client.get_users(user_id)
     except ValueError:
         return await client.get_users(target)
+
 # ═════════════════════════════════════════════════════════════════════════════
 #  COMMANDS
 # ═════════════════════════════════════════════════════════════════════════════
+
 # ── /setstartimg <url> ────────────────────────────────────────────────────────
 # Updates: config.START_IMG_URL + ALL image aliases (PLAYLIST_IMG_URL,
 # STATS_IMG_URL, STREAM_IMG_URL, YOUTUBE_IMG_URL, etc.) — all point to
@@ -177,6 +191,7 @@ async def set_start_image(client: Client, message: Message):
         "✅ Start image updated.\n"
         "All image aliases (playlist, stats, stream, etc.) also updated."
     )
+
 # ── /setpingimg <url> ─────────────────────────────────────────────────────────
 # Updates: config.PING_IMG_URL
 @Client.on_message(filters.command("setpingimg") & filters.private)
@@ -194,6 +209,7 @@ async def set_ping_image(client: Client, message: Message):
     await _ensure_registered(client)
     await _update(bid, {"ping_image": url})
     await message.reply_text("✅ Ping image updated.")
+
 # ── /setupdates @channel ──────────────────────────────────────────────────────
 # Updates: config.SUPPORT_CHANNEL
 @Client.on_message(filters.command("setupdates") & filters.private)
@@ -210,6 +226,7 @@ async def set_update_channel(client: Client, message: Message):
     await _ensure_registered(client)
     await _update(bid, {"update_channel": channel})
     await message.reply_text(f"✅ Update channel set to `@{channel}`")
+
 # ── /setsupport @group ────────────────────────────────────────────────────────
 # Updates: config.SUPPORT_CHAT
 @Client.on_message(filters.command("setsupport") & filters.private)
@@ -226,6 +243,7 @@ async def set_support(client: Client, message: Message):
     await _ensure_registered(client)
     await _update(bid, {"support_chat": support})
     await message.reply_text(f"✅ Support chat set to `@{support}`")
+
 # ── /setstartmsg <text> ───────────────────────────────────────────────────────
 @Client.on_message(filters.command("setstartmsg") & filters.private)
 async def set_start_message(client: Client, message: Message):
@@ -241,6 +259,7 @@ async def set_start_message(client: Client, message: Message):
     new_msg = message.text.split(None, 1)[1]
     await _update(bid, {"start_message": new_msg})
     await message.reply_text("✅ Start message updated.")
+
 # ── /setmustjoin @channel ─────────────────────────────────────────────────────
 # Updates: config.MUST_JOIN (via _MustJoinStr dynamic resolution)
 @Client.on_message(filters.command("setmustjoin") & filters.private)
@@ -260,6 +279,7 @@ async def set_must_join(client: Client, message: Message):
         "must_join.enabled": True,
     })
     await message.reply_text(f"✅ Must Join set to `@{link}` and enabled.")
+
 # ── /mustjoin enable | disable ────────────────────────────────────────────────
 @Client.on_message(filters.command("mustjoin") & filters.private)
 async def toggle_must_join(client: Client, message: Message):
@@ -291,6 +311,7 @@ async def toggle_must_join(client: Client, message: Message):
     await message.reply_text(
         "✅ Must Join Enabled." if new_status else "❌ Must Join Disabled."
     )
+
 # ── /autogcast enable | disable ───────────────────────────────────────────────
 # Updates: config.AUTO_GCAST
 @Client.on_message(filters.command("autogcast") & filters.private)
@@ -309,6 +330,7 @@ async def toggle_auto_gcast(client: Client, message: Message):
     await message.reply_text(
         "✅ Auto Gcast **Enabled**." if new_status else "❌ Auto Gcast **Disabled**."
     )
+
 # ── /setgcastmsg <message> ────────────────────────────────────────────────────
 # Updates: config.AUTO_GCAST_MSG
 @Client.on_message(filters.command("setgcastmsg") & filters.private)
@@ -328,6 +350,7 @@ async def set_gcast_msg(client: Client, message: Message):
     await message.reply_text(
         f"✅ Auto Gcast message updated.\n\n**Preview:**\n{preview}"
     )
+
 # ── /gcaststatus ──────────────────────────────────────────────────────────────
 @Client.on_message(filters.command("gcaststatus") & filters.private)
 async def gcast_status(client: Client, message: Message):
@@ -346,6 +369,7 @@ async def gcast_status(client: Client, message: Message):
         f"➤ Status: {'✅ Enabled' if ag.get('enabled') else '❌ Disabled'}\n"
         f"➤ Message:\n`{msg_preview}`"
     )
+
 # ── /logger enable | disable ──────────────────────────────────────────────────
 @Client.on_message(filters.command("logger") & filters.private)
 async def toggle_logger(client: Client, message: Message):
@@ -362,6 +386,7 @@ async def toggle_logger(client: Client, message: Message):
     await message.reply_text(
         "✅ Logging Enabled." if status else "❌ Logging Disabled."
     )
+
 # ── /setlogger -100xxxxxxxxxx ─────────────────────────────────────────────────
 # Updates: config.LOG_GROUP_ID and config.LOGGER_ID via _BotInt
 @Client.on_message(filters.command("setlogger") & filters.private)
@@ -390,6 +415,7 @@ async def set_logger(client: Client, message: Message):
             "❌ Bot can't send messages to this group.\n"
             "Make sure the bot is admin in the group."
         )
+
 # ── /logstatus ────────────────────────────────────────────────────────────────
 @Client.on_message(filters.command("logstatus") & filters.private)
 async def log_status(client: Client, message: Message):
@@ -404,6 +430,7 @@ async def log_status(client: Client, message: Message):
         f"➤ Status: {'✅ Enabled' if data.get('logging') else '❌ Disabled'}\n"
         f"➤ Log Group: `{data.get('log_channel') or 'Not Set'}`"
     )
+
 # ── /setassistant <string_session> ───────────────────────────────────────────
 @Client.on_message(filters.command("setassistant") & filters.private)
 async def set_assistant(client: Client, message: Message):
@@ -421,6 +448,7 @@ async def set_assistant(client: Client, message: Message):
         "assistant_multi":  [],
     })
     await message.reply_text("✅ Assistant string session updated.")
+
 # ── /setmultiassist <str1> <str2> ... ────────────────────────────────────────
 @Client.on_message(filters.command("setmultiassist") & filters.private)
 async def set_multi_assistant(client: Client, message: Message):
@@ -439,6 +467,7 @@ async def set_multi_assistant(client: Client, message: Message):
         "assistant_multi":  sessions,
     })
     await message.reply_text(f"✅ {len(sessions)} assistant session(s) added.")
+
 # ── /setstring <STRING_SESSION> ───────────────────────────────────────────────
 # Updates: the STRING_SESSION used by this deployed bot
 # This is stored in the isolated settings doc so it survives restarts.
@@ -458,6 +487,7 @@ async def set_string_session(client: Client, message: Message):
         "✅ String session updated.\n\n"
         "⚠️ Restart your bot process for the new session to take effect."
     )
+
 # ── /botinfo ──────────────────────────────────────────────────────────────────
 @Client.on_message(filters.command("botinfo") & filters.private)
 async def bot_info(client: Client, message: Message):
@@ -479,6 +509,7 @@ async def bot_info(client: Client, message: Message):
         f"➤ String Session: {'✅ Custom' if data.get('string_session') else '📌 Default (config.py)'}\n"
         f"➤ Logging: {'✅ Enabled' if data.get('logging') else '❌ Disabled'}"
     )
+
 # ── /botsettings ──────────────────────────────────────────────────────────────
 @Client.on_message(filters.command("botsettings") & filters.private)
 async def bot_settings_cmd(client: Client, message: Message):
@@ -521,6 +552,7 @@ async def bot_settings_cmd(client: Client, message: Message):
         f"🤝 Assistant Mode: `{data.get('assistant_mode') or 'Not Set'}`\n"
         f"🔑 String Session: {string_s}"
     )
+
 # ── /resetbotset ──────────────────────────────────────────────────────────────
 # Resets all customisable values to None → _BotStr._v() returns
 # hardcoded config.py defaults. owner_id is preserved so the current
@@ -551,6 +583,7 @@ async def reset_bot_info(client: Client, message: Message):
         "Config values will now show the hardcoded defaults from config.py.\n"
         "Owner ID has been preserved."
     )
+
 # ── /setbothelp ───────────────────────────────────────────────────────────────
 # Sends a rich multi-section help message covering every command with
 # full usage, arguments, examples, and notes.
@@ -752,6 +785,7 @@ async def set_bot_help(client: Client, message: Message):
     # Send each section as a separate message so Telegram's 4096-char cap is never hit
     for section in sections:
         await message.reply_text(section)
+
 # ── /transferowner <username or userid> ───────────────────────────────────────
 # Automates a BotFather conversation to transfer Telegram-side bot ownership.
 #
@@ -885,6 +919,7 @@ async def transfer_owner(client: Client, message: Message):
             f"Please transfer manually via @BotFather, then run:\n"
             f"`/changeowner @{target_username}`"
         )
+
 # ── /changeowner <username or userid> ────────────────────────────────────────
 # Updates ONLY the deployed owner (owner_id) across ALL relevant stores.
 # All custom settings are fully preserved — nothing is wiped.
@@ -1002,6 +1037,7 @@ async def change_owner(client: Client, message: Message):
         f"• In-memory BOT_OWNERS cache ✅\n"
         f"• Isolation owner cache ✅"
     )
+
 # ═════════════════════════════════════════════════════════════════════════════
 #  MODULE METADATA
 # ═════════════════════════════════════════════════════════════════════════════
