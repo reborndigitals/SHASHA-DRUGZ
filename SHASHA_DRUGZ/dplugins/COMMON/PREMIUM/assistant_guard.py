@@ -3,28 +3,24 @@ assistant_guard.py
 ──────────────────
 Auto-unban + auto-join the assistant userbot whenever a /play command is
 issued in a group where the assistant is missing or banned.
-
-Drop this file into your SHASHA_DRUGZ/plugins/ directory.
+Drop this file into your SHASHA_DRUGZ/dplugins/COMMON/PREMIUM/ directory.
 No changes needed in music.py or start.py — this module runs transparently
 as a middleware layer that fires before the PlayWrapper decorator processes
 the command.
-
 Logic flow on every /play (and variants) in a group:
   1. Get the assistant assigned to this chat.
   2. Check assistant's membership status via the main bot (app).
-  3. If BANNED or RESTRICTED → unban first (needs ban permission on bot).
-  4. If not in the group at all → invite via username or generated invite link.
-  5. If already a member → do nothing (fast-path, no extra API calls).
-  6. All steps run silently in a background task so the play response is
+  3. If BANNED → unban first (needs ban permission on bot).
+  4. If RESTRICTED → treat as already in chat (no rejoin needed).
+  5. If not in the group at all → invite via username or generated invite link.
+  6. If already a member → do nothing (fast-path, no extra API calls).
+  7. All steps run silently in a background task so the play response is
      not delayed.
-
 Only the assistant is ever touched — regular users are never affected.
 """
-
 import asyncio
 import logging
 from functools import wraps
-
 from pyrogram import Client, filters
 from pyrogram.enums import ChatMemberStatus
 from pyrogram.errors import (
@@ -38,7 +34,6 @@ from pyrogram.errors import (
     UserNotParticipant,
 )
 from pyrogram.types import Message
-
 from SHASHA_DRUGZ import app
 from SHASHA_DRUGZ.utils.database import get_assistant
 
@@ -107,11 +102,20 @@ async def _try_unban(chat_id: int, assistant_id: int) -> bool:
 
 async def _try_join_via_username(userbot, chat_id: int) -> bool:
     """Try joining via the group's public username."""
+    # FIX 1: Wrap get_chat in its own try/except to handle CHANNEL_INVALID
+    # on supergroups that aren't cached by the bot yet.
     try:
         chat = await app.get_chat(chat_id)
-        if not chat.username:
-            return False
-        await userbot.join_chat(chat.username)
+        username = chat.username
+    except Exception as e:
+        logger.debug(f"[assistant_guard] get_chat failed for {chat_id}: {e}")
+        return False
+
+    if not username:
+        return False
+
+    try:
+        await userbot.join_chat(username)
         logger.info(f"[assistant_guard] Assistant joined {chat_id} via username")
         return True
     except UserAlreadyParticipant:
@@ -134,7 +138,9 @@ async def _try_join_via_username(userbot, chat_id: int) -> bool:
 async def _try_join_via_invite(userbot, chat_id: int) -> bool:
     """Try joining via a freshly generated invite link (requires invite permission)."""
     try:
-        link = await app.export_chat_invite_link(chat_id)
+        # FIX 3: create_chat_invite_link is more reliable than export_chat_invite_link
+        link_obj = await app.create_chat_invite_link(chat_id)
+        link = link_obj.invite_link
         await asyncio.sleep(1)
         await userbot.join_chat(link)
         logger.info(f"[assistant_guard] Assistant joined {chat_id} via invite link")
@@ -166,7 +172,6 @@ async def ensure_assistant_in_chat(chat_id: int) -> bool:
     """
     Silently ensure the assistant is a member of the group.
     Called as a background task — never blocks the play response.
-
     Returns True if the assistant is (or becomes) a member.
     """
     try:
@@ -184,19 +189,23 @@ async def ensure_assistant_in_chat(chat_id: int) -> bool:
         # Already in — nothing to do
         return True
 
-    # ── Step 2: if banned/restricted, unban first ─────────────────────────────
-    if status in (ChatMemberStatus.BANNED, ChatMemberStatus.RESTRICTED):
+    # FIX 2: RESTRICTED means the assistant IS in the chat, just with limits.
+    # Attempting to rejoin a restricted member causes unnecessary API errors.
+    if status == ChatMemberStatus.RESTRICTED:
+        logger.debug(f"[assistant_guard] Assistant is restricted (not banned) in {chat_id} — treating as present")
+        return True
+
+    # ── Step 2: if banned, unban first ────────────────────────────────────────
+    if status == ChatMemberStatus.BANNED:
         if not await _bot_can_ban(chat_id):
             logger.warning(
                 f"[assistant_guard] Assistant is banned in {chat_id} "
                 f"but bot lacks ban rights to unban."
             )
             return False
-
         unbanned = await _try_unban(chat_id, assistant_id)
         if not unbanned:
             return False
-
         # Give Telegram a moment to process the unban before joining
         await asyncio.sleep(2)
 
@@ -227,6 +236,7 @@ PLAY_COMMANDS = [
     "playforce", "vplayforce", "cplayforce", "cvplayforce",
 ]
 
+
 @Client.on_message(
     filters.command(PLAY_COMMANDS, prefixes=["/", "!", "%", ".", "@", "#", ""])
     & filters.group,
@@ -239,10 +249,8 @@ async def _play_assistant_guard(client: Client, message: Message):
     Does NOT stop propagation — the play command continues normally.
     """
     chat_id = message.chat.id
-
     # Fire-and-forget: don't await, don't delay the play response
     asyncio.create_task(ensure_assistant_in_chat(chat_id))
-
     # Let the message propagate to the real play handler
     # (do NOT call message.stop_propagation())
 
@@ -255,14 +263,12 @@ def with_assistant_guard(func):
     """
     Optional decorator you can wrap around any async handler to ensure the
     assistant is in the chat before the handler runs.
-
     Usage in music.py:
         @Client.on_message(...)
         @PlayWrapper
         @with_assistant_guard          ← add this
         async def play_commnd(...):
             ...
-
     Unlike the interceptor above (which is fire-and-forget), this decorator
     AWAITS the guard so the assistant is guaranteed to be present before the
     stream starts. Use it if you hit race conditions.
@@ -282,3 +288,7 @@ def with_assistant_guard(func):
                 logger.debug(f"[assistant_guard] Background guard error: {e}")
         return result
     return wrapper
+
+MOD_TYPE = "MUSIC
+MOD_NAME = "assist_guard"
+MOD_PRICE = "0"
