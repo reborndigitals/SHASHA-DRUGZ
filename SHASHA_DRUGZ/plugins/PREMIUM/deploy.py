@@ -41,6 +41,50 @@ from SHASHA_DRUGZ.utils.invoice import generate_invoice
 
 os.makedirs("deploy_sessions", exist_ok=True)
 
+# ─── DEPLOY_LOGGER resolver ───────────────────────────────────────────────────
+# Resolves DEPLOY_LOGGER to a numeric int chat ID at startup.
+# Set DEPLOY_LOGGER in config as either:
+#   • An integer like -1001234567890  (preferred)
+#   • A string username like "@mychannel"
+# The bot MUST be an admin in that channel/group.
+_RESOLVED_DEPLOY_LOGGER: Optional[int] = None
+
+async def _resolve_deploy_logger():
+    global _RESOLVED_DEPLOY_LOGGER
+    if isinstance(DEPLOY_LOGGER, int):
+        _RESOLVED_DEPLOY_LOGGER = DEPLOY_LOGGER
+        logging.info(f"[deploy] DEPLOY_LOGGER already int: {_RESOLVED_DEPLOY_LOGGER}")
+        return
+    try:
+        chat = await app.get_chat(DEPLOY_LOGGER)
+        _RESOLVED_DEPLOY_LOGGER = chat.id
+        logging.info(f"[deploy] DEPLOY_LOGGER resolved '{DEPLOY_LOGGER}' → {_RESOLVED_DEPLOY_LOGGER}")
+    except Exception as e:
+        logging.error(
+            f"[deploy] DEPLOY_LOGGER='{DEPLOY_LOGGER}' could not be resolved: {e}\n"
+            "Make sure the bot is an admin of that channel and the ID/username is correct."
+        )
+        _RESOLVED_DEPLOY_LOGGER = None
+
+async def _log(client: Client, text: str, photo=None, reply_markup=None):
+    """Send a message/photo to the deploy logger channel safely."""
+    if _RESOLVED_DEPLOY_LOGGER is None:
+        logging.warning(f"[deploy] DEPLOY_LOGGER not resolved, skipping log: {text[:80]}")
+        return
+    try:
+        if photo:
+            await client.send_photo(
+                _RESOLVED_DEPLOY_LOGGER, photo,
+                caption=text, reply_markup=reply_markup
+            )
+        else:
+            await client.send_message(
+                _RESOLVED_DEPLOY_LOGGER, text,
+                reply_markup=reply_markup
+            )
+    except Exception as e:
+        logging.error(f"[deploy] _log failed: {e}")
+
 # ─── Time helpers ─────────────────────────────────────────────────────────────
 def ist_now():
     return datetime.utcnow() + timedelta(hours=5, minutes=30)
@@ -142,6 +186,11 @@ def get_plugins_for_manual_modules(module_names: List[str]) -> List[str]:
 
 # ─── Full bot data cleanup ─────────────────────────────────────────────────────
 async def cleanup_bot_data(bot_id: int):
+    """
+    Drop ALL bot_{id}_* collections and wipe chats/users rows.
+    Also calls evict_bot_cache(bot_id) so stale settings never
+    leak to a future redeploy of the same bot_id.
+    """
     try:
         prefix = f"bot_{bot_id}_"
         for col_name in await raw_mongodb.list_collection_names():
@@ -175,6 +224,11 @@ async def set_bot_commands_and_description(bot_token: str, bot_username: str):
     commands = [
         {"command": "start",  "description": "Start the bot"},
         {"command": "help",   "description": "Get help"},
+        {"command": "play",   "description": "Play music"},
+        {"command": "pause",  "description": "Pause playback"},
+        {"command": "resume", "description": "Resume playback"},
+        {"command": "skip",   "description": "Skip current track"},
+        {"command": "end",    "description": "Stop playback"},
         {"command": "ping",   "description": "Check bot status"},
         {"command": "id",     "description": "Get ID"},
     ]
@@ -199,6 +253,11 @@ async def _safe_edit(msg, text: str, reply_markup=None, **kwargs):
         logging.warning(f"[deploy] edit failed: {e}")
 
 async def _edit_approval_msg(msg, text: str, reply_markup=None):
+    """
+    Edit the admin approval message (which may be a photo OR a plain text
+    message depending on whether a screenshot was attached).
+    Always attaches the reply_markup regardless of message type.
+    """
     if msg.photo or msg.document or msg.video or msg.audio or msg.voice:
         try:
             await msg.edit_caption(text, reply_markup=reply_markup)
@@ -357,17 +416,17 @@ def cancel_button_kb():
     ]])
 
 DEPLOY_PROMPT = (
-        "<blockquote>**🤖 ʙᴏᴛ ᴅᴇᴘʟᴏʏᴍᴇɴᴛ**</blockquote>\n"
-        "<blockquote>ᴘʟᴇᴀsᴇ sᴇɴᴅ ʏᴏᴜʀ **ʙᴏᴛ ᴛᴏᴋᴇɴ** ɴᴏᴡ.\n\n"
-        "📌 ɢᴇᴛ ɪᴛ ғʀᴏᴍ @BotFather\n"
-        "📌 ғᴏʀᴍᴀᴛ:\n"
-        "`123456789:ABCdefGhIJKlmNoPQRstu`</blockquote>\n\n"
-        "<blockquote>🔻 /deploy <bot_token> ➠ sᴛᴀʀᴛ ɴᴇᴡ ʙᴏᴛ ᴅᴇᴘʟᴏʏᴍᴇɴᴛ.\n"
-        "🔻 /updatemodule <bot_username | bot_token> ➠ ᴀᴅᴅ ɴᴇᴡ ᴍᴏᴅᴜʟᴇs ᴛᴏ ᴀʟʀᴇᴀᴅʏ ᴅᴇᴘʟᴏʏᴇᴅ ʙᴏᴛ.\n"
-        "🔻 /mybots ➠ sʜᴏᴡ ʏᴏᴜʀ ᴅᴇᴘʟᴏʏᴇᴅ ʙᴏᴛs.\n"
-        "🔻 /renew <bot_username> ➠ ʀᴇɴᴇᴡ ᴇxᴘɪʀᴇᴅ ᴏʀ ᴇxᴘɪʀɪɴɢ ʙᴏᴛ.\n"
-        "🔻 /rmdeploy <bot_username | bot_token> ➠ ʀᴇᴍᴏᴠᴇ ʏᴏᴜʀ ᴅᴇᴘʟᴏʏᴇᴅ ʙᴏᴛ.</blockquote>\n\n"
-        "<blockquote>🔻 /setbothelp - SHOW ALL DERPLOY OWNER COMMANDS & USAGE </blockquote>"
+    "<blockquote>**🤖 ʙᴏᴛ ᴅᴇᴘʟᴏʏᴍᴇɴᴛ**</blockquote>\n"
+    "<blockquote>ᴘʟᴇᴀsᴇ sᴇɴᴅ ʏᴏᴜʀ **ʙᴏᴛ ᴛᴏᴋᴇɴ** ɴᴏᴡ.\n\n"
+    "📌 ɢᴇᴛ ɪᴛ ғʀᴏᴍ @BotFather\n"
+    "📌 ғᴏʀᴍᴀᴛ:\n"
+    "`123456789:ABCdefGhIJKlmNoPQRstu`</blockquote>\n\n"
+    "<blockquote>🔻 /deploy <bot_token> ➠ sᴛᴀʀᴛ ɴᴇᴡ ʙᴏᴛ ᴅᴇᴘʟᴏʏᴍᴇɴᴛ.\n"
+    "🔻 /updatemodule <bot_username | bot_token> ➠ ᴀᴅᴅ ɴᴇᴡ ᴍᴏᴅᴜʟᴇs ᴛᴏ ᴀʟʀᴇᴀᴅʏ ᴅᴇᴘʟᴏʏᴇᴅ ʙᴏᴛ.\n"
+    "🔻 /mybots ➠ sʜᴏᴡ ʏᴏᴜʀ ᴅᴇᴘʟᴏʏᴇᴅ ʙᴏᴛs.\n"
+    "🔻 /renew <bot_username> ➠ ʀᴇɴᴇᴡ ᴇxᴘɪʀᴇᴅ ᴏʀ ᴇxᴘɪʀɪɴɢ ʙᴏᴛ.\n"
+    "🔻 /rmdeploy <bot_username | bot_token> ➠ ʀᴇᴍᴏᴠᴇ ʏᴏᴜʀ ᴅᴇᴘʟᴏʏᴇᴅ ʙᴏᴛ.</blockquote>\n\n"
+    "<blockquote>🔻 /setbothelp - SHOW ALL DEPLOY OWNER COMMANDS & USAGE</blockquote>"
 )
 
 # ─── /deploy ──────────────────────────────────────────────────────────────────
@@ -767,23 +826,21 @@ async def handle_numeric_keypad(client, cq: CallbackQuery, user_id: int, session
             if is_update or is_renewal:
                 pd["bot_id"]           = session["bot_id"]
                 pd["original_modules"] = session.get("original_modules", [])
-        pid = await create_pending_payment(user_id, pd)
-        # ── [4] Full admin notification caption from old code ─────────────────
+        pid   = await create_pending_payment(user_id, pd)
+        label = "Renewal" if is_renewal else ("Update" if is_update else "New")
         caption = (
-            f"<blockquote>**ɴᴇᴡ {'Update' if is_update else 'Deployment'} ᴘᴀʏᴍᴇɴᴛ ʀᴇǫᴜᴇsᴛ**</blockquote>\n"
-            f"<blockquote>👤 ᴜsᴇʀ: [{pd['full_name']}](tg://user?id={user_id})\n"
-            f"🆔 ᴜsᴇʀ-ɪᴅ: `{user_id}`\n"
-            f"💰 ᴀᴍᴏᴜɴᴛ: ₹{amount}\n"
-            f"💳 ᴍᴇᴛʜᴏᴅ: {pm.upper()}\n"
-            f"📦 ᴍᴏᴅᴇ: {mode.upper()}\n"
-            f"🤖 ʙᴏᴛ-ᴛᴏᴋᴇɴ: `{pd['token']}`</blockquote>\n\n"
-            f"<blockquote>ᴀᴘᴘʀᴏᴠᴇ ᴏʀ ʀᴇᴊᴇᴄᴛ:</blockquote>"
+            f"<blockquote>**{label} ᴘᴀʏᴍᴇɴᴛ**\n"
+            f"👤 [{pd['full_name']}](tg://user?id={user_id}) | 🆔 `{user_id}`\n"
+            f"💰 ₹{amount} | 💳 {pm.upper()} | 📦 {mode.upper()}\n"
+            f"🤖 `{pd['token']}`</blockquote>"
         )
+        # ── FIX: use _log() instead of direct send to DEPLOY_LOGGER ─────────
         if session.get("screenshot_file_id"):
-            await client.send_photo(DEPLOY_LOGGER, session["screenshot_file_id"],
-                                    caption=caption, reply_markup=admin_review_kb(pid))
+            await _log(client, caption,
+                       photo=session["screenshot_file_id"],
+                       reply_markup=admin_review_kb(pid))
         else:
-            await client.send_message(DEPLOY_LOGGER, caption, reply_markup=admin_review_kb(pid))
+            await _log(client, caption, reply_markup=admin_review_kb(pid))
         await _safe_edit(cq.message, "✅ ᴘᴀʏᴍᴇɴᴛ ʀᴇǫᴜᴇsᴛ sᴇɴᴛ. ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...")
         await save_deploy_session(user_id, {"temp_amount": ""}); return
 
@@ -925,6 +982,7 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
                 cq.message,
                 f"✅ ᴜᴘᴅᴀᴛᴇᴅ @{bot_username} | ʀᴇɴᴇᴡᴀʟ=₹{new_renewal_amt}"
             )
+
         else:
             # FRESH DEPLOY PATH
             if mode == "auto":
@@ -938,7 +996,6 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
                 ap     = list(set(get_plugins_for_manual_modules(payment.get("modules", [])) + COMMON_PLUGINS))
                 dm     = payment.get("modules", [])
                 bundle = "manual"
-
             sdir = f"deploy_sessions/{bot_id}"; os.makedirs(sdir, exist_ok=True)
             bc = Client(name=f"deploy_{bot_id}", api_id=API_ID, api_hash=API_HASH,
                         bot_token=token, workdir=sdir,
@@ -995,24 +1052,9 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
                 f"ᴇxᴘɪʀᴇs: {to_ist(expiry).strftime('%d-%m-%Y %I:%M %p IST')}</blockquote>")
             ud  = await raw_mongodb.deploy_users.find_one({"_id": payment["user_id"]})
             isc = bool(ud and ud.get("connected_to_admin") == admin_id)
-            # ── [1] Full approval caption from old code ───────────────────────
-            caption = (
-                f"<blockquote>**✅ ᴘᴀʏᴍᴇɴᴛ ᴀᴘᴘʀᴏᴠᴇᴅ & ʙᴏᴛ ᴅᴇᴘʟᴏʏᴇᴅ**</blockquote>\n"
-                f"<blockquote>👤 ᴜsᴇʀ: [{payment['full_name']}](tg://user?id={payment['user_id']})\n"
-                f"🆔 ᴜsᴇʀ-ɪᴅ: `{payment['user_id']}`\n"
-                f"💰 ᴀᴍᴏᴜɴᴛ: ₹{payment['amount']}\n"
-                f"💳 ᴍᴇᴛʜᴏᴅ: {payment['method'].upper()}\n"
-                f"📦 ᴍᴏᴅᴇ: {mode.upper()}\n"
-                f"📦 ʙᴜɴᴅʟᴇs/ᴍᴏᴅᴜʟᴇs: {', '.join(dm)}\n"
-                f"🤖 ʙᴏᴛ: @{bot_username}\n"
-                f"🔑 ʙᴏᴛ ᴛᴏᴋᴇɴ: `{payment['token']}`\n"
-                f"📅 ᴘᴀʏᴍᴇɴᴛ ᴅᴀᴛᴇ: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n"
-                f"⏰ ᴇxᴘɪʀʏ ᴅᴀᴛᴇ: {expiry.strftime('%Y-%m-%d %H:%M UTC')}</blockquote>\n\n"
-                f"<blockquote>sᴛᴀᴛᴜs: {'✅ ᴄᴏɴɴᴇᴄᴛᴇᴅ' if isc else '❌ ɴᴏᴛ ᴄᴏɴɴᴇᴄᴛᴇᴅ'}</blockquote>"
-            )
             await _edit_approval_msg(
                 cq.message,
-                caption,
+                f"<blockquote>✅ ᴅᴇᴘʟᴏʏᴇᴅ @{bot_username} | ₹{payment['amount']}</blockquote>",
                 reply_markup=admin_connection_kb(payment["user_id"], isc)
             )
 
@@ -1078,19 +1120,15 @@ async def expiry_checker():
                     f"ᴅᴇᴘʟᴏʏ ᴀɢᴀɪɴ ᴛᴏ ʀᴇsᴛᴀʀᴛ ғʀᴇsʜ.</blockquote>")
                 for admin in ADMINS_ID:
                     await app.send_message(admin, f"⚠️ @{bot['username']} expired & wiped.")
-                await app.send_message(DEPLOY_LOGGER, f"⚠️ @{bot['username']} expired & cleaned.")
-
+                # ── FIX: use _log() instead of direct send to DEPLOY_LOGGER ─
+                await _log(app, f"⚠️ @{bot['username']} expired & cleaned.")
             for bot in await get_bots_expiring_soon(days=2):
                 if bot.get("warning_sent"):
                     continue
                 days_left = max((bot["expiry_date"] - datetime.utcnow()).days, 0)
-                # ── [2] Full reminder message from old code ───────────────────
-                await app.send_message(
-                    bot["owner_id"],
-                    f"<blockquote>🔔 **ʀᴇᴍɪɴᴅᴇʀ: ʏᴏᴜʀ ʙᴏᴛ @{bot['username']} ᴡɪʟʟ ᴇxᴘɪʀᴇ ɪɴ {days_left} ᴅᴀʏs.**</blockquote>\n"
-                    f"<blockquote>ʀᴇɴᴇᴡ ɴᴏᴡ ᴛᴏ ᴀᴠᴏɪᴅ ɪɴᴛᴇʀʀᴜᴘᴛɪᴏɴ.</blockquote>",
-                    reply_markup=renew_kb(bot["bot_id"])
-                )
+                await app.send_message(bot["owner_id"],
+                    f"<blockquote>🔔 ʙᴏᴛ @{bot['username']} ᴇxᴘɪʀᴇs ɪɴ {days_left} ᴅᴀʏ(s). ʀᴇɴᴇᴡ ɴᴏᴡ!</blockquote>",
+                    reply_markup=renew_kb(bot["bot_id"]))
                 await update_deployed_bot(bot["bot_id"], {"warning_sent": True})
         except Exception:
             logging.exception("expiry checker error")
@@ -1119,7 +1157,7 @@ async def handle_renew_cb(client, cq: CallbackQuery, user_id: int, bot_id: int):
         f"**ʀᴇɴᴇᴡᴀʟ ᴀᴍᴏᴜɴᴛ:** ₹{renewal_total}/ᴍᴏɴᴛʜ\n\n"
         f"ᴘʀᴏᴄᴇᴇᴅ?</blockquote>",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("💸 ᴘᴀʏ ɴᴏᴡ",  callback_data="deploy_pay_now")],
+            [InlineKeyboardButton("💥 ᴘᴀʏ ɴᴏᴡ",  callback_data="deploy_pay_now")],
             [InlineKeyboardButton("🔻 ᴄᴀɴᴄᴇʟ 🔻", callback_data="deploy_cancel")]
         ]))
     try: await cq.message.delete()
@@ -1154,7 +1192,7 @@ async def renew_command(client: Client, message: Message):
         f"**ʀᴇɴᴇᴡᴀʟ ᴀᴍᴏᴜɴᴛ:** ₹{renewal_total}/ᴍᴏɴᴛʜ\n\n"
         f"ᴘʀᴏᴄᴇᴇᴅ?</blockquote>",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("💸 ᴘᴀʏ ɴᴏᴡ",  callback_data="deploy_pay_now")],
+            [InlineKeyboardButton("💥 ᴘᴀʏ ɴᴏᴡ",  callback_data="deploy_pay_now")],
             [InlineKeyboardButton("🔻 ᴄᴀɴᴄᴇʟ 🔻", callback_data="deploy_cancel")]
         ]))
 
@@ -1361,7 +1399,6 @@ async def admin_earnings_dashboard(client, message):
     top  = sorted(usp.items(), key=lambda x: x[1], reverse=True)[:5]
     ttxt = "\n".join(f"• `{u}` → ₹{a}" for u, a in top) or "—"
     mtxt = "\n".join(f"• {m.upper()} → ₹{a}" for m, a in msp.items()) or "—"
-    # ── [3] Full earnings dashboard from old code ─────────────────────────────
     text = (
         "<blockquote>📊 **ᴀᴅᴍɪɴ ᴇᴀʀɴɪɴɢs ᴅᴀsʜʙᴏᴀʀᴅ**</blockquote>\n"
         f"<blockquote>💰 **ᴛᴏᴛᴀʟ ᴇᴀʀɴɪɴɢs:** ₹{te}\n"
@@ -1380,6 +1417,8 @@ async def admin_earnings_dashboard(client, message):
 # ─── Restart on startup ────────────────────────────────────────────────────────
 async def restart_bots():
     global DEPLOYED_CLIENTS, DEPLOYED_BOTS, BOT_ALLOWED_PLUGINS, BOT_OWNERS
+    # ── FIX: resolve DEPLOY_LOGGER to numeric ID before using it ────────────
+    await _resolve_deploy_logger()
     logging.info("Restarting all deployed bots...")
     bots = await deploy_bots_col.find({"status": "active"}).to_list(length=None)
     n = 1
@@ -1423,8 +1462,8 @@ async def restart_bots():
             await asyncio.sleep(5)
         except Exception as e:
             logging.error(f"Failed to start @{bot.get('username','?')}: {e}")
-    try: await app.send_message(DEPLOY_LOGGER, "✅ ᴀʟʟ ᴅᴇᴘʟᴏʏᴇᴅ ʙᴏᴛs ʀᴇsᴛᴀʀᴛᴇᴅ!")
-    except Exception as e: logging.error(f"Restart log failed: {e}")
+    # ── FIX: use _log() instead of direct send to DEPLOY_LOGGER ─────────────
+    await _log(app, "✅ ᴀʟʟ ᴅᴇᴘʟᴏʏᴇᴅ ʙᴏᴛs ʀᴇsᴛᴀʀᴛᴇᴅ!")
 
 # ─── /start deploy ────────────────────────────────────────────────────────────
 @app.on_callback_query(filters.regex("^deploy_start$"))
