@@ -289,6 +289,6 @@ def with_assistant_guard(func):
         return result
     return wrapper
 
-MOD_TYPE = "MUSIC
-MOD_NAME = "assist_guard"
+MOD_TYPE = "MUSIC"
+MOD_NAME = "Assist-Guard"
 MOD_PRICE = "0"
