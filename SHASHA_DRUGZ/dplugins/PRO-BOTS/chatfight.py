@@ -53,7 +53,7 @@
 import random
 import logging
 from datetime import date
-from pyrogram import filters, errors
+from pyrogram import Client, filters, errors
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import MONGO_DB_URI
