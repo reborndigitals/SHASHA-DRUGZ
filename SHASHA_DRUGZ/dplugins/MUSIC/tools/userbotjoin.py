@@ -19,7 +19,7 @@ from SHASHA_DRUGZ.utils.shasha_ban import admin_filter
 links = {}
 
 
-@app.on_message(
+@Client.on_message(
     filters.group
     & filters.command(["userbotjoin", f"userbotjoin@{app.username}"])
     & ~filters.private
@@ -166,7 +166,7 @@ async def join_group(client, message):
         return
 
 
-@app.on_message(filters.command("userbotleave") & filters.group & admin_filter)
+@Client.on_message(filters.command("userbotleave") & filters.group & admin_filter)
 async def leave_one(client, message):
     try:
         userbot = await get_assistant(message.chat.id)
@@ -178,7 +178,7 @@ async def leave_one(client, message):
         print(e)
 
 
-@app.on_message(filters.command(["leaveall", f"leaveall@{app.username}"]) & SUDOERS)
+@Client.on_message(filters.command(["leaveall", f"leaveall@{app.username}"]) & SUDOERS)
 async def leave_all(client, message):
     if message.from_user.id not in SUDOERS:
         return
