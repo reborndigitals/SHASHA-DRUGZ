@@ -24,9 +24,9 @@ bots_collection = db["TOKENS"]
 MAIN_BOT_USERNAME = "ShashaOffiBot"
 
 DEFAULT_BOTS = [
-    "7992290736:AAGD8qaq9az6oFSkoU8bnDZQWELrVUZLuJA",
-    "2096983652:AAG_4MVAdZ8akrRmvIl7228CKrRFOYogLzY",
-    "8273429160:AAHl1bSe5kD3PA_eE0H1ZtIbUO_s8QHaQck",
+    #"7992290736:AAGD8qaq9az6oFSkoU8bnDZQWELrVUZLuJA",
+    #"2096983652:AAG_4MVAdZ8akrRmvIl7228CKrRFOYogLzY",
+    #"8273429160:AAHl1bSe5kD3PA_eE0H1ZtIbUO_s8QHaQck",
 ]
 
 # ================= MESSAGE ================= #
