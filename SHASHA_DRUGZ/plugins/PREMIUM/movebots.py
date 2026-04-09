@@ -4,6 +4,8 @@ import asyncio
 import uuid
 import logging
 
+from SHASHA_DRUGZ import app
+
 from pymongo import MongoClient
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -141,7 +143,7 @@ async def load_saved_bots():
 
 # ================= ADD BOT ================= #
 
-@Client.on_message(filters.command("movebot") & filters.private)
+@app.on_message(filters.command("movebot") & filters.private)
 async def add_movebot(client, message):
 
     if len(message.command) != 2:
@@ -167,7 +169,7 @@ async def add_movebot(client, message):
 
 # ================= DELETE BOT ================= #
 
-@Client.on_message(filters.command("delmove") & filters.private)
+@app.on_message(filters.command("delmove") & filters.private)
 async def remove_movebot(client, message):
 
     if len(message.command) != 2:
