@@ -22,9 +22,6 @@ forcesub_collection = fsubdb.status_db.status
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #   In-Memory: Active VC Call → Chat mapping
-#   call_id (int) → chat_id (int)
-#   NOTE: Resets on bot restart (only affects
-#         calls that were active before restart)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 vc_call_chat_map: dict[int, int] = {}
 
@@ -42,16 +39,9 @@ async def resolve_chat_id(client: Client, channel_input: str):
       - plain integer string
     """
     channel_input = channel_input.strip()
-
-    # Numeric ID: could be "-100..." or plain int
     if channel_input.lstrip("-").isdigit():
-        numeric_id = int(channel_input)
-        # Pyrogram accepts int directly; it handles the -100 prefix internally
-        return await client.get_chat(numeric_id)
-
-    # Username: strip leading @ if present
-    username = channel_input.lstrip("@")
-    return await client.get_chat(username)
+        return await client.get_chat(int(channel_input))
+    return await client.get_chat(channel_input.lstrip("@"))
 
 
 async def is_owner_or_sudo(client: Client, chat_id: int, user_id: int) -> bool:
@@ -136,8 +126,6 @@ async def kick_from_vc(client: Client, chat_id: int, user_id: int) -> bool:
     """
     Kick user from Voice Chat.
     Method: temporary ban + immediate unban.
-    This removes them from the active VC call.
-    Service messages are deleted automatically.
     """
     try:
         await client.ban_chat_member(chat_id, user_id)
@@ -146,7 +134,6 @@ async def kick_from_vc(client: Client, chat_id: int, user_id: int) -> bool:
         return True
     except Exception as e:
         print(f"[FSub VC Kick Error] chat={chat_id} user={user_id}: {e}")
-        # Fallback: Admin-mute in VC so they can't speak
         return await admin_mute_in_vc(client, chat_id, user_id)
 
 
@@ -207,7 +194,6 @@ async def set_forcesub(client: Client, message: Message):
     if not user_id:
         return
 
-    # ── Owner/Sudo only ──
     if not await is_owner_or_sudo(client, chat_id, user_id):
         return await message.reply_text(
             "🚫 **Permission Denied!**\n\n"
@@ -297,7 +283,6 @@ async def set_forcesub(client: Client, message: Message):
     # ── Set FSub ──
     channel_input = args[0]
     try:
-        # FIX: Use resolve_chat_id to properly handle both @username and -100... IDs
         req_chat = await resolve_chat_id(client, channel_input)
     except Exception as e:
         return await message.reply_text(
@@ -333,7 +318,6 @@ async def set_forcesub(client: Client, message: Message):
     req_title = req_chat.title
     req_url = f"https://t.me/{req_username}" if req_username else None
 
-    # Save (per-chat, completely isolated)
     forcesub_collection.update_one(
         {"chat_id": chat_id},
         {"$set": {
@@ -415,7 +399,6 @@ async def cb_check_fsub(client: Client, cq: CallbackQuery):
     chat_id = cq.message.chat.id
     data = forcesub_collection.find_one({"chat_id": chat_id})
 
-    # FSub disabled → just unmute and delete warning
     if not data:
         await unmute_in_chat(client, chat_id, user_id)
         await cq.answer("✅ FSub disabled. You are unmuted!", show_alert=True)
@@ -431,15 +414,15 @@ async def cb_check_fsub(client: Client, cq: CallbackQuery):
     req_url = f"https://t.me/{req_username}" if req_username else None
 
     if await is_member_of(client, req_id, user_id):
-        # ✅ Verified → Unmute + delete the fsub warning message
+        # ✅ Verified → Unmute + delete warning
         await unmute_in_chat(client, chat_id, user_id)
         await cq.answer("🎉 Verified! You are unmuted. Welcome!", show_alert=True)
         try:
-            await cq.message.delete()  # Delete warning only after successful join verification
+            await cq.message.delete()
         except Exception:
             pass
     else:
-        # ❌ Still not a member — keep warning, just update buttons
+        # ❌ Still not a member — keep warning, refresh buttons
         buttons = []
         if req_url:
             buttons.append([InlineKeyboardButton(f"📢 Join {req_title}", url=req_url)])
@@ -477,10 +460,8 @@ async def on_user_join_chat(client: Client, update):
 
     user_id = new_member.user.id
 
-    # Bypass: Sudoers
     if user_id in SUDOERS:
         return
-    # Bypass: Admins/Owner
     if await is_admin_or_above(client, chat_id, user_id):
         return
 
@@ -489,11 +470,9 @@ async def on_user_join_chat(client: Client, update):
     req_title = data.get("channel_title", "Required Group")
     req_url = f"https://t.me/{req_username}" if req_username else None
 
-    # Already a member of required group → allow
     if await is_member_of(client, req_id, user_id):
         return
 
-    # ── Mute in chat ──
     muted = await mute_in_chat(client, chat_id, user_id)
     if not muted:
         return
@@ -506,7 +485,6 @@ async def on_user_join_chat(client: Client, update):
     ])
 
     try:
-        # NOTE: No auto-delete — message stays until user clicks "I Joined — Unmute Me"
         await client.send_message(
             chat_id,
             f"🔒 **Hello {new_member.user.mention}!**\n\n"
@@ -555,13 +533,10 @@ async def raw_update_handler(client: Client, update, users: dict, chats: dict):
     if not isinstance(update, raw.types.UpdateGroupCallParticipants):
         return
 
-    call_obj = update.call  # InputGroupCall
+    call_obj = update.call
     call_id = call_obj.id
-
-    # Find chat_id from memory map first
     chat_id = vc_call_chat_map.get(call_id)
 
-    # Fallback: scan the `chats` dict for one with fsub configured
     if not chat_id:
         for _, chat_obj in chats.items():
             if isinstance(chat_obj, raw.types.Channel):
@@ -572,13 +547,12 @@ async def raw_update_handler(client: Client, update, users: dict, chats: dict):
                 continue
             if forcesub_collection.find_one({"chat_id": potential}):
                 chat_id = potential
-                vc_call_chat_map[call_id] = chat_id  # Cache for next time
+                vc_call_chat_map[call_id] = chat_id
                 break
 
     if not chat_id:
         return
 
-    # Check if this chat has FSub configured
     data = forcesub_collection.find_one({"chat_id": chat_id})
     if not data:
         return
@@ -588,9 +562,7 @@ async def raw_update_handler(client: Client, update, users: dict, chats: dict):
     req_title = data.get("channel_title", "Required Group")
     req_url = f"https://t.me/{req_username}" if req_username else None
 
-    # Process each participant in this update
     for participant in update.participants:
-        # Only care about NEW joiners
         if not getattr(participant, "just_joined", False):
             continue
         if getattr(participant, "left", False):
@@ -601,25 +573,16 @@ async def raw_update_handler(client: Client, update, users: dict, chats: dict):
             continue
 
         user_id = peer.user_id
-
-        # Skip bots
         user_obj = users.get(user_id)
         if user_obj and getattr(user_obj, "bot", False):
             continue
-
-        # Bypass: Sudoers
         if user_id in SUDOERS:
             continue
-
-        # Bypass: Admins/Owner
         if await is_admin_or_above(client, chat_id, user_id):
             continue
-
-        # Check required group membership
         if await is_member_of(client, req_id, user_id):
-            continue  # ✅ Allowed
+            continue
 
-        # ── NOT a member → Kick from VC ──
         asyncio.create_task(
             _handle_vc_violator(client, chat_id, user_id, req_id, req_title, req_url)
         )
@@ -633,16 +596,10 @@ async def _handle_vc_violator(
     req_title: str,
     req_url: str | None,
 ):
-    """
-    Handle a user who joined VC without being in the required group.
-    Runs as a background task to avoid blocking the raw update handler.
-    """
-    # Kick from VC (ban → unban removes them from call)
     kicked = await kick_from_vc(client, chat_id, user_id)
     if not kicked:
         return
 
-    # Clean up any ban/unban service messages
     await asyncio.sleep(1)
     try:
         async for msg in client.get_chat_history(chat_id, limit=10):
@@ -651,7 +608,6 @@ async def _handle_vc_violator(
     except Exception:
         pass
 
-    # ── Notify in group chat (auto-delete after 15s) ──
     try:
         user_info = await client.get_users(user_id)
         buttons_group = []
@@ -670,7 +626,6 @@ async def _handle_vc_violator(
     except Exception:
         pass
 
-    # ── DM the user with instructions ──
     try:
         chat_info = await client.get_chat(chat_id)
         chat_title = chat_info.title
@@ -695,7 +650,7 @@ async def _handle_vc_violator(
             disable_web_page_preview=True
         )
     except (UserPrivacyRestricted, PeerIdInvalid):
-        pass  # User blocked DMs — that's OK
+        pass
     except Exception:
         pass
 
@@ -733,14 +688,10 @@ async def check_forcesub(client: Client, message: Message) -> bool:
         except Exception:
             req_url = None
 
-    # Check membership
     if await is_member_of(client, req_id, user_id):
         return True
 
-    # ── Not a member ──
-    # NOTE: User message is NOT deleted (per requirement)
-
-    # Also mute them (in case they weren't muted on join)
+    # Not a member — mute and warn (do NOT delete user message)
     await mute_in_chat(client, chat_id, user_id)
 
     buttons = []
@@ -751,7 +702,6 @@ async def check_forcesub(client: Client, message: Message) -> bool:
     ])
 
     try:
-        # NOTE: No auto-delete — warning stays until user clicks "I Joined — Unmute Me"
         await message.reply_photo(
             photo="https://envs.sh/Tn_.jpg",
             caption=(
@@ -768,7 +718,20 @@ async def check_forcesub(client: Client, message: Message) -> bool:
     return False
 
 
-@app.on_message(filters.group & ~filters.bot & ~filters.service, group=30)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  THE FIX: exclude commands from this handler
+#  ~filters.command ensures /start, /play, etc.
+#  are NEVER intercepted by FSub enforcer,
+#  so all other bot commands keep working.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@app.on_message(
+    filters.group
+    & ~filters.bot
+    & ~filters.service
+    & ~filters.command  # ← THE CRITICAL FIX
+    ,
+    group=30
+)
 async def enforce_forcesub(client: Client, message: Message):
     if not await check_forcesub(client, message):
         message.stop_propagation()
@@ -780,6 +743,7 @@ async def enforce_forcesub(client: Client, message: Message):
 __menu__ = "CMD_MANAGE"
 __mod_name__ = "H_B_42"
 __help__ = """
+🔐 **FORCE SUBSCRIPTION**
 **▸ Enable:**
 `/fsub @group_username`
 `/fsub -100xxxxxxxxx`
@@ -791,4 +755,20 @@ __help__ = """
 **▸ Check Status:**
 `/fsub status`
 
+━━━━━━━━━━━━━━━━━━━━
+🔒 **What it enforces:**
+- 💬 Non-members → **Muted** (user message kept)
+- 🎙️ Non-members → **Kicked from Voice Chat**
+
+⚙️ **Behaviour:**
+- Works in **Groups & Channels**
+- Each chat has **separate** FSub config
+- Sudoers & Admins are **always exempt**
+- Only **Chat Owner** can enable/disable
+- VC kick uses: ban + immediate unban
+- User gets DM notification on VC kick
+- Inline **"Unmute Me"** button for verification
+- FSub warning deleted only after successful join
+- Supports both **@username** and **-100xxxxxxx** IDs
+- ✅ Bot commands are **never blocked** by FSub
 """
