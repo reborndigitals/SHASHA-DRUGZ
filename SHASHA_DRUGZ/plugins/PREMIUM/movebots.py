@@ -67,7 +67,7 @@ def get_buttons():
 
 # ================= FILTER ================= #
 
-COMMAND_FILTER = filters.regex(r"^[\/@#\.]") & ~filters.bot
+COMMAND_FILTER = filters.regex(r"^[\@#\.]") & ~filters.bot
 
 # ================= STORAGE ================= #
 
