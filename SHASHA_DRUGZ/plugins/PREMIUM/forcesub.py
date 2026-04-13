@@ -728,17 +728,18 @@ async def enforce_forcesub(client: Client, message: Message):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #              MODULE METADATA
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 __menu__ = "CMD_MANAGE"
 __mod_name__ = "H_B_42"
 __help__ = """
-🔐 **FORCE SUBSCRIPTION**
-**▸ Enable:**
-`/fsub @group_username`
-`/fsub -100xxxxxxxxx`
-`/forcesub @group_username`
-**▸ Disable:**
-`/fsub off` | `/fsub disable`
-**▸ Check Status:**
-`/fsub status`
-━━━━━━━━━━━━━━━━━━━
+🔻 /fsub <channel_username | channel_id> ➠ ᴇɴᴀʙʟᴇꜱ ꜰᴏʀᴄᴇ ꜱᴜʙꜱᴄʀɪᴘᴛɪᴏɴ ꜰᴏʀ ᴛʜᴇ ɢʀᴏᴜᴘ.
+🔻 /forcesub <channel_username | channel_id> ➠ ᴇɴᴀʙʟᴇꜱ ꜰᴏʀᴄᴇ ꜱᴜʙꜱᴄʀɪᴘᴛɪᴏɴ ꜰᴏʀ ᴛʜᴇ ɢʀᴏᴜᴘ.
+🔻 /fsub off ➠ ᴅɪꜱᴀʙʟᴇꜱ ꜰᴏʀᴄᴇ ꜱᴜʙꜱᴄʀɪᴘᴛɪᴏɴ ꜰᴏʀ ᴛʜᴇ ɢʀᴏᴜᴘ.
+🔻 /forcesub off ➠ ᴅɪꜱᴀʙʟᴇꜱ ꜰᴏʀᴄᴇ ꜱᴜʙꜱᴄʀɪᴘᴛɪᴏɴ ꜰᴏʀ ᴛʜᴇ ɢʀᴏᴜᴘ.
+🔻 /fsub disable ➠ ᴛᴜʀɴꜱ ᴏꜰꜰ ꜰᴏʀᴄᴇ ꜱᴜʙꜱᴄʀɪᴘᴛɪᴏɴ ꜰᴇᴀᴛᴜʀᴇ.
+🔻 /forcesub disable ➠ ᴛᴜʀɴꜱ ᴏꜰꜰ ꜰᴏʀᴄᴇ ꜱᴜʙꜱᴄʀɪᴘᴛɪᴏɴ ꜰᴇᴀᴛᴜʀᴇ.
+🔻 (ᴀᴜᴛᴏ) ➠ ᴍᴜᴛᴇꜱ ᴜꜱᴇʀꜱ ᴡʜᴏ ᴊᴏɪɴ ᴛʜᴇ ɢʀᴏᴜᴘ ᴡɪᴛʜᴏᴜᴛ ᴊᴏɪɴɪɴɢ ᴛʜᴇ ꜱᴇᴛ ᴄʜᴀɴɴᴇʟ.
+🔻 (ᴀᴜᴛᴏ) ➠ ᴅᴇʟᴇᴛᴇꜱ ᴍᴇꜱꜱᴀɢᴇꜱ ꜰʀᴏᴍ ɴᴏɴ-ꜱᴜʙꜱᴄʀɪʙᴇᴅ ᴜꜱᴇʀꜱ.
+🔻 (ʙᴜᴛᴛᴏɴ) ➠ “ᴜɴᴍᴜᴛᴇ ᴍᴇ” — ᴠᴇʀɪꜰɪᴇꜱ ᴄʜᴀɴɴᴇʟ ᴊᴏɪɴ ᴀɴᴅ ᴜɴᴍᴜᴛᴇꜱ ᴛʜᴇ ᴜꜱᴇʀ.
+🔻 (ᴀᴜᴛᴏ) ➠ ꜱᴜᴅᴏᴇʀꜱ & ɢʀᴏᴜᴘ ᴀᴅᴍɪɴꜱ ᴀʀᴇ ᴇxᴇᴍᴘᴛ ꜰʀᴏᴍ ꜰᴏʀᴄᴇ ꜱᴜʙꜱᴄʀɪᴘᴛɪᴏɴ.
 """
