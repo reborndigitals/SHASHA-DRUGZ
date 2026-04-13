@@ -13,48 +13,47 @@ from pymongo import MongoClient
 from SHASHA_DRUGZ import app
 from SHASHA_DRUGZ.misc import SUDOERS
 from config import MONGO_DB_URI
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #                  DATABASE
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 fsubdb = MongoClient(MONGO_DB_URI)
 forcesub_collection = fsubdb.status_db.status
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#   In-Memory Cache: chat_id → fsub data
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+_fsub_cache: dict[int, dict | None] = {}
 
+def _cache_get(chat_id: int):
+    return _fsub_cache.get(chat_id, "MISS")
+
+def _cache_set(chat_id: int, data):
+    _fsub_cache[chat_id] = data
+
+def _cache_del(chat_id: int):
+    _fsub_cache.pop(chat_id, None)
+
+def _get_fsub_data(chat_id: int):
+    """Fast cache-first DB lookup."""
+    cached = _cache_get(chat_id)
+    if cached != "MISS":
+        return cached
+    data = forcesub_collection.find_one({"chat_id": chat_id})
+    _cache_set(chat_id, data)
+    return data
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #   In-Memory: Active VC Call → Chat mapping
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 vc_call_chat_map: dict[int, int] = {}
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#   THE FIX: Custom filter to detect commands
-#   (replaces broken ~filters.command)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@filters.create
-async def not_command_filter(_, __, message: Message) -> bool:
-    """Returns True if message is NOT a command (does not start with /)."""
-    if not message or not message.text:
-        return True
-    return not message.text.startswith("/")
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #               HELPER FUNCTIONS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async def resolve_chat_id(client: Client, channel_input: str):
-    """
-    Resolve a channel/group input to a Pyrogram Chat object.
-    Supports:
-      - @username
-      - username (without @)
-      - -100xxxxxxxxx  (supergroup/channel numeric ID)
-      - plain integer string
-    """
     channel_input = channel_input.strip()
     if channel_input.lstrip("-").isdigit():
         return await client.get_chat(int(channel_input))
     return await client.get_chat(channel_input.lstrip("@"))
 
 async def is_owner_or_sudo(client: Client, chat_id: int, user_id: int) -> bool:
-    """Only Group/Channel OWNER + Sudoers can manage FSub."""
     if user_id in SUDOERS:
         return True
     try:
@@ -64,7 +63,6 @@ async def is_owner_or_sudo(client: Client, chat_id: int, user_id: int) -> bool:
         return False
 
 async def is_admin_or_above(client: Client, chat_id: int, user_id: int) -> bool:
-    """Admins, Owners, Sudoers — all bypass FSub checks."""
     if user_id in SUDOERS:
         return True
     try:
@@ -74,10 +72,6 @@ async def is_admin_or_above(client: Client, chat_id: int, user_id: int) -> bool:
         return False
 
 async def is_member_of(client: Client, chat_id: int, user_id: int) -> bool:
-    """
-    Returns True if user is a valid member of `chat_id`.
-    Returns False if not a participant or banned.
-    """
     try:
         m = await client.get_chat_member(chat_id, user_id)
         return m.status not in [ChatMemberStatus.BANNED, ChatMemberStatus.LEFT]
@@ -87,7 +81,6 @@ async def is_member_of(client: Client, chat_id: int, user_id: int) -> bool:
         return True  # Fail-open on unknown errors
 
 async def mute_in_chat(client: Client, chat_id: int, user_id: int) -> bool:
-    """Restrict all chat permissions (text mute)."""
     try:
         await client.restrict_chat_member(
             chat_id, user_id,
@@ -107,7 +100,6 @@ async def mute_in_chat(client: Client, chat_id: int, user_id: int) -> bool:
         return False
 
 async def unmute_in_chat(client: Client, chat_id: int, user_id: int) -> bool:
-    """Restore all chat permissions."""
     try:
         await client.restrict_chat_member(
             chat_id, user_id,
@@ -127,10 +119,6 @@ async def unmute_in_chat(client: Client, chat_id: int, user_id: int) -> bool:
         return False
 
 async def kick_from_vc(client: Client, chat_id: int, user_id: int) -> bool:
-    """
-    Kick user from Voice Chat.
-    Method: temporary ban + immediate unban.
-    """
     try:
         await client.ban_chat_member(chat_id, user_id)
         await asyncio.sleep(0.5)
@@ -141,10 +129,6 @@ async def kick_from_vc(client: Client, chat_id: int, user_id: int) -> bool:
         return await admin_mute_in_vc(client, chat_id, user_id)
 
 async def admin_mute_in_vc(client: Client, chat_id: int, user_id: int) -> bool:
-    """
-    Fallback: Admin-mute the user in VC using raw API.
-    User cannot unmute themselves when muted by admin.
-    """
     try:
         call_input = await get_active_call(client, chat_id)
         if not call_input:
@@ -164,8 +148,7 @@ async def admin_mute_in_vc(client: Client, chat_id: int, user_id: int) -> bool:
 
 async def get_active_call(
     client: Client, chat_id: int
-) -> raw.base.InputGroupCall | None:
-    """Get the active InputGroupCall for a chat, or None."""
+) -> "raw.base.InputGroupCall | None":
     try:
         peer = await client.resolve_peer(chat_id)
         if isinstance(peer, raw.types.InputPeerChannel):
@@ -180,10 +163,22 @@ async def get_active_call(
             return full.full_chat.call
     except Exception:
         return None
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  SAFE FILTER: True only for non-command text
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _is_not_command(_, __, msg: Message) -> bool:
+    try:
+        text = msg.text or msg.caption or ""
+        text = text.strip()
+        if not text:
+            return False
+        return not text.startswith("/")
+    except Exception:
+        return False
 
+_not_command = filters.create(_is_not_command, name="NotCommandFilter")
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #           /fsub COMMAND HANDLER
-#   Works in BOTH Groups and Channels
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @app.on_message(
     filters.command(["fsub", "forcesub"])
@@ -194,7 +189,6 @@ async def set_forcesub(client: Client, message: Message):
     user_id = message.from_user.id if message.from_user else None
     if not user_id:
         return
-
     if not await is_owner_or_sudo(client, chat_id, user_id):
         return await message.reply_text(
             "🚫 **Permission Denied!**\n\n"
@@ -203,13 +197,12 @@ async def set_forcesub(client: Client, message: Message):
                 InlineKeyboardButton("❌ Close", callback_data=f"fsub_close_{user_id}")
             ]])
         )
-
     args = message.command[1:]
-
     # ── /fsub off / disable ──
     if args and args[0].lower() in ["off", "disable"]:
         if forcesub_collection.find_one({"chat_id": chat_id}):
             forcesub_collection.delete_one({"chat_id": chat_id})
+            _cache_del(chat_id)
             return await message.reply_text(
                 "✅ **Force Subscription Disabled!**\n\n"
                 "• Chat messages: **Open to all**\n"
@@ -219,12 +212,11 @@ async def set_forcesub(client: Client, message: Message):
                 ]])
             )
         return await message.reply_text(
-            "i️ Force Subscription is already **disabled** for this chat.",
+            "ℹ️ Force Subscription is already **disabled** for this chat.",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("❌ Close", callback_data=f"fsub_close_{user_id}")
             ]])
         )
-
     # ── /fsub status ──
     if args and args[0].lower() in ["status", "info"]:
         data = forcesub_collection.find_one({"chat_id": chat_id})
@@ -260,7 +252,6 @@ async def set_forcesub(client: Client, message: Message):
             reply_markup=InlineKeyboardMarkup(buttons),
             disable_web_page_preview=True
         )
-
     # ── No argument → show help ──
     if not args:
         return await message.reply_text(
@@ -280,7 +271,6 @@ async def set_forcesub(client: Client, message: Message):
                 InlineKeyboardButton("❌ Close", callback_data=f"fsub_close_{user_id}")
             ]])
         )
-
     # ── Set FSub ──
     channel_input = args[0]
     try:
@@ -293,8 +283,6 @@ async def set_forcesub(client: Client, message: Message):
                 InlineKeyboardButton("❌ Close", callback_data=f"fsub_close_{user_id}")
             ]])
         )
-
-    # Bot must be admin in the required chat
     try:
         bot_status = await client.get_chat_member(req_chat.id, client.me.id)
         if bot_status.status not in [
@@ -313,12 +301,10 @@ async def set_forcesub(client: Client, message: Message):
                 InlineKeyboardButton("❌ Close", callback_data=f"fsub_close_{user_id}")
             ]])
         )
-
     req_id = req_chat.id
     req_username = req_chat.username
     req_title = req_chat.title
     req_url = f"https://t.me/{req_username}" if req_username else None
-
     forcesub_collection.update_one(
         {"chat_id": chat_id},
         {"$set": {
@@ -329,7 +315,7 @@ async def set_forcesub(client: Client, message: Message):
         }},
         upsert=True
     )
-
+    _cache_del(chat_id)
     buttons = []
     if req_url:
         buttons.append([InlineKeyboardButton(f"📢 {req_title}", url=req_url)])
@@ -340,7 +326,6 @@ async def set_forcesub(client: Client, message: Message):
         )
     ])
     buttons.append([InlineKeyboardButton("❌ Close", callback_data=f"fsub_close_{user_id}")])
-
     await message.reply_text(
         f"🎉 **Force Subscription Enabled!**\n\n"
         f"📢 **Required Chat:** [{req_title}]({req_url or '#'})\n\n"
@@ -352,7 +337,6 @@ async def set_forcesub(client: Client, message: Message):
         reply_markup=InlineKeyboardMarkup(buttons),
         disable_web_page_preview=True
     )
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #            CALLBACK: DISABLE BUTTON
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -363,6 +347,7 @@ async def cb_disable(client: Client, cq: CallbackQuery):
     if cq.from_user.id != auth_user and cq.from_user.id not in SUDOERS:
         return await cq.answer("⚠️ Only the command issuer can use this!", show_alert=True)
     forcesub_collection.delete_one({"chat_id": target_chat})
+    _cache_del(target_chat)
     await cq.answer("✅ Force Subscription Disabled!", show_alert=True)
     try:
         await cq.message.edit_text(
@@ -371,7 +356,6 @@ async def cb_disable(client: Client, cq: CallbackQuery):
         )
     except Exception:
         pass
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #              CALLBACK: CLOSE BUTTON
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -384,7 +368,6 @@ async def cb_close(client: Client, cq: CallbackQuery):
         await cq.message.delete()
     except Exception:
         pass
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #           CALLBACK: UNMUTE CHECK BUTTON
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -394,7 +377,7 @@ async def cb_check_fsub(client: Client, cq: CallbackQuery):
     if cq.from_user.id != user_id:
         return await cq.answer("⚠️ This button is only for the muted user!", show_alert=True)
     chat_id = cq.message.chat.id
-    data = forcesub_collection.find_one({"chat_id": chat_id})
+    data = _get_fsub_data(chat_id)
     if not data:
         await unmute_in_chat(client, chat_id, user_id)
         await cq.answer("✅ FSub disabled. You are unmuted!", show_alert=True)
@@ -407,8 +390,13 @@ async def cb_check_fsub(client: Client, cq: CallbackQuery):
     req_username = data.get("channel_username")
     req_title = data.get("channel_title", "Required Group")
     req_url = f"https://t.me/{req_username}" if req_username else None
-    if await is_member_of(client, req_id, user_id):
-        # ✅ Verified → Unmute + delete warning
+    try:
+        is_member = await asyncio.wait_for(
+            is_member_of(client, req_id, user_id), timeout=3
+        )
+    except asyncio.TimeoutError:
+        return await cq.answer("⏳ Check timed out. Please try again.", show_alert=True)
+    if is_member:
         await unmute_in_chat(client, chat_id, user_id)
         await cq.answer("🎉 Verified! You are unmuted. Welcome!", show_alert=True)
         try:
@@ -416,7 +404,6 @@ async def cb_check_fsub(client: Client, cq: CallbackQuery):
         except Exception:
             pass
     else:
-        # ❌ Still not a member — keep warning, refresh buttons
         buttons = []
         if req_url:
             buttons.append([InlineKeyboardButton(f"📢 Join {req_title}", url=req_url)])
@@ -431,135 +418,161 @@ async def cb_check_fsub(client: Client, cq: CallbackQuery):
             await cq.message.edit_reply_markup(InlineKeyboardMarkup(buttons))
         except Exception:
             pass
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #        AUTO-MUTE WHEN USER JOINS CHAT
+#        FIX: Added group=20
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@app.on_chat_member_updated()
+@app.on_chat_member_updated(filters.group, group=20)
 async def on_user_join_chat(client: Client, update):
-    chat_id = update.chat.id
-    if update.chat.type.name not in ["SUPERGROUP", "GROUP", "CHANNEL"]:
-        return
-    data = forcesub_collection.find_one({"chat_id": chat_id})
-    if not data:
-        return
-    new_member = update.new_chat_member
-    if not new_member or new_member.user.is_bot:
-        return
-    if new_member.status != ChatMemberStatus.MEMBER:
-        return
-    user_id = new_member.user.id
-    if user_id in SUDOERS:
-        return
-    if await is_admin_or_above(client, chat_id, user_id):
-        return
-    req_id = data["channel_id"]
-    req_username = data.get("channel_username")
-    req_title = data.get("channel_title", "Required Group")
-    req_url = f"https://t.me/{req_username}" if req_username else None
-    if await is_member_of(client, req_id, user_id):
-        return
-    muted = await mute_in_chat(client, chat_id, user_id)
-    if not muted:
-        return
-    buttons = []
-    if req_url:
-        buttons.append([InlineKeyboardButton(f"📢 Join {req_title}", url=req_url)])
-    buttons.append([
-        InlineKeyboardButton("✅ I Joined — Unmute Me", callback_data=f"check_fsub_{user_id}")
-    ])
     try:
-        await client.send_message(
-            chat_id,
-            f"🔒 **Hello {new_member.user.mention}!**\n\n"
-            f"You have been **muted** because you are not a member of **{req_title}**.\n\n"
-            f"**To get access:**\n"
-            f"1️⃣ Join **{req_title}**\n"
-            f"2️⃣ Click **'I Joined — Unmute Me'** below\n\n"
-            f"⚡ You'll be unmuted instantly after verification!",
-            reply_markup=InlineKeyboardMarkup(buttons),
-            disable_web_page_preview=True
-        )
-    except Exception:
-        pass
-
+        chat_id = update.chat.id
+        data = _get_fsub_data(chat_id)
+        if not data:
+            return
+        new_member = update.new_chat_member
+        if not new_member:
+            return
+        if not new_member.user:
+            return
+        if new_member.user.is_bot:
+            return
+        if new_member.status != ChatMemberStatus.MEMBER:
+            return
+        user_id = new_member.user.id
+        if user_id in SUDOERS:
+            return
+        if await is_admin_or_above(client, chat_id, user_id):
+            return
+        req_id = data["channel_id"]
+        req_username = data.get("channel_username")
+        req_title = data.get("channel_title", "Required Group")
+        req_url = f"https://t.me/{req_username}" if req_username else None
+        try:
+            is_member = await asyncio.wait_for(
+                is_member_of(client, req_id, user_id), timeout=3
+            )
+        except asyncio.TimeoutError:
+            return
+        if is_member:
+            return
+        muted = await mute_in_chat(client, chat_id, user_id)
+        if not muted:
+            return
+        buttons = []
+        if req_url:
+            buttons.append([InlineKeyboardButton(f"📢 Join {req_title}", url=req_url)])
+        buttons.append([
+            InlineKeyboardButton("✅ I Joined — Unmute Me", callback_data=f"check_fsub_{user_id}")
+        ])
+        try:
+            await client.send_message(
+                chat_id,
+                f"🔒 **Hello {new_member.user.mention}!**\n\n"
+                f"You have been **muted** because you are not a member of **{req_title}**.\n\n"
+                f"**To get access:**\n"
+                f"1️⃣ Join **{req_title}**\n"
+                f"2️⃣ Click **'I Joined — Unmute Me'** below\n\n"
+                f"⚡ You'll be unmuted instantly after verification!",
+                reply_markup=InlineKeyboardMarkup(buttons),
+                disable_web_page_preview=True
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"[FSub on_user_join_chat Error] {e}")
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #     RAW UPDATE HANDLER
-#     1. Track VC Call start/end → vc_call_chat_map
-#     2. Enforce FSub on VC join
+#     FIX: Added group=20
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@app.on_raw_update()
+@app.on_raw_update(group=20)
 async def raw_update_handler(client: Client, update, users: dict, chats: dict):
-    # ── 1. Track Voice Chat sessions ──
-    if isinstance(update, raw.types.UpdateGroupCall):
-        call = update.call
-        peer = getattr(update, "peer", None)
-        old_chat_id = getattr(update, "chat_id", None)
-        if peer:
-            if isinstance(peer, raw.types.PeerChannel):
-                chat_id = int(f"-100{peer.channel_id}")
-            elif isinstance(peer, raw.types.PeerChat):
-                chat_id = -peer.chat_id
+    try:
+        if forcesub_collection.count_documents({}) == 0:
+            return
+        # ── 1. Track Voice Chat sessions ──
+        if isinstance(update, raw.types.UpdateGroupCall):
+            call = update.call
+            peer = getattr(update, "peer", None)
+            old_chat_id = getattr(update, "chat_id", None)
+            if peer:
+                if isinstance(peer, raw.types.PeerChannel):
+                    chat_id = int(f"-100{peer.channel_id}")
+                elif isinstance(peer, raw.types.PeerChat):
+                    chat_id = -peer.chat_id
+                else:
+                    return
+            elif old_chat_id:
+                chat_id = -old_chat_id
             else:
                 return
-        elif old_chat_id:
-            chat_id = -old_chat_id
-        else:
+            if isinstance(call, raw.types.GroupCallDiscarded):
+                vc_call_chat_map.pop(call.id, None)
+            elif hasattr(call, "id"):
+                vc_call_chat_map[call.id] = chat_id
             return
-        if isinstance(call, raw.types.GroupCallDiscarded):
-            vc_call_chat_map.pop(call.id, None)
-        elif hasattr(call, "id"):
-            vc_call_chat_map[call.id] = chat_id
-        return
-
-    # ── 2. Voice Chat participant joins ──
-    if not isinstance(update, raw.types.UpdateGroupCallParticipants):
-        return
-    call_obj = update.call
-    call_id = call_obj.id
-    chat_id = vc_call_chat_map.get(call_id)
-    if not chat_id:
-        for _, chat_obj in chats.items():
-            if isinstance(chat_obj, raw.types.Channel):
-                potential = int(f"-100{chat_obj.id}")
-            elif isinstance(chat_obj, raw.types.Chat):
-                potential = -chat_obj.id
-            else:
+        # ── 2. Voice Chat participant joins ──
+        if not isinstance(update, raw.types.UpdateGroupCallParticipants):
+            return
+        call_obj = update.call
+        call_id = call_obj.id
+        chat_id = vc_call_chat_map.get(call_id)
+        if not chat_id:
+            for _, chat_obj in chats.items():
+                try:
+                    if isinstance(chat_obj, raw.types.Channel):
+                        potential = int(f"-100{chat_obj.id}")
+                    elif isinstance(chat_obj, raw.types.Chat):
+                        potential = -chat_obj.id
+                    else:
+                        continue
+                    if _get_fsub_data(potential):
+                        chat_id = potential
+                        vc_call_chat_map[call_id] = chat_id
+                        break
+                except Exception:
+                    continue
+        if not chat_id:
+            return
+        data = _get_fsub_data(chat_id)
+        if not data:
+            return
+        req_id = data["channel_id"]
+        req_username = data.get("channel_username")
+        req_title = data.get("channel_title", "Required Group")
+        req_url = f"https://t.me/{req_username}" if req_username else None
+        for participant in update.participants:
+            try:
+                if not getattr(participant, "just_joined", False):
+                    continue
+                if getattr(participant, "left", False):
+                    continue
+                peer = participant.peer
+                if not isinstance(peer, raw.types.PeerUser):
+                    continue
+                user_id = peer.user_id
+                user_obj = users.get(user_id)
+                if user_obj and getattr(user_obj, "bot", False):
+                    continue
+                if user_id in SUDOERS:
+                    continue
+                if await is_admin_or_above(client, chat_id, user_id):
+                    continue
+                try:
+                    is_member = await asyncio.wait_for(
+                        is_member_of(client, req_id, user_id), timeout=3
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                if is_member:
+                    continue
+                asyncio.create_task(
+                    _handle_vc_violator(client, chat_id, user_id, req_id, req_title, req_url)
+                )
+            except Exception as e:
+                print(f"[FSub raw_update participant loop Error] {e}")
                 continue
-            if forcesub_collection.find_one({"chat_id": potential}):
-                chat_id = potential
-                vc_call_chat_map[call_id] = chat_id
-                break
-    if not chat_id:
-        return
-    data = forcesub_collection.find_one({"chat_id": chat_id})
-    if not data:
-        return
-    req_id = data["channel_id"]
-    req_username = data.get("channel_username")
-    req_title = data.get("channel_title", "Required Group")
-    req_url = f"https://t.me/{req_username}" if req_username else None
-    for participant in update.participants:
-        if not getattr(participant, "just_joined", False):
-            continue
-        if getattr(participant, "left", False):
-            continue
-        peer = participant.peer
-        if not isinstance(peer, raw.types.PeerUser):
-            continue
-        user_id = peer.user_id
-        user_obj = users.get(user_id)
-        if user_obj and getattr(user_obj, "bot", False):
-            continue
-        if user_id in SUDOERS:
-            continue
-        if await is_admin_or_above(client, chat_id, user_id):
-            continue
-        if await is_member_of(client, req_id, user_id):
-            continue
-        asyncio.create_task(
-            _handle_vc_violator(client, chat_id, user_id, req_id, req_title, req_url)
-        )
+    except Exception as e:
+        print(f"[FSub raw_update_handler Error] {e}")
 
 async def _handle_vc_violator(
     client: Client,
@@ -567,136 +580,151 @@ async def _handle_vc_violator(
     user_id: int,
     req_id: int,
     req_title: str,
-    req_url: str | None,
+    req_url: "str | None",
 ):
-    kicked = await kick_from_vc(client, chat_id, user_id)
-    if not kicked:
-        return
-    await asyncio.sleep(1)
     try:
-        async for msg in client.get_chat_history(chat_id, limit=10):
-            if msg.service and msg.from_user and msg.from_user.id == user_id:
-                await msg.delete()
-    except Exception:
-        pass
-    try:
-        user_info = await client.get_users(user_id)
-        buttons_group = []
-        if req_url:
-            buttons_group.append([InlineKeyboardButton(f"📢 Join {req_title}", url=req_url)])
-        notif = await client.send_message(
-            chat_id,
-            f"🎙️ **{user_info.mention} was removed from Voice Chat!**\n\n"
-            f"Reason: Not a member of **{req_title}**.\n"
-            f"Join the required group to access VC.",
-            reply_markup=InlineKeyboardMarkup(buttons_group) if buttons_group else None,
-            disable_web_page_preview=True
-        )
-        await asyncio.sleep(15)
-        await notif.delete()
-    except Exception:
-        pass
-    try:
-        chat_info = await client.get_chat(chat_id)
-        chat_title = chat_info.title
-        chat_username = chat_info.username
-        buttons_dm = []
-        if req_url:
-            buttons_dm.append([InlineKeyboardButton(f"📢 Join {req_title}", url=req_url)])
-        if chat_username:
-            buttons_dm.append([
-                InlineKeyboardButton("🎙️ Rejoin VC", url=f"https://t.me/{chat_username}")
-            ])
-        await client.send_message(
-            user_id,
-            f"🚫 **You were removed from Voice Chat!**\n\n"
-            f"**Chat:** {chat_title}\n\n"
-            f"To join the VC, you must be a member of **{req_title}**.\n\n"
-            f"**Steps:**\n"
-            f"1️⃣ Join **{req_title}**\n"
-            f"2️⃣ Return to **{chat_title}**\n"
-            f"3️⃣ Rejoin the Voice Chat",
-            reply_markup=InlineKeyboardMarkup(buttons_dm) if buttons_dm else None,
-            disable_web_page_preview=True
-        )
-    except (UserPrivacyRestricted, PeerIdInvalid):
-        pass
-    except Exception:
-        pass
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#     MESSAGE ENFORCER (on every message)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-async def check_forcesub(client: Client, message: Message) -> bool:
-    """
-    Returns True  → user is allowed, message proceeds.
-    Returns False → user blocked, warned (message NOT deleted).
-    """
-    chat_id = message.chat.id
-    user_id = message.from_user.id if message.from_user else None
-    if not user_id:
-        return True
-    if user_id in SUDOERS:
-        return True
-    if await is_admin_or_above(client, chat_id, user_id):
-        return True
-    data = forcesub_collection.find_one({"chat_id": chat_id})
-    if not data:
-        return True
-    req_id = data["channel_id"]
-    req_username = data.get("channel_username")
-    req_title = data.get("channel_title", "Required Group")
-    if req_username:
-        req_url = f"https://t.me/{req_username}"
-    else:
+        kicked = await kick_from_vc(client, chat_id, user_id)
+        if not kicked:
+            return
+        await asyncio.sleep(1)
         try:
-            req_url = await client.export_chat_invite_link(req_id)
+            async for msg in client.get_chat_history(chat_id, limit=10):
+                if msg.service and msg.from_user and msg.from_user.id == user_id:
+                    await msg.delete()
         except Exception:
-            req_url = None
-    if await is_member_of(client, req_id, user_id):
-        return True
-    # Not a member — mute and warn (do NOT delete user message)
-    await mute_in_chat(client, chat_id, user_id)
-    buttons = []
-    if req_url:
-        buttons.append([InlineKeyboardButton(f"📢 Join {req_title}", url=req_url)])
-    buttons.append([
-        InlineKeyboardButton("✅ I Joined — Unmute Me", callback_data=f"check_fsub_{user_id}")
-    ])
-    try:
-        await message.reply_photo(
-            photo="https://envs.sh/Tn_.jpg",
-            caption=(
-                f"🔒 **Hey {message.from_user.mention}!**\n\n"
-                f"You need to join **{req_title}** to send messages here.\n\n"
-                f"1️⃣ Click **'Join'** below\n"
-                f"2️⃣ Click **'Unmute Me'** after joining"
-            ),
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
-    except Exception:
-        pass
-    return False
-
+            pass
+        try:
+            user_info = await client.get_users(user_id)
+            buttons_group = []
+            if req_url:
+                buttons_group.append([InlineKeyboardButton(f"📢 Join {req_title}", url=req_url)])
+            notif = await client.send_message(
+                chat_id,
+                f"🎙️ **{user_info.mention} was removed from Voice Chat!**\n\n"
+                f"Reason: Not a member of **{req_title}**.\n"
+                f"Join the required group to access VC.",
+                reply_markup=InlineKeyboardMarkup(buttons_group) if buttons_group else None,
+                disable_web_page_preview=True
+            )
+            await asyncio.sleep(15)
+            await notif.delete()
+        except Exception:
+            pass
+        try:
+            chat_info = await client.get_chat(chat_id)
+            chat_title = chat_info.title
+            chat_username = chat_info.username
+            buttons_dm = []
+            if req_url:
+                buttons_dm.append([InlineKeyboardButton(f"📢 Join {req_title}", url=req_url)])
+            if chat_username:
+                buttons_dm.append([
+                    InlineKeyboardButton("🎙️ Rejoin VC", url=f"https://t.me/{chat_username}")
+                ])
+            await client.send_message(
+                user_id,
+                f"🚫 **You were removed from Voice Chat!**\n\n"
+                f"**Chat:** {chat_title}\n\n"
+                f"To join the VC, you must be a member of **{req_title}**.\n\n"
+                f"**Steps:**\n"
+                f"1️⃣ Join **{req_title}**\n"
+                f"2️⃣ Return to **{chat_title}**\n"
+                f"3️⃣ Rejoin the Voice Chat",
+                reply_markup=InlineKeyboardMarkup(buttons_dm) if buttons_dm else None,
+                disable_web_page_preview=True
+            )
+        except (UserPrivacyRestricted, PeerIdInvalid):
+            pass
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"[FSub _handle_vc_violator Error] chat={chat_id} user={user_id}: {e}")
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  THE FIX: Use not_command_filter instead of
-#  ~filters.command (which causes TypeError).
-#  not_command_filter returns True only when
-#  the message does NOT start with "/", so all
-#  bot commands (/start, /play, etc.) are
-#  never intercepted by the FSub enforcer.
+#     CORE FSub CHECK (runs as background task)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+async def check_forcesub(client: Client, message: Message) -> None:
+    try:
+        chat_id = message.chat.id
+        user_id = message.from_user.id if message.from_user else None
+        if not user_id:
+            return
+        if message.from_user.is_bot:
+            return
+        if user_id in SUDOERS:
+            return
+        data = _get_fsub_data(chat_id)
+        if not data:
+            return
+        if await is_admin_or_above(client, chat_id, user_id):
+            return
+        req_id = data["channel_id"]
+        req_username = data.get("channel_username")
+        req_title = data.get("channel_title", "Required Group")
+        try:
+            is_member = await asyncio.wait_for(
+                is_member_of(client, req_id, user_id), timeout=3
+            )
+        except asyncio.TimeoutError:
+            return
+        if is_member:
+            return
+        if req_username:
+            req_url = f"https://t.me/{req_username}"
+        else:
+            try:
+                req_url = await client.export_chat_invite_link(req_id)
+            except Exception:
+                req_url = None
+        await mute_in_chat(client, chat_id, user_id)
+        buttons = []
+        if req_url:
+            buttons.append([InlineKeyboardButton(f"📢 Join {req_title}", url=req_url)])
+        buttons.append([
+            InlineKeyboardButton(
+                "✅ I Joined — Unmute Me", callback_data=f"check_fsub_{user_id}"
+            )
+        ])
+        try:
+            await message.reply_photo(
+                photo="https://envs.sh/Tn_.jpg",
+                caption=(
+                    f"🔒 **Hey {message.from_user.mention}!**\n\n"
+                    f"You need to join **{req_title}** to send messages here.\n\n"
+                    f"1️⃣ Click **'Join'** below\n"
+                    f"2️⃣ Click **'Unmute Me'** after joining"
+                ),
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"[FSub check_forcesub Error] {e}")
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  ENFORCER HANDLER
+#  FIX: filters.user added, group stays at 30
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @app.on_message(
     filters.group
-    & ~filters.bot
-    & ~filters.service
-    & not_command_filter,  # ← THE CRITICAL FIX
+    & filters.incoming
+    & filters.text
+    & filters.user
+    & _not_command
+    & ~filters.via_bot
+    & ~filters.service,
     group=30
 )
 async def enforce_forcesub(client: Client, message: Message):
-    if not await check_forcesub(client, message):
-        message.stop_propagation()
-
+    try:
+        chat_id = message.chat.id
+        data = _get_fsub_data(chat_id)
+        if not data:
+            return
+        text = (message.text or "").strip()
+        if not text or text.startswith("/"):
+            return
+        asyncio.create_task(check_forcesub(client, message))
+    except Exception as e:
+        print(f"[FSub enforce_forcesub Error] {e}")
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #              MODULE METADATA
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
