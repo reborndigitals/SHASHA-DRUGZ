@@ -1,30 +1,22 @@
+# SHASHA_DRUGZ/plugins/PREMIUM/assistant_guard.py
 """
 assistant_guard.py
 ──────────────────
 Auto-unban + auto-join the assistant userbot whenever a /play command is
 issued in a group where the assistant is missing or banned.
 
-Drop this file into your SHASHA_DRUGZ/plugins/ directory.
-No changes needed in music.py or start.py — this module runs transparently
-as a middleware layer that fires before the PlayWrapper decorator processes
-the command.
-
 Logic flow on every /play (and variants) in a group:
   1. Get the assistant assigned to this chat.
-  2. Check assistant's membership status via the main bot (app).
-  3. If BANNED or RESTRICTED → unban first (needs ban permission on bot).
-  4. If not in the group at all → invite via username or generated invite link.
-  5. If already a member → do nothing (fast-path, no extra API calls).
-  6. All steps run silently in a background task so the play response is
-     not delayed.
-
-Only the assistant is ever touched — regular users are never affected.
+  2. Check assistant's membership status via get_chat_member.
+  3. MEMBER / ADMINISTRATOR / OWNER → already in, do nothing (fast path).
+  4. RESTRICTED → already in the chat (just limited), do nothing.
+  5. BANNED → try to unban first, then join.
+  6. None (not in chat at all) → try join via username, then invite link.
+  7. All steps run in a background task — play response is never delayed.
 """
-
 import asyncio
 import logging
 from functools import wraps
-
 from pyrogram import Client, filters
 from pyrogram.enums import ChatMemberStatus
 from pyrogram.errors import (
@@ -36,22 +28,42 @@ from pyrogram.errors import (
     PeerIdInvalid,
     UserAlreadyParticipant,
     UserNotParticipant,
+    ChatWriteForbidden,
+    ChannelPrivate,
 )
-from pyrogram.types import Message
-
+from pyrogram.types import Message, ChatPrivileges
 from SHASHA_DRUGZ import app
 from SHASHA_DRUGZ.utils.database import get_assistant
 
 logger = logging.getLogger("assistant_guard")
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  INTERNAL HELPERS
-# ──────────────────────────────────────────────────────────────────────────────
+# ─── In-memory set to avoid re-checking the same chat repeatedly ─────────────
+# Once confirmed present, skip the check for 10 minutes.
+_confirmed_chats: dict = {}   # chat_id → timestamp
+_RECHECK_SECONDS = 600        # 10 minutes
 
-async def _get_assistant_status(chat_id: int, assistant_id: int) -> ChatMemberStatus | None:
+
+def _is_recently_confirmed(chat_id: int) -> bool:
+    import time
+    ts = _confirmed_chats.get(chat_id, 0)
+    return (time.time() - ts) < _RECHECK_SECONDS
+
+
+def _mark_confirmed(chat_id: int):
+    import time
+    _confirmed_chats[chat_id] = time.time()
+
+
+def _clear_confirmed(chat_id: int):
+    _confirmed_chats.pop(chat_id, None)
+
+
+# ─── Get assistant member status — the ONLY reliable way ─────────────────────
+async def _get_assistant_status(chat_id: int, assistant_id: int):
     """
-    Return the assistant's ChatMemberStatus in the group, or None if the
-    assistant has never been in the group (UserNotParticipant / PeerIdInvalid).
+    Returns ChatMemberStatus or None.
+    None means UserNotParticipant (never joined or was removed).
+    Handles all Pyrogram exceptions gracefully.
     """
     try:
         member = await app.get_chat_member(chat_id, assistant_id)
@@ -59,36 +71,39 @@ async def _get_assistant_status(chat_id: int, assistant_id: int) -> ChatMemberSt
     except UserNotParticipant:
         return None
     except PeerIdInvalid:
+        logger.debug(f"[assistant_guard] PeerIdInvalid for chat {chat_id}")
+        return None
+    except (ChannelPrivate, ChatWriteForbidden):
+        logger.debug(f"[assistant_guard] Private/forbidden chat {chat_id}")
+        return None
+    except FloodWait as e:
+        logger.warning(f"[assistant_guard] FloodWait {e.value}s checking status in {chat_id}")
+        await asyncio.sleep(e.value)
         return None
     except Exception as e:
-        logger.debug(f"_get_assistant_status [{chat_id}]: {e}")
+        logger.debug(f"[assistant_guard] get_chat_member error in {chat_id}: {e}")
         return None
 
 
-async def _bot_can_ban(chat_id: int) -> bool:
-    """Return True if the main bot has ban/restrict permission in this chat."""
+# ─── Check bot's own permissions ─────────────────────────────────────────────
+async def _bot_has_permission(chat_id: int, perm: str) -> bool:
+    """
+    Check if the main bot has a specific admin permission.
+    perm: 'can_restrict_members' | 'can_invite_users'
+    """
     try:
         me = await app.get_chat_member(chat_id, app.id)
         if me.status == ChatMemberStatus.ADMINISTRATOR:
-            return bool(me.privileges and me.privileges.can_restrict_members)
+            return bool(me.privileges and getattr(me.privileges, perm, False))
+        if me.status == ChatMemberStatus.OWNER:
+            return True
         return False
     except Exception:
         return False
 
 
-async def _bot_can_invite(chat_id: int) -> bool:
-    """Return True if the main bot has invite-users permission in this chat."""
-    try:
-        me = await app.get_chat_member(chat_id, app.id)
-        if me.status == ChatMemberStatus.ADMINISTRATOR:
-            return bool(me.privileges and me.privileges.can_invite_users)
-        return False
-    except Exception:
-        return False
-
-
+# ─── Unban ────────────────────────────────────────────────────────────────────
 async def _try_unban(chat_id: int, assistant_id: int) -> bool:
-    """Attempt to unban the assistant. Returns True on success."""
     try:
         await app.unban_chat_member(chat_id, assistant_id)
         logger.info(f"[assistant_guard] Unbanned assistant {assistant_id} in {chat_id}")
@@ -98,43 +113,63 @@ async def _try_unban(chat_id: int, assistant_id: int) -> bool:
         return False
     except FloodWait as e:
         logger.warning(f"[assistant_guard] FloodWait {e.value}s during unban in {chat_id}")
-        await asyncio.sleep(e.value)
+        await asyncio.sleep(min(e.value, 10))
         return False
     except Exception as e:
         logger.warning(f"[assistant_guard] Unban failed in {chat_id}: {e}")
         return False
 
 
-async def _try_join_via_username(userbot, chat_id: int) -> bool:
-    """Try joining via the group's public username."""
+# ─── Join via public username ─────────────────────────────────────────────────
+async def _try_join_via_username(userbot: Client, chat_id: int) -> bool:
     try:
         chat = await app.get_chat(chat_id)
-        if not chat.username:
+        username = getattr(chat, "username", None)
+        if not username:
             return False
-        await userbot.join_chat(chat.username)
-        logger.info(f"[assistant_guard] Assistant joined {chat_id} via username")
+        await userbot.join_chat(username)
+        logger.info(f"[assistant_guard] Assistant joined {chat_id} via @{username}")
         return True
     except UserAlreadyParticipant:
         return True
     except InviteRequestSent:
-        # Group has join requests — approve immediately via main bot
         try:
-            await app.approve_chat_join_request(chat_id, userbot.id)
+            await app.approve_chat_join_request(chat_id, (await userbot.get_me()).id)
             return True
         except Exception:
             return False
     except FloodWait as e:
-        await asyncio.sleep(e.value)
+        await asyncio.sleep(min(e.value, 10))
         return False
     except Exception as e:
         logger.debug(f"[assistant_guard] Username join failed in {chat_id}: {e}")
         return False
 
 
-async def _try_join_via_invite(userbot, chat_id: int) -> bool:
-    """Try joining via a freshly generated invite link (requires invite permission)."""
+# ─── Join via invite link ─────────────────────────────────────────────────────
+async def _try_join_via_invite(userbot: Client, chat_id: int) -> bool:
+    """
+    Tries create_chat_invite_link first (more reliable), falls back to
+    export_chat_invite_link. Both require can_invite_users on the main bot.
+    """
+    link = None
+
+    # Method 1: create a fresh single-use invite link
     try:
-        link = await app.export_chat_invite_link(chat_id)
+        link_obj = await app.create_chat_invite_link(chat_id)
+        link = link_obj.invite_link
+    except Exception:
+        pass
+
+    # Method 2: fall back to the permanent invite link
+    if not link:
+        try:
+            link = await app.export_chat_invite_link(chat_id)
+        except Exception as e:
+            logger.debug(f"[assistant_guard] Could not get invite link for {chat_id}: {e}")
+            return False
+
+    try:
         await asyncio.sleep(1)
         await userbot.join_chat(link)
         logger.info(f"[assistant_guard] Assistant joined {chat_id} via invite link")
@@ -143,32 +178,62 @@ async def _try_join_via_invite(userbot, chat_id: int) -> bool:
         return True
     except InviteRequestSent:
         try:
-            await app.approve_chat_join_request(chat_id, userbot.id)
+            await app.approve_chat_join_request(chat_id, (await userbot.get_me()).id)
             return True
         except Exception:
             return False
     except (InviteHashExpired, InviteHashInvalid):
-        logger.warning(f"[assistant_guard] Invite link invalid for {chat_id}")
+        logger.warning(f"[assistant_guard] Invite link expired/invalid for {chat_id}")
         return False
     except FloodWait as e:
-        await asyncio.sleep(e.value)
+        await asyncio.sleep(min(e.value, 10))
         return False
     except Exception as e:
         logger.debug(f"[assistant_guard] Invite join failed in {chat_id}: {e}")
         return False
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  CORE: ensure assistant is present (unban if needed, then join)
-# ──────────────────────────────────────────────────────────────────────────────
+# ─── Promote assistant to admin (if bot has that right) ──────────────────────
+async def _try_promote_assistant(chat_id: int, assistant_id: int) -> bool:
+    """
+    Promotes the assistant to admin with the permissions needed for voice chats.
+    Only called if the bot itself is an admin with can_manage_chat.
+    """
+    try:
+        await app.promote_chat_member(
+            chat_id,
+            assistant_id,
+            privileges=ChatPrivileges(
+                can_manage_chat=True,
+                can_manage_video_chats=True,
+            ),
+        )
+        logger.info(f"[assistant_guard] Promoted assistant {assistant_id} in {chat_id}")
+        return True
+    except ChatAdminRequired:
+        logger.debug(f"[assistant_guard] Bot cannot promote in {chat_id}")
+        return False
+    except Exception as e:
+        logger.debug(f"[assistant_guard] Promote failed in {chat_id}: {e}")
+        return False
 
+
+# ─── CORE: ensure assistant is present ───────────────────────────────────────
 async def ensure_assistant_in_chat(chat_id: int) -> bool:
     """
     Silently ensure the assistant is a member of the group.
-    Called as a background task — never blocks the play response.
+    Uses a 10-minute in-memory cache to avoid redundant API calls.
 
-    Returns True if the assistant is (or becomes) a member.
+    Status handling:
+      MEMBER / ADMINISTRATOR / OWNER → present, cache and return True
+      RESTRICTED                     → present (limited perms), cache and return True
+      BANNED                         → unban then join
+      None (not participant)         → join via username or invite link
     """
+    # Fast path: recently confirmed present
+    if _is_recently_confirmed(chat_id):
+        return True
+
     try:
         userbot = await get_assistant(chat_id)
     except Exception as e:
@@ -177,108 +242,100 @@ async def ensure_assistant_in_chat(chat_id: int) -> bool:
 
     assistant_id = userbot.id
 
-    # ── Step 1: check current status ──────────────────────────────────────────
+    # ── Step 1: check current membership status ───────────────────────────────
     status = await _get_assistant_status(chat_id, assistant_id)
 
-    if status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
-        # Already in — nothing to do
+    # Already present (including restricted = limited but in chat)
+    if status in (
+        ChatMemberStatus.MEMBER,
+        ChatMemberStatus.ADMINISTRATOR,
+        ChatMemberStatus.OWNER,
+        ChatMemberStatus.RESTRICTED,
+    ):
+        _mark_confirmed(chat_id)
         return True
 
-    # ── Step 2: if banned/restricted, unban first ─────────────────────────────
-    if status in (ChatMemberStatus.BANNED, ChatMemberStatus.RESTRICTED):
-        if not await _bot_can_ban(chat_id):
+    # ── Step 2: banned → unban first ─────────────────────────────────────────
+    if status == ChatMemberStatus.BANNED:
+        _clear_confirmed(chat_id)
+        can_ban = await _bot_has_permission(chat_id, "can_restrict_members")
+        if not can_ban:
             logger.warning(
-                f"[assistant_guard] Assistant is banned in {chat_id} "
-                f"but bot lacks ban rights to unban."
+                f"[assistant_guard] Assistant banned in {chat_id} but bot "
+                f"lacks can_restrict_members — cannot unban."
             )
             return False
-
-        unbanned = await _try_unban(chat_id, assistant_id)
-        if not unbanned:
+        ok = await _try_unban(chat_id, assistant_id)
+        if not ok:
             return False
-
-        # Give Telegram a moment to process the unban before joining
         await asyncio.sleep(2)
 
-    # ── Step 3: join the chat ─────────────────────────────────────────────────
-    # Try username first (no extra permission needed on public groups)
+    # ── Step 3: not in chat (None) or just unbanned → join ───────────────────
+    _clear_confirmed(chat_id)
+
+    # Try public username first (works for public groups, no extra perm needed)
     if await _try_join_via_username(userbot, chat_id):
+        _mark_confirmed(chat_id)
         return True
 
-    # Fallback: invite link (requires can_invite_users on main bot)
-    if await _bot_can_invite(chat_id):
+    # Try invite link (requires can_invite_users on the main bot)
+    can_invite = await _bot_has_permission(chat_id, "can_invite_users")
+    if can_invite:
         if await _try_join_via_invite(userbot, chat_id):
+            _mark_confirmed(chat_id)
             return True
 
     logger.warning(
-        f"[assistant_guard] Could not get assistant into {chat_id}. "
-        f"Bot may need 'Invite Users' or 'Ban Members' admin rights."
+        f"[assistant_guard] Could not join assistant into {chat_id}. "
+        f"Bot needs 'Invite Users' admin right (and 'Ban Members' if assistant was banned)."
     )
     return False
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  PLAY COMMAND INTERCEPTOR
-#  Fires *before* PlayWrapper so the assistant is ready when pytgcalls needs it.
-# ──────────────────────────────────────────────────────────────────────────────
-
+# ─── PLAY COMMAND INTERCEPTOR ─────────────────────────────────────────────────
 PLAY_COMMANDS = [
     "play", "vplay", "cplay", "cvplay",
     "playforce", "vplayforce", "cplayforce", "cvplayforce",
 ]
 
+
 @app.on_message(
     filters.command(PLAY_COMMANDS, prefixes=["/", "!", "%", ".", "@", "#", ""])
     & filters.group,
-    group=-10,          # negative group number = runs BEFORE normal handlers
+    group=-10,
 )
 async def _play_assistant_guard(client: Client, message: Message):
     """
     Intercept every play command in a group and silently ensure the assistant
-    is present. Runs at handler priority -10 so it fires before PlayWrapper.
-    Does NOT stop propagation — the play command continues normally.
+    is present. Runs at priority -10 (before normal handlers).
+    Never blocks the play response — fire-and-forget background task.
     """
-    chat_id = message.chat.id
-
-    # Fire-and-forget: don't await, don't delay the play response
-    asyncio.create_task(ensure_assistant_in_chat(chat_id))
-
-    # Let the message propagate to the real play handler
-    # (do NOT call message.stop_propagation())
+    asyncio.create_task(ensure_assistant_in_chat(message.chat.id))
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  DECORATOR  (optional — for use in PlayWrapper if you prefer explicit hooking)
-# ──────────────────────────────────────────────────────────────────────────────
-
+# ─── OPTIONAL DECORATOR ──────────────────────────────────────────────────────
 def with_assistant_guard(func):
     """
-    Optional decorator you can wrap around any async handler to ensure the
-    assistant is in the chat before the handler runs.
+    Decorator that AWAITS the guard before running the handler.
+    Use this on play handlers if you need the assistant guaranteed present
+    before pytgcalls tries to connect.
 
-    Usage in music.py:
+    Usage:
         @app.on_message(...)
         @PlayWrapper
-        @with_assistant_guard          ← add this
-        async def play_commnd(...):
+        @with_assistant_guard
+        async def play_command(client, message):
             ...
-
-    Unlike the interceptor above (which is fire-and-forget), this decorator
-    AWAITS the guard so the assistant is guaranteed to be present before the
-    stream starts. Use it if you hit race conditions.
     """
     @wraps(func)
     async def wrapper(client, message: Message, *args, **kwargs):
-        chat_id = message.chat.id
-        # Run guard concurrently with the start of the play pipeline
-        guard_task = asyncio.create_task(ensure_assistant_in_chat(chat_id))
+        guard_task = asyncio.create_task(ensure_assistant_in_chat(message.chat.id))
         try:
             result = await func(client, message, *args, **kwargs)
         finally:
-            # Ensure guard task is awaited to surface any exceptions in logs
             try:
                 await guard_task
             except Exception as e:
-                logger.debug(f"[assistant_guard] Background guard error: {e}")
+                logger.debug(f"[assistant_guard] guard task error: {e}")
         return result
     return wrapper
