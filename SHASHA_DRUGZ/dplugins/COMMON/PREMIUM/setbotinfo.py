@@ -16,17 +16,15 @@
 #   /setlogger    -100xxxxxxxxxx → config.LOG_GROUP_ID / LOGGER_ID
 #   /logstatus
 #   /setstartmsg  <text>
-#   /setassistant <session>
+#   /setassistant <session>     → saves + immediately reloads assistant userbot
 #   /setmultiassist <s1> <s2> ...
 #   /setstring    <STRING_SESSION>  → updates STRING_SESSION in DB for this bot
 #   /botinfo
 #   /botsettings
 #   /resetbotset
 #   /setbothelp
-#   /transferowner <username or userid> → change bot ownership via BotFather
-#   /changeowner   <username or userid> → change the deployed owner in DB
-#                                         (ONLY updates owner_id — all custom
-#                                          settings are preserved as-is)
+#   /transferowner <username or userid>
+#   /changeowner   <username or userid>
 #
 # HOW CONFIG UPDATES WORK (no module restarts needed):
 #   1. Command saves value to MongoDB via _update()
@@ -35,25 +33,25 @@
 #   3. config.py's _BotStr objects check the cache on every access
 #   4. All 500+ modules see new value immediately on next use
 #
-# OWNER CHANGE BEHAVIOUR:
-#   • /changeowner updates ONLY the owner_id across deploy_bots,
-#     bot_{id}_settings, BOT_OWNERS dict, and isolation cache.
-#   • NO settings are wiped — start_image, ping_image, update_channel,
-#     support_chat, start_message, assistant_string/multi, gcast,
-#     must_join, logger, string_session all remain exactly as they were.
-#   • Use /resetbotset explicitly if you want a clean slate.
+# ASSISTANT CHANGE BEHAVIOUR:
+#   • /setassistant saves the string session AND calls _reload_assistant()
+#   • _reload_assistant() stops the old assistant userbot client (if any),
+#     starts a new one with the given string session, and re-registers it
+#     in the global assistants dict so get_assistant() returns it.
+#   • No process restart needed.
 #
 # ISOLATION:
 #   Each bot uses collection bot_{bot_id}_settings.
 #   Bot A's changes never affect Bot B.
 # =====================================================================
 import asyncio
+import logging
 from pyrogram import Client, filters
 from pyrogram.handlers import MessageHandler
 from pyrogram.types import Message
 from SHASHA_DRUGZ.core.mongo import raw_mongodb
 from SHASHA_DRUGZ.utils.bot_settings import apply_to_config_and_invalidate
-from config import ADMINS_ID
+from config import ADMINS_ID, API_ID, API_HASH
 
 print("[setbotinfo] MODULE LOADED — isolated per-bot settings")
 
@@ -93,21 +91,18 @@ async def _ensure_registered(client: Client):
             "assistant_mode":   None,
             "assistant_string": None,
             "assistant_multi":  [],
-            "string_session":   None,   # per-bot STRING_SESSION override
+            "string_session":   None,
         })
         await apply_to_config_and_invalidate(bid)
 
 # ── Owner validation ──────────────────────────────────────────────────────────
 async def _validate_owner(client: Client, user_id: int) -> bool:
-    # Allow global admins defined in config.ADMINS_ID
     if user_id in ADMINS_ID:
         return True
     bid = await _bot_id(client)
-    # 1. Check deploy_bots (authoritative source)
     deploy_doc = await raw_mongodb.deploy_bots.find_one({"bot_id": bid})
     if deploy_doc and deploy_doc.get("owner_id") == user_id:
         return True
-    # 2. Fallback: isolated settings doc (kept in sync by /changeowner)
     cfg = await _col(bid).find_one({"_id": "config"})
     if cfg:
         owner = cfg.get("owner_id")
@@ -131,10 +126,62 @@ async def _update(bot_id: int, fields: dict):
     )
     await apply_to_config_and_invalidate(bot_id)
 
+# ── Assistant reload helper ───────────────────────────────────────────────────
+async def _reload_assistant(bot_id: int, string_session: str) -> bool:
+    """
+    Stop the old assistant userbot for this bot (if any) and start a new one
+    using the given string_session. Registers it in the global assistants dict
+    so that get_assistant(chat_id) returns the new client immediately.
+
+    Returns True on success, False on failure.
+
+    This function handles the live reload — no process restart needed after
+    /setassistant or /setmultiassist.
+    """
+    try:
+        # Import the global assistants registry from the music core
+        # (adjust import path if your project uses a different location)
+        try:
+            from SHASHA_DRUGZ.core.userbot import assistants
+        except ImportError:
+            try:
+                from SHASHA_DRUGZ import assistants
+            except ImportError:
+                assistants = None
+
+        if assistants is None:
+            logging.warning("[setbotinfo] Could not import assistants dict — assistant saved to DB only.")
+            return False
+
+        # Stop existing assistant for this bot if present
+        old_client = assistants.get(bot_id)
+        if old_client is not None:
+            try:
+                await old_client.stop()
+                logging.info(f"[setbotinfo] Stopped old assistant for bot {bot_id}")
+            except Exception as e:
+                logging.warning(f"[setbotinfo] Could not stop old assistant for bot {bot_id}: {e}")
+
+        # Start new assistant
+        new_client = Client(
+            name=f"assistant_{bot_id}",
+            api_id=API_ID,
+            api_hash=API_HASH,
+            session_string=string_session,
+            no_updates=True,
+        )
+        await new_client.start()
+        assistants[bot_id] = new_client
+        me = await new_client.get_me()
+        logging.info(f"[setbotinfo] New assistant for bot {bot_id}: @{me.username} ({me.id})")
+        return True
+
+    except Exception as e:
+        logging.error(f"[setbotinfo] _reload_assistant failed for bot {bot_id}: {e}")
+        return False
+
 # ── Clean slate reset (used ONLY by /resetbotset) ─────────────────────────────
 _OWNER_CHANGE_RESET = {
-    # All customisable fields reset to None / defaults.
-    # Used exclusively by /resetbotset — /changeowner no longer calls this.
     "start_message":    None,
     "start_image":      None,
     "ping_image":       None,
@@ -152,10 +199,6 @@ _OWNER_CHANGE_RESET = {
 
 # ── Resolve user from username or user_id string ──────────────────────────────
 async def _resolve_user(client: Client, target: str):
-    """
-    Accepts @username, username (without @), or numeric user_id string.
-    Returns a Pyrogram User object or raises ValueError/RPCError.
-    """
     target = target.strip().lstrip("@")
     try:
         user_id = int(target)
@@ -168,9 +211,6 @@ async def _resolve_user(client: Client, target: str):
 # ═════════════════════════════════════════════════════════════════════════════
 
 # ── /setstartimg <url> ────────────────────────────────────────────────────────
-# Updates: config.START_IMG_URL + ALL image aliases (PLAYLIST_IMG_URL,
-# STATS_IMG_URL, STREAM_IMG_URL, YOUTUBE_IMG_URL, etc.) — all point to
-# the same "start_image" db key so one command updates everything.
 @Client.on_message(filters.command("setstartimg") & filters.private)
 async def set_start_image(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -193,7 +233,6 @@ async def set_start_image(client: Client, message: Message):
     )
 
 # ── /setpingimg <url> ─────────────────────────────────────────────────────────
-# Updates: config.PING_IMG_URL
 @Client.on_message(filters.command("setpingimg") & filters.private)
 async def set_ping_image(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -212,6 +251,8 @@ async def set_ping_image(client: Client, message: Message):
 
 # ── /setupdates @channel ──────────────────────────────────────────────────────
 # Updates: config.SUPPORT_CHANNEL
+# FIX: strip leading @ and store raw username so _BotStr._v() + _url_prefix
+#      builds the correct https://t.me/<username> URL on every access.
 @Client.on_message(filters.command("setupdates") & filters.private)
 async def set_update_channel(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -221,14 +262,26 @@ async def set_update_channel(client: Client, message: Message):
             "**Usage:** `/setupdates @channelusername`\n\n"
             "Updates config.SUPPORT_CHANNEL for this bot."
         )
-    channel = message.command[1].strip().lstrip("@")
+    # Accept both @username and https://t.me/username formats
+    raw = message.command[1].strip()
+    if raw.startswith("https://t.me/"):
+        channel = raw[len("https://t.me/"):]
+    elif raw.startswith("http"):
+        channel = raw  # store full URL as-is
+    else:
+        channel = raw.lstrip("@")
     bid = await _bot_id(client)
     await _ensure_registered(client)
     await _update(bid, {"update_channel": channel})
-    await message.reply_text(f"✅ Update channel set to `@{channel}`")
+    await message.reply_text(
+        f"✅ Update channel set to `@{channel}`\n\n"
+        f"Resolved URL: `https://t.me/{channel}`\n"
+        f"Takes effect immediately — no restart needed."
+    )
 
 # ── /setsupport @group ────────────────────────────────────────────────────────
 # Updates: config.SUPPORT_CHAT
+# FIX: same normalisation as /setupdates above.
 @Client.on_message(filters.command("setsupport") & filters.private)
 async def set_support(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -238,11 +291,21 @@ async def set_support(client: Client, message: Message):
             "**Usage:** `/setsupport @groupusername`\n\n"
             "Updates config.SUPPORT_CHAT for this bot."
         )
-    support = message.command[1].strip().lstrip("@")
+    raw = message.command[1].strip()
+    if raw.startswith("https://t.me/"):
+        support = raw[len("https://t.me/"):]
+    elif raw.startswith("http"):
+        support = raw
+    else:
+        support = raw.lstrip("@")
     bid = await _bot_id(client)
     await _ensure_registered(client)
     await _update(bid, {"support_chat": support})
-    await message.reply_text(f"✅ Support chat set to `@{support}`")
+    await message.reply_text(
+        f"✅ Support chat set to `@{support}`\n\n"
+        f"Resolved URL: `https://t.me/{support}`\n"
+        f"Takes effect immediately — no restart needed."
+    )
 
 # ── /setstartmsg <text> ───────────────────────────────────────────────────────
 @Client.on_message(filters.command("setstartmsg") & filters.private)
@@ -261,7 +324,6 @@ async def set_start_message(client: Client, message: Message):
     await message.reply_text("✅ Start message updated.")
 
 # ── /setmustjoin @channel ─────────────────────────────────────────────────────
-# Updates: config.MUST_JOIN (via _MustJoinStr dynamic resolution)
 @Client.on_message(filters.command("setmustjoin") & filters.private)
 async def set_must_join(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -299,7 +361,6 @@ async def toggle_must_join(client: Client, message: Message):
         return await message.reply_text(
             "✅ Must Join Enabled." if new_status else "❌ Must Join Disabled."
         )
-    # Toggle if no argument
     data = await _col(bid).find_one({"_id": "config"})
     mj = (data or {}).get("must_join") or {}
     if not mj.get("link"):
@@ -313,7 +374,6 @@ async def toggle_must_join(client: Client, message: Message):
     )
 
 # ── /autogcast enable | disable ───────────────────────────────────────────────
-# Updates: config.AUTO_GCAST
 @Client.on_message(filters.command("autogcast") & filters.private)
 async def toggle_auto_gcast(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -332,7 +392,6 @@ async def toggle_auto_gcast(client: Client, message: Message):
     )
 
 # ── /setgcastmsg <message> ────────────────────────────────────────────────────
-# Updates: config.AUTO_GCAST_MSG
 @Client.on_message(filters.command("setgcastmsg") & filters.private)
 async def set_gcast_msg(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -388,7 +447,6 @@ async def toggle_logger(client: Client, message: Message):
     )
 
 # ── /setlogger -100xxxxxxxxxx ─────────────────────────────────────────────────
-# Updates: config.LOG_GROUP_ID and config.LOGGER_ID via _BotInt
 @Client.on_message(filters.command("setlogger") & filters.private)
 async def set_logger(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -432,6 +490,8 @@ async def log_status(client: Client, message: Message):
     )
 
 # ── /setassistant <string_session> ───────────────────────────────────────────
+# FIX: now also calls _reload_assistant() to immediately start a new userbot
+#      client with the given string session, without any restart needed.
 @Client.on_message(filters.command("setassistant") & filters.private)
 async def set_assistant(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -442,14 +502,33 @@ async def set_assistant(client: Client, message: Message):
         )
     bid = await _bot_id(client)
     await _ensure_registered(client)
+    session_str = message.command[1].strip()
+
+    # Step 1: Save to DB and refresh cache
     await _update(bid, {
         "assistant_mode":   "single",
-        "assistant_string": message.command[1],
+        "assistant_string": session_str,
         "assistant_multi":  [],
     })
-    await message.reply_text("✅ Assistant string session updated.")
+
+    # Step 2: Immediately reload the assistant userbot
+    status_msg = await message.reply_text("⏳ Saving and reloading assistant userbot...")
+    reload_ok = await _reload_assistant(bid, session_str)
+
+    if reload_ok:
+        await status_msg.edit_text(
+            "✅ Assistant string session updated and reloaded.\n\n"
+            "The new assistant is now active — no restart needed."
+        )
+    else:
+        await status_msg.edit_text(
+            "✅ Assistant string session saved to database.\n\n"
+            "⚠️ Live reload failed (see logs). The new session will be used "
+            "after the next bot restart, or once the assistant is re-initialized."
+        )
 
 # ── /setmultiassist <str1> <str2> ... ────────────────────────────────────────
+# FIX: also reloads the first session as the primary assistant immediately.
 @Client.on_message(filters.command("setmultiassist") & filters.private)
 async def set_multi_assistant(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -461,16 +540,31 @@ async def set_multi_assistant(client: Client, message: Message):
     bid = await _bot_id(client)
     await _ensure_registered(client)
     sessions = message.command[1:]
+
     await _update(bid, {
         "assistant_mode":   "multi",
         "assistant_string": None,
         "assistant_multi":  sessions,
     })
-    await message.reply_text(f"✅ {len(sessions)} assistant session(s) added.")
+
+    status_msg = await message.reply_text(
+        f"⏳ Saving {len(sessions)} session(s) and reloading assistant..."
+    )
+
+    # Reload using the first session as primary
+    reload_ok = await _reload_assistant(bid, sessions[0])
+    if reload_ok:
+        await status_msg.edit_text(
+            f"✅ {len(sessions)} assistant session(s) saved and primary assistant reloaded.\n\n"
+            "No restart needed."
+        )
+    else:
+        await status_msg.edit_text(
+            f"✅ {len(sessions)} assistant session(s) saved to database.\n\n"
+            "⚠️ Live reload failed. Will take effect after next restart."
+        )
 
 # ── /setstring <STRING_SESSION> ───────────────────────────────────────────────
-# Updates: the STRING_SESSION used by this deployed bot
-# This is stored in the isolated settings doc so it survives restarts.
 @Client.on_message(filters.command("setstring") & filters.private)
 async def set_string_session(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -531,6 +625,8 @@ async def bot_settings_cmd(client: Client, message: Message):
     update_ch = (f"@{data['update_channel']}") if data.get("update_channel") else "Default"
     support   = (f"@{data['support_chat']}")   if data.get("support_chat")   else "Default"
     string_s  = "✅ Custom" if data.get("string_session") else "📌 Default (config.py)"
+    ass_mode  = data.get("assistant_mode") or "Not Set"
+    ass_str   = "✅ Set" if data.get("assistant_string") else ("✅ Multi" if data.get("assistant_multi") else "📌 Default")
     await message.reply_text(
         f"⚙️ **Bot Settings** — `{bid}`\n\n"
         f"🖼 **Images**\n"
@@ -549,34 +645,30 @@ async def bot_settings_cmd(client: Client, message: Message):
         f"  ➤ Status:    {'✅ Enabled' if data.get('logging') else '❌ Disabled'}\n"
         f"  ➤ Log Group: `{data.get('log_channel') or 'Not Set'}`\n\n"
         f"📝 Start Message: {'✅ Custom' if data.get('start_message') else '📌 Not Set'}\n"
-        f"🤝 Assistant Mode: `{data.get('assistant_mode') or 'Not Set'}`\n"
+        f"🤝 Assistant Mode: `{ass_mode}` — {ass_str}\n"
         f"🔑 String Session: {string_s}"
     )
 
 # ── /resetbotset ──────────────────────────────────────────────────────────────
-# Resets all customisable values to None → _BotStr._v() returns
-# hardcoded config.py defaults. owner_id is preserved so the current
-# owner can still use owner-only commands after reset.
 @Client.on_message(filters.command("resetbotset") & filters.private)
 async def reset_bot_info(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
         return await message.reply_text("❌ Access Denied.")
     bid = await _bot_id(client)
-    # Preserve owner_id — reset only customisable settings
     await _update(bid, {
         "start_message":    None,
-        "start_image":      None,   # → START_IMG_URL reverts to config.py default
-        "ping_image":       None,   # → PING_IMG_URL reverts to config.py default
+        "start_image":      None,
+        "ping_image":       None,
         "must_join":        {"link": None, "enabled": False},
         "auto_gcast":       {"enabled": False, "message": None},
-        "update_channel":   None,   # → SUPPORT_CHANNEL reverts to config.py default
-        "support_chat":     None,   # → SUPPORT_CHAT reverts to config.py default
+        "update_channel":   None,
+        "support_chat":     None,
         "logging":          False,
-        "log_channel":      None,   # → LOG_GROUP_ID reverts to config.py default
+        "log_channel":      None,
         "assistant_mode":   None,
         "assistant_string": None,
         "assistant_multi":  [],
-        "string_session":   None,   # → falls back to config.py STRING1
+        "string_session":   None,
     })
     await message.reply_text(
         "♻️ All bot settings reset to default.\n\n"
@@ -585,22 +677,17 @@ async def reset_bot_info(client: Client, message: Message):
     )
 
 # ── /setbothelp ───────────────────────────────────────────────────────────────
-# Sends a rich multi-section help message covering every command with
-# full usage, arguments, examples, and notes.
-# Split into multiple messages so Telegram's 4096-char limit is never hit.
 @Client.on_message(filters.command("setbothelp") & filters.private)
 async def set_bot_help(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
         return await message.reply_text("❌ Access Denied.")
     sections = [
-        # ── HEADER ────────────────────────────────────────────────────────────
         (
             "🤖 **Bot Settings — Full Command Reference**\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "_All commands are owner-only and must be sent in **private chat** with your bot._\n\n"
             "Use the section headers below to jump to the command group you need."
         ),
-        # ── IMAGES ────────────────────────────────────────────────────────────
         (
             "🖼 **IMAGES**\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -620,26 +707,24 @@ async def set_bot_help(client: Client, message: Message):
             "➤ **Example:** `/setpingimg https://files.catbox.moe/xyz789.png`\n"
             "➤ **Reset:** `/resetbotset` — reverts to `config.py` default"
         ),
-        # ── LINKS ─────────────────────────────────────────────────────────────
         (
             "🔗 **LINKS**\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "**`/setupdates @channel`**\n"
             "Sets the update/announcement channel shown in bot menus.\n"
             "Maps to `config.SUPPORT_CHANNEL`.\n"
-            "➤ **Arg:** Telegram channel username (with or without `@`)\n"
+            "➤ **Arg:** Telegram channel username (with or without `@`), or full `https://t.me/` URL\n"
             "➤ **Example:** `/setupdates @MyUpdateChannel`\n"
             "➤ **Effect:** Immediately visible — no restart needed\n"
             "➤ **Reset:** `/resetbotset` — reverts to `config.py` `SUPPORT_CHANNEL`\n\n"
             "**`/setsupport @group`**\n"
             "Sets the support group link shown in bot menus.\n"
             "Maps to `config.SUPPORT_CHAT`.\n"
-            "➤ **Arg:** Telegram group username (with or without `@`)\n"
+            "➤ **Arg:** Telegram group username (with or without `@`), or full `https://t.me/` URL\n"
             "➤ **Example:** `/setsupport @MySupportGroup`\n"
             "➤ **Effect:** Immediately visible — no restart needed\n"
             "➤ **Reset:** `/resetbotset` — reverts to `config.py` `SUPPORT_CHAT`"
         ),
-        # ── MUST JOIN ─────────────────────────────────────────────────────────
         (
             "🚪 **MUST JOIN**\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -655,7 +740,6 @@ async def set_bot_help(client: Client, message: Message):
             "➤ **Note:** You must set a channel with `/setmustjoin` first before enabling\n"
             "➤ **Reset:** `/resetbotset` — disables must-join and clears the channel"
         ),
-        # ── START MESSAGE ─────────────────────────────────────────────────────
         (
             "📝 **START MESSAGE**\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -669,7 +753,6 @@ async def set_bot_help(client: Client, message: Message):
             "  `/setstartmsg 👋 Welcome {mention}! I'm {bot}, ready to serve.`\n"
             "➤ **Reset:** `/resetbotset` — reverts to the module's default start message"
         ),
-        # ── AUTO GCAST ────────────────────────────────────────────────────────
         (
             "📢 **AUTO GCAST (Broadcast)**\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -685,7 +768,6 @@ async def set_bot_help(client: Client, message: Message):
             "➤ **No args needed**\n"
             "➤ **Reset:** `/resetbotset` — disables gcast and clears the message"
         ),
-        # ── LOGGER ────────────────────────────────────────────────────────────
         (
             "📜 **LOGGER**\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -696,14 +778,11 @@ async def set_bot_help(client: Client, message: Message):
             "➤ **Example:** `/setlogger -1001234567890`\n"
             "➤ **Requirement:** Bot must be admin with send-message permission in that group\n"
             "➤ **Note:** Also automatically enables logging\n\n"
-            "**`/logger enable`** — Enables logging (requires logger group to be set first)\n"
-            "**`/logger disable`** — Disables logging (group ID is kept, just paused)\n\n"
-            "**`/logstatus`**\n"
-            "Shows current logger status and the configured log group ID.\n"
-            "➤ **No args needed**\n"
+            "**`/logger enable`** — Enables logging\n"
+            "**`/logger disable`** — Disables logging\n\n"
+            "**`/logstatus`** — Shows current logger status\n"
             "➤ **Reset:** `/resetbotset` — disables logging and clears log group"
         ),
-        # ── ASSISTANT ─────────────────────────────────────────────────────────
         (
             "🤝 **ASSISTANT SESSION**\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -711,15 +790,15 @@ async def set_bot_help(client: Client, message: Message):
             "Sets a single Pyrogram string session as the assistant account.\n"
             "➤ **Arg:** A valid Pyrogram v2 string session\n"
             "➤ **Example:** `/setassistant BQHabc123...`\n"
+            "➤ **Effect:** Saves to DB AND immediately reloads the assistant — no restart needed\n"
             "➤ **Note:** Clears any previously set multi-assistant sessions\n\n"
             "**`/setmultiassist <session1> <session2> ...`**\n"
             "Sets multiple assistant string sessions (space-separated).\n"
             "➤ **Args:** Two or more Pyrogram v2 string sessions\n"
-            "➤ **Example:** `/setmultiassist BQHabc... BQHxyz... BQHmnp...`\n"
-            "➤ **Note:** Clears the single assistant session if one was set\n"
+            "➤ **Example:** `/setmultiassist BQHabc... BQHxyz...`\n"
+            "➤ **Effect:** Saves to DB AND immediately reloads primary assistant\n"
             "➤ **Reset:** `/resetbotset` — clears all assistant sessions"
         ),
-        # ── STRING SESSION ────────────────────────────────────────────────────
         (
             "🔑 **STRING SESSION**\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -731,75 +810,32 @@ async def set_bot_help(client: Client, message: Message):
             "➤ **Important:** Restart the bot process after setting for the new session to load\n"
             "➤ **Reset:** `/resetbotset` — clears the custom session, falls back to `config.py STRING1`"
         ),
-        # ── OWNERSHIP ─────────────────────────────────────────────────────────
         (
             "👑 **OWNERSHIP**\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "**`/transferowner <@username or user_id>`**\n"
             "Automates a BotFather conversation to transfer **Telegram-side** bot ownership.\n"
-            "➤ **Arg:** Target user's `@username` or numeric `user_id`\n"
-            "➤ **Example:** `/transferowner @NewOwnerUsername`\n"
-            "➤ **Flow:**\n"
-            "  1. Bot auto-navigates BotFather (`/mybots` → select bot → Transfer Ownership)\n"
-            "  2. BotFather sends the new owner's username\n"
-            "  3. BotFather will ask for your **Telegram password** — you must confirm manually\n"
-            "  4. After confirming, run `/changeowner` to update the DB\n"
-            "➤ **Requirements:** New owner must have started the bot in the last 6 months\n\n"
+            "➤ You will need to confirm with your **Telegram password** in @BotFather\n"
+            "➤ After confirming, run `/changeowner` to update the DB\n\n"
             "**`/changeowner <@username or user_id>`**\n"
             "Updates the deployed owner in the database.\n"
-            "➤ **Arg:** Target user's `@username` or numeric `user_id`\n"
-            "➤ **Example:** `/changeowner @NewOwnerUsername`\n"
-            "➤ **What it does:**\n"
-            "  • Updates `deploy_bots` collection → renewals/expiry go to new owner\n"
-            "  • Updates `bot_{id}_settings` collection → new owner can use owner commands\n"
-            "  • Updates in-memory `BOT_OWNERS` and isolation cache instantly\n"
-            "  • **All custom settings are preserved** (images, links, string session,\n"
-            "    gcast, assistant, etc. all remain exactly as they were)\n"
-            "  • Use `/resetbotset` explicitly if you want a clean slate\n"
-            "➤ **Note:** Both old and new owners are notified by DM (best-effort)"
+            "➤ Updates deploy_bots, bot settings, BOT_OWNERS, isolation cache\n"
+            "➤ **All custom settings are preserved** — nothing is reset\n"
+            "➤ Use `/resetbotset` explicitly if you want a clean slate"
         ),
-        # ── INFO & RESET ──────────────────────────────────────────────────────
         (
-            "ℹ️ **INFO & RESET**\n"
+            "i️ **INFO & RESET**\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "**`/botinfo`**\n"
-            "Shows a summary of this bot's current identity and key settings.\n"
-            "➤ Displays: Bot ID, username, owner ID, update channel, support chat,\n"
-            "  start image status, string session status, logging status\n\n"
-            "**`/botsettings`**\n"
-            "Shows ALL current settings for this bot in one detailed view.\n"
-            "➤ Displays: Images, links, must-join, auto-gcast, logger, start message,\n"
-            "  assistant mode, string session\n\n"
-            "**`/resetbotset`**\n"
-            "Resets **all customisable settings** back to `config.py` hardcoded defaults.\n"
-            "➤ Sets to `None`: start image, ping image, update channel, support chat,\n"
-            "  start message, must-join, auto-gcast, logger, assistant, string session\n"
-            "➤ **Preserves:** `owner_id` — you keep owner access after reset\n"
-            "➤ **Effect:** Immediate — no restart needed\n\n"
-            "**`/setbothelp`**\n"
-            "Shows this full command reference.\n"
-            "➤ **No args needed**\n"
-            "➤ Safe to run anytime — read-only, makes no changes"
+            "**`/botinfo`** — Key settings summary\n"
+            "**`/botsettings`** — Full settings view\n"
+            "**`/resetbotset`** — Reset all settings to config.py defaults (preserves owner_id)\n"
+            "**`/setbothelp`** — This help message"
         ),
     ]
-    # Send each section as a separate message so Telegram's 4096-char cap is never hit
     for section in sections:
         await message.reply_text(section)
 
 # ── /transferowner <username or userid> ───────────────────────────────────────
-# Automates a BotFather conversation to transfer Telegram-side bot ownership.
-#
-# FLOW:
-#   1. Resolve target user → get their @username (BotFather needs username)
-#   2. Send /mybots to BotFather → select this bot → Transfer Ownership
-#   3. BotFather will ask for the new owner's @username → send it
-#   4. BotFather requires your Telegram password to confirm — we cannot
-#      automate that step (Telegram security), so we guide the owner to
-#      finish manually in the BotFather chat.
-#   5. After completing, owner should run /changeowner to update the DB.
-#
-# NOTE: BotFather's exact message flow may change. The automation handles
-# the username selection step; the password step must be done manually.
 @Client.on_message(filters.command("transferowner") & filters.private)
 async def transfer_owner(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -812,7 +848,6 @@ async def transfer_owner(client: Client, message: Message):
             "You will need to confirm with your **Telegram password** in @BotFather."
         )
     target_raw = message.command[1].strip()
-    # ── Resolve target user ───────────────────────────────────────────────────
     try:
         target_user = await _resolve_user(client, target_raw)
     except Exception as e:
@@ -833,7 +868,6 @@ async def transfer_owner(client: Client, message: Message):
         f"Bot: @{bot_username} → New Owner: @{target_username}\n\n"
         "Please wait..."
     )
-    # ── BotFather listener helper ─────────────────────────────────────────────
     BOTFATHER_ID = 93372553
     async def _wait_botfather(timeout: int = 20) -> str:
         loop = asyncio.get_event_loop()
@@ -856,7 +890,6 @@ async def transfer_owner(client: Client, message: Message):
                 client.remove_handler(*h_ref)
             except Exception:
                 pass
-    # ── Automated BotFather conversation ──────────────────────────────────────
     try:
         await client.send_message(BOTFATHER_ID, "/mybots")
         reply1 = await _wait_botfather(20)  # noqa: F841
@@ -868,11 +901,7 @@ async def transfer_owner(client: Client, message: Message):
         if any(w in reply3_lower for w in ("sorry", "can't", "cannot", "error", "fail")):
             await status_msg.edit_text(
                 f"❌ BotFather rejected the transfer request.\n\n"
-                f"BotFather said:\n`{reply3}`\n\n"
-                f"**Common reasons:**\n"
-                f"• @{target_username} hasn't started @{bot_username}\n"
-                f"• The new owner's account is less than 90 days old\n"
-                f"• The new owner hasn't interacted with the bot in the last 6 months"
+                f"BotFather said:\n`{reply3}`"
             )
             return
         await client.send_message(BOTFATHER_ID, f"@{target_username}")
@@ -885,33 +914,24 @@ async def transfer_owner(client: Client, message: Message):
                 f"to confirm the ownership transfer of @{bot_username} to @{target_username}.\n\n"
                 f"BotFather said:\n`{reply4}`\n\n"
                 f"✅ After confirming, run:\n"
-                f"`/changeowner @{target_username}`\n"
-                f"to update the deployed owner in the database so renewals go to the new owner."
+                f"`/changeowner @{target_username}`"
             )
         elif any(w in reply4_lower for w in ("sorry", "can't", "cannot", "error", "fail", "invalid")):
             await status_msg.edit_text(
                 f"❌ BotFather rejected @{target_username} as new owner.\n\n"
-                f"BotFather said:\n`{reply4}`\n\n"
-                f"Make sure @{target_username} has started @{bot_username} at least once."
+                f"BotFather said:\n`{reply4}`"
             )
         else:
             await status_msg.edit_text(
-                f"ℹ️ BotFather responded:\n`{reply4}`\n\n"
+                f"i️ BotFather responded:\n`{reply4}`\n\n"
                 f"If the transfer completed, run:\n"
-                f"`/changeowner @{target_username}`\n"
-                f"to update the deployed owner in the database."
+                f"`/changeowner @{target_username}`"
             )
     except asyncio.TimeoutError:
         await status_msg.edit_text(
             "❌ **BotFather did not respond in time.**\n\n"
-            "Please complete the ownership transfer manually:\n"
-            f"1. Open @BotFather\n"
-            f"2. Send `/mybots` → select @{bot_username}\n"
-            f"3. Tap **Transfer Ownership** → enter `@{target_username}`\n"
-            f"4. Confirm with your **Telegram password**\n\n"
-            f"After completing, run:\n"
-            f"`/changeowner @{target_username}`\n"
-            f"to update the deployed owner in the database."
+            f"Please complete the ownership transfer manually via @BotFather,\n"
+            f"then run: `/changeowner @{target_username}`"
         )
     except Exception as e:
         await status_msg.edit_text(
@@ -921,21 +941,6 @@ async def transfer_owner(client: Client, message: Message):
         )
 
 # ── /changeowner <username or userid> ────────────────────────────────────────
-# Updates ONLY the deployed owner (owner_id) across ALL relevant stores.
-# All custom settings are fully preserved — nothing is wiped.
-#
-# What gets updated:
-#   1. raw_mongodb.deploy_bots   → owner_id + owner_name
-#   2. bot_{bid}_settings col    → owner_id ONLY (all other fields untouched)
-#   3. deploy.py BOT_OWNERS dict (in-memory)
-#   4. isolation _owner_cache    (in-memory)
-#
-# Settings preserved on owner change (nothing is reset):
-#   start_image, ping_image, update_channel, support_chat,
-#   start_message, assistant_string/multi, gcast, must_join,
-#   logger, string_session — all remain exactly as they were.
-#
-# Use /resetbotset explicitly if a clean slate is desired.
 @Client.on_message(filters.command("changeowner") & filters.private)
 async def change_owner(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -944,12 +949,9 @@ async def change_owner(client: Client, message: Message):
         return await message.reply_text(
             "**Usage:** `/changeowner <@username or user_id>`\n\n"
             "Updates the deployed owner in the database.\n"
-            "✅ All custom bot settings (images, string session, links, etc.) "
-            "are **fully preserved** — nothing is reset.\n"
-            "✅ All future renewal & expiry notifications will go to the new owner."
+            "✅ All custom bot settings are **fully preserved** — nothing is reset."
         )
     target_raw = message.command[1].strip()
-    # ── Resolve target user ───────────────────────────────────────────────────
     try:
         target_user = await _resolve_user(client, target_raw)
     except Exception as e:
@@ -960,12 +962,10 @@ async def change_owner(client: Client, message: Message):
     new_owner_name = target_user.first_name or str(new_owner_id)
     bid = await _bot_id(client)
     await _ensure_registered(client)
-    # ── Fetch current deploy_bots record ─────────────────────────────────────
     deploy_doc = await raw_mongodb.deploy_bots.find_one({"bot_id": bid})
     if not deploy_doc:
         return await message.reply_text(
             "❌ No deploy record found for this bot.\n"
-            "This bot may not have been deployed via the deploy system.\n\n"
             "The isolated settings owner_id will still be updated."
         )
     old_owner_id = deploy_doc.get("owner_id")
@@ -975,7 +975,6 @@ async def change_owner(client: Client, message: Message):
         )
     me = client.me or await client.get_me()
     bot_username = me.username or str(bid)
-    # ── 1. Update deploy_bots collection (renewal/expiry msgs use this) ───────
     await raw_mongodb.deploy_bots.update_one(
         {"bot_id": bid},
         {"$set": {
@@ -983,43 +982,32 @@ async def change_owner(client: Client, message: Message):
             "owner_name": new_owner_name,
         }}
     )
-    # ── 2. Update isolated bot settings: ONLY owner_id, nothing else touched ──
     await _update(bid, {"owner_id": new_owner_id})
-    # ── 3. Update in-memory BOT_OWNERS in deploy.py ───────────────────────────
     try:
         from SHASHA_DRUGZ.plugins.PREMIUM.deploy import BOT_OWNERS
         BOT_OWNERS[bid] = new_owner_id
     except (ImportError, Exception):
         pass
-    # ── 4. Update isolation owner cache ──────────────────────────────────────
     try:
         from SHASHA_DRUGZ.core.isolation import _owner_cache as _iso_cache
         _iso_cache[bid] = new_owner_id
     except (ImportError, Exception):
         pass
-    # ── Notify old owner (best-effort, bot may be blocked) ────────────────────
     if old_owner_id and old_owner_id != new_owner_id:
         try:
             await client.send_message(
                 old_owner_id,
                 f"⚠️ **Ownership of @{bot_username} has been transferred.**\n\n"
                 f"New Owner: [{new_owner_name}](tg://user?id={new_owner_id}) (`{new_owner_id}`)\n\n"
-                f"You no longer have owner access to this bot.\n"
-                f"All future renewal & expiry notifications will go to the new owner.\n\n"
-                f"📌 All custom settings (images, string session, links, etc.) "
-                f"have been preserved for the new owner."
+                f"You no longer have owner access to this bot."
             )
         except Exception:
             pass
-    # ── Notify new owner (best-effort) ────────────────────────────────────────
     try:
         await client.send_message(
             new_owner_id,
             f"🎉 **You are now the owner of @{bot_username}!**\n\n"
-            f"All renewal & expiry notifications will now be sent to you.\n"
             f"Use `/botsettings` to view all current bot settings.\n"
-            f"Use `/botinfo` to see full bot information.\n\n"
-            f"📌 All existing settings are preserved and ready to use.\n"
             f"Use `/resetbotset` if you want to start with a clean slate."
         )
     except Exception:
@@ -1030,7 +1018,6 @@ async def change_owner(client: Client, message: Message):
         f"➤ Old Owner: `{old_owner_id or 'Unknown'}`\n"
         f"➤ New Owner: [{new_owner_name}](tg://user?id={new_owner_id}) (`{new_owner_id}`)\n\n"
         f"✅ **All custom settings preserved** — nothing was reset.\n\n"
-        f"📌 **All future renewal & expiry notifications will go to the new owner.**\n\n"
         f"Updated:\n"
         f"• `deploy_bots` collection ✅\n"
         f"• `bot_{bid}_settings` collection ✅ (owner_id only)\n"
