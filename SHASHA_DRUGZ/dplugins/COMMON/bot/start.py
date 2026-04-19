@@ -5,18 +5,19 @@
 #      from per-bot DB settings (via bot_settings utility).
 #   2. config.START_IMG_URL is the fallback only when no custom image is set.
 #   3. Custom start_message supports {mention} and {bot} placeholders.
-#   4. app.mention → client.me.mention in captions (so deployed bots show
-#      their own @username, not the main bot's).
-#   5. Logging calls still go through app (intentional — logs to main bot).
+#   4. client.me.mention used in captions so deployed bots show their own name.
+#   5. Assistant join logic in start_gp and welcome now:
+#      - Checks member status BEFORE attempting to join (avoids false errors).
+#      - RESTRICTED / MEMBER / ADMIN → already in, skip join silently.
+#      - Only shows "make me admin" message when the bot genuinely lacks rights.
 # ─────────────────────────────────────────────────────────────────────────────
 import time
 from time import time
 import asyncio
-from pyrogram.errors import UserAlreadyParticipant
+from pyrogram.errors import UserAlreadyParticipant, UserNotParticipant, PeerIdInvalid
 import random
-from pyrogram.errors import UserNotParticipant
 from pyrogram import Client, filters
-from pyrogram.enums import ChatType
+from pyrogram.enums import ChatType, ChatMemberStatus
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from youtubesearchpython.__future__ import VideosSearch
 import config
@@ -39,7 +40,7 @@ from config import BANNED_USERS, SHASHA_PICS
 from strings import get_string
 from SHASHA_DRUGZ.utils.database import get_assistant
 
-# ── NEW: per-bot settings reader ─────────────────────────────────────────────
+# ── per-bot settings reader ──────────────────────────────────────────────────
 from SHASHA_DRUGZ.utils.bot_settings import get_start_image, get_start_message
 
 # ── Spam guard ───────────────────────────────────────────────────────────────
@@ -50,7 +51,6 @@ SPAM_WINDOW_SECONDS = 5
 
 
 def _is_spam(user_id: int) -> bool:
-    """Returns True if this user is spamming. Updates counters."""
     current_time = time()
     last = user_last_message_time.get(user_id, 0)
     if current_time - last < SPAM_WINDOW_SECONDS:
@@ -63,12 +63,100 @@ def _is_spam(user_id: int) -> bool:
         return False
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  ASSISTANT JOIN HELPER
+#  Shared by start_gp and welcome.
+#  Returns (joined: bool, msg_text: str)
+#  msg_text is shown to the group — empty string means "show nothing".
+# ─────────────────────────────────────────────────────────────────────────────
+async def _ensure_assistant_joined(client: Client, chat_id: int) -> tuple[bool, str]:
+    """
+    Check if the assistant is already in the chat.
+    If yes  → return (True, "").
+    If no   → try to invite, return (True/False, status_message).
+
+    Status meanings:
+      MEMBER / ADMINISTRATOR / OWNER → already in, do nothing.
+      RESTRICTED                     → already in (limited perms), do nothing.
+      BANNED                         → we cannot join without unban; skip silently.
+      None                           → not in chat, try to join.
+    """
+    try:
+        userbot = await get_assistant(chat_id)
+    except Exception:
+        return False, ""
+
+    assistant_id = userbot.id
+
+    # ── Check current membership ──────────────────────────────────────────────
+    try:
+        member = await app.get_chat_member(chat_id, assistant_id)
+        status = member.status
+    except UserNotParticipant:
+        status = None
+    except (PeerIdInvalid, Exception):
+        status = None
+
+    # Already present — no action needed, no message shown
+    if status in (
+        ChatMemberStatus.MEMBER,
+        ChatMemberStatus.ADMINISTRATOR,
+        ChatMemberStatus.OWNER,
+        ChatMemberStatus.RESTRICTED,
+    ):
+        return True, ""
+
+    # Banned — can't join without unban; don't show error (guard handles it)
+    if status == ChatMemberStatus.BANNED:
+        return False, ""
+
+    # Not in chat → try to join
+    # 1. Public username (no bot permission needed)
+    try:
+        chat = await app.get_chat(chat_id)
+        if chat.username:
+            await userbot.join_chat(chat.username)
+            return True, (
+                f"**My [Assistant](tg://openmessage?user_id={assistant_id}) "
+                f"joined the group. You can now play songs.**"
+            )
+    except UserAlreadyParticipant:
+        return True, ""
+    except Exception:
+        pass
+
+    # 2. Invite link (needs can_invite_users on bot)
+    try:
+        # Try create_chat_invite_link first — more reliable
+        try:
+            link_obj = await app.create_chat_invite_link(chat_id)
+            invite_link = link_obj.invite_link
+        except Exception:
+            invite_link = await app.export_chat_invite_link(chat_id)
+
+        await asyncio.sleep(1)
+        await userbot.join_chat(invite_link)
+        return True, (
+            f"**My [Assistant](tg://openmessage?user_id={assistant_id}) "
+            f"joined via invite link. You can now play songs.**"
+        )
+    except UserAlreadyParticipant:
+        return True, ""
+    except Exception:
+        pass
+
+    # All methods failed — bot genuinely lacks invite permission
+    return False, (
+        f"**Please make me admin with 'Invite Users' permission so I can invite my "
+        f"[Assistant](tg://openmessage?user_id={assistant_id}) to this group.**"
+    )
+
+
 # ── /start private ────────────────────────────────────────────────────────────
 @Client.on_message(filters.command(["start"]) & filters.private & ~BANNED_USERS)
 @LanguageStart
 async def start_pm(client: Client, message: Message, _):
     user_id = message.from_user.id
-
     if _is_spam(user_id):
         hu = await message.reply_text(
             f"**{message.from_user.mention} ᴘʟᴇᴀsᴇ ᴅᴏɴᴛ ᴅᴏ sᴘᴀᴍ, "
@@ -80,7 +168,7 @@ async def start_pm(client: Client, message: Message, _):
 
     await add_served_user(message.from_user.id)
 
-    # ── /start with deep-link parameter ──────────────────────────────────────
+    # Deep-link parameters
     if len(message.text.split()) > 1:
         name = message.text.split(None, 1)[1]
 
@@ -122,7 +210,7 @@ async def start_pm(client: Client, message: Message, _):
                 published = result["publishedTime"]
             searched_text = _["start_6"].format(
                 title, duration, views, published, channellink, channel,
-                client.me.mention  # ← deployed bot's own mention
+                client.me.mention,
             )
             key = InlineKeyboardMarkup([
                 [
@@ -152,10 +240,8 @@ async def start_pm(client: Client, message: Message, _):
                 )
             return
 
-    # ── Normal /start ─────────────────────────────────────────────────────────
+    # Normal /start
     bot_id = client.me.id
-
-    # Read per-bot customised image & message from DB
     start_img = await get_start_image(bot_id)
     custom_msg = await get_start_message(bot_id)
 
@@ -191,7 +277,6 @@ async def start_pm(client: Client, message: Message, _):
 @LanguageStart
 async def start_gp(client: Client, message: Message, _):
     user_id = message.from_user.id
-
     if _is_spam(user_id):
         hu = await message.reply_text(
             f"**{message.from_user.mention} ᴘʟᴇᴀsᴇ ᴅᴏɴᴛ ᴅᴏ sᴘᴀᴍ, "
@@ -204,7 +289,6 @@ async def start_gp(client: Client, message: Message, _):
     bot_id = client.me.id
     start_img = await get_start_image(bot_id)
     custom_msg = await get_start_message(bot_id)
-
     out = await dstart_panel(client, _, message.chat.id)
     BOT_UP = await bot_up_time()
 
@@ -224,42 +308,15 @@ async def start_gp(client: Client, message: Message, _):
     )
     await add_served_chat(message.chat.id)
 
-    # Assistant availability check
+    # ── Assistant check (silent — no false error messages) ────────────────────
     try:
         userbot = await get_assistant(message.chat.id)
-        msg = await message.reply_text(
-            f"**ᴄʜᴇᴄᴋɪɴɢ [ᴀssɪsᴛᴀɴᴛ](tg://openmessage?user_id={userbot.id}) "
-            f"ᴀᴠᴀɪʟᴀʙɪʟɪᴛʏ ɪɴ ᴛʜɪs ɢʀᴏᴜᴘ...**"
-        )
-        is_userbot = await app.get_chat_member(message.chat.id, userbot.id)
-        if is_userbot:
-            await msg.edit_text(
-                f"**[ᴀssɪsᴛᴀɴᴛ](tg://openmessage?user_id={userbot.id}) "
-                f"ᴀʟsᴏ ᴀᴄᴛɪᴠᴇ ɪɴ ᴛʜɪs ɢʀᴏᴜᴘ, ʏᴏᴜ ᴄᴀɴ ᴘʟᴀʏ sᴏɴɢs.**"
-            )
+        joined, join_msg = await _ensure_assistant_joined(client, message.chat.id)
+        if join_msg:
+            await message.reply_text(join_msg)
+        # Silently pass if already joined or couldn't join
     except Exception:
-        try:
-            await msg.edit_text(
-                f"**[ᴀssɪsᴛᴀɴᴛ](tg://openmessage?user_id={userbot.id}) "
-                f"ɪs ɴᴏᴛ ᴀᴠᴀɪʟᴀʙʟᴇ ɪɴ ᴛʜɪs ɢʀᴏᴜᴘ, ɪɴᴠɪᴛɪɴɢ...**"
-            )
-            invitelink = await app.export_chat_invite_link(message.chat.id)
-            await asyncio.sleep(1)
-            await userbot.join_chat(invitelink)
-            await msg.edit_text(
-                f"**[ᴀssɪsᴛᴀɴᴛ](tg://openmessage?user_id={userbot.id}) "
-                f"ɪs ɴᴏᴡ ᴀᴄᴛɪᴠᴇ ɪɴ ᴛʜɪs ɢʀᴏᴜᴘ, ʏᴏᴜ ᴄᴀɴ ᴘʟᴀʏ sᴏɴɢs.**"
-            )
-        except Exception:
-            try:
-                await msg.edit_text(
-                    f"**ᴜɴᴀʙʟᴇ ᴛᴏ ɪɴᴠɪᴛᴇ ᴍʏ "
-                    f"[ᴀssɪsᴛᴀɴᴛ](tg://openmessage?user_id={userbot.id}). "
-                    f"ᴘʟᴇᴀsᴇ ᴍᴀᴋᴇ ᴍᴇ ᴀᴅᴍɪɴ ᴡɪᴛʜ ɪɴᴠɪᴛᴇ ᴜsᴇʀ ᴘᴏᴡᴇʀ ᴛᴏ ɪɴᴠɪᴛᴇ ᴍʏ "
-                    f"[ᴀssɪsᴛᴀɴᴛ](tg://openmessage?user_id={userbot.id}).**"
-                )
-            except Exception:
-                pass
+        pass
 
 
 # ── New member welcome ────────────────────────────────────────────────────────
@@ -273,10 +330,10 @@ async def welcome(client: Client, message: Message):
             if await is_banned_user(member.id):
                 try:
                     await message.chat.ban_member(member.id)
-                except Exception as e:
-                    print(e)
+                except Exception:
+                    pass
 
-            if member.id == client.me.id:  # ← use client.me.id, not hardcoded app.id
+            if member.id == client.me.id:
                 if message.chat.type != ChatType.SUPERGROUP:
                     await message.reply_text(_["start_4"])
                     await client.leave_chat(message.chat.id)
@@ -294,44 +351,23 @@ async def welcome(client: Client, message: Message):
                     await client.leave_chat(message.chat.id)
                     return
 
-                # Read per-bot start image
                 start_img = await get_start_image(client.me.id)
-
                 out = await dstart_panel(client, _, message.chat.id)
-                chid = message.chat.id
 
+                # ── Assistant join — check first, act only if needed ──────────
                 try:
-                    userbot = await get_assistant(message.chat.id)
-                    if message.chat.username:
-                        await userbot.join_chat(f"{message.chat.username}")
-                        await message.reply_text(
-                            f"**My [Assistant](tg://openmessage?user_id={userbot.id}) "
-                            f"also entered the chat using the group's username.**"
-                        )
-                    else:
-                        invitelink = await client.export_chat_invite_link(chid)
-                        await asyncio.sleep(1)
-                        messages = await message.reply_text(
-                            f"**Joining my [Assistant](tg://openmessage?user_id={userbot.id}) "
-                            f"using the invite link...**"
-                        )
-                        await userbot.join_chat(invitelink)
-                        await messages.delete()
-                        await message.reply_text(
-                            f"**My [Assistant](tg://openmessage?user_id={userbot.id}) "
-                            f"also entered the chat using the invite link.**"
-                        )
-                except Exception as e:
-                    await message.reply_text(
-                        f"**Please make me admin to invite my "
-                        f"[Assistant](tg://openmessage?user_id={userbot.id}) in this chat.**"
-                    )
+                    joined, join_msg = await _ensure_assistant_joined(client, message.chat.id)
+                    if join_msg:
+                        await message.reply_text(join_msg)
+                    # If joined silently or already in — no message shown
+                except Exception:
+                    pass
 
                 await message.reply_photo(
                     random.choice(SHASHA_PICS),
                     caption=_["start_3"].format(
                         message.from_user.first_name,
-                        client.me.mention,  # ← deployed bot's mention
+                        client.me.mention,
                         message.chat.title,
                         client.me.mention,
                     ),
