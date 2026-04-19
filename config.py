@@ -7,7 +7,7 @@ load_dotenv()
 
 API_ID = int(getenv("API_ID","8045459"))
 API_HASH = getenv("API_HASH", "e6d1f09120e17a4372fe022dde88511b")
-BOT_TOKEN = getenv("BOT_TOKEN", "8614041526:AAFSIqozqorTv_PhC2IxAOnGgVvQkjv-1QQ")
+BOT_TOKEN = getenv("BOT_TOKEN", "8600801556:AAEP3R8xWh74cngRQV7vZFvHiNd0LtFpDsY")
 
 OWNER_USERNAME = getenv("OWNER_USERNAME","GhosttBatt")
 BOT_USERNAME = getenv("BOT_USERNAME", "LubMeBot")
@@ -67,7 +67,7 @@ CLEANMODE_DELETE_MINS = int(getenv("CLEANMODE_MINS", "5"))
 
 HEROKU_APP_NAME = getenv("HEROKU_APP_NAME")
 HEROKU_API_KEY = getenv("HEROKU_API_KEY", "HRKU-fc1b7aea-b37a-4015-9877-8c3967ee97bc")
-UPSTREAM_REPO = getenv("UPSTREAM_REPO", "https://github.com/reborndigitals/SHASHA_DRUG")
+UPSTREAM_REPO = getenv("UPSTREAM_REPO", "https://github.com/reborndigitals/SHASHATEST")
 UPSTREAM_BRANCH = getenv("UPSTREAM_BRANCH", "master")
 GIT_TOKEN = getenv("GIT_TOKEN", None)
 
