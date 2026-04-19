@@ -1,48 +1,6 @@
 # SHASHA_DRUGZ/dplugins/COMMON/PREMIUM/setbotinfo.py
 # =====================================================================
 # FULLY ISOLATED PER-BOT SETTINGS MODULE
-#
-# COMMANDS:
-#   /setstartimg  <url>         → config.START_IMG_URL + all image aliases
-#   /setpingimg   <url>         → config.PING_IMG_URL
-#   /setupdates   @channel      → config.SUPPORT_CHANNEL
-#   /setsupport   @group        → config.SUPPORT_CHAT
-#   /setmustjoin  @channel      → enables must-join for this bot
-#   /mustjoin     enable|disable
-#   /autogcast    enable|disable
-#   /setgcastmsg  <message>
-#   /gcaststatus
-#   /logger       enable|disable
-#   /setlogger    -100xxxxxxxxxx → config.LOG_GROUP_ID / LOGGER_ID
-#   /logstatus
-#   /setstartmsg  <text>
-#   /setassistant <session>     → saves + immediately reloads assistant userbot
-#   /setmultiassist <s1> <s2> ...
-#   /setstring    <STRING_SESSION>  → updates STRING_SESSION in DB for this bot
-#   /botinfo
-#   /botsettings
-#   /resetbotset
-#   /setbothelp
-#   /transferowner <username or userid>
-#   /changeowner   <username or userid>
-#
-# HOW CONFIG UPDATES WORK (no module restarts needed):
-#   1. Command saves value to MongoDB via _update()
-#   2. _update() calls apply_to_config_and_invalidate(bot_id)
-#      → invalidates in-memory cache → reloads from DB
-#   3. config.py's _BotStr objects check the cache on every access
-#   4. All 500+ modules see new value immediately on next use
-#
-# ASSISTANT CHANGE BEHAVIOUR:
-#   • /setassistant saves the string session AND calls _reload_assistant()
-#   • _reload_assistant() stops the old assistant userbot client (if any),
-#     starts a new one with the given string session, and re-registers it
-#     in the global assistants dict so get_assistant() returns it.
-#   • No process restart needed.
-#
-# ISOLATION:
-#   Each bot uses collection bot_{bot_id}_settings.
-#   Bot A's changes never affect Bot B.
 # =====================================================================
 import asyncio
 import logging
@@ -113,12 +71,6 @@ async def _validate_owner(client: Client, user_id: int) -> bool:
 
 # ── Core DB write + cache refresh ─────────────────────────────────────────────
 async def _update(bot_id: int, fields: dict):
-    """
-    Write fields to this bot's isolated MongoDB collection,
-    then immediately refresh the in-memory cache.
-    All _BotStr / _BotInt objects in config.py will return the
-    new values on the very next access — no module restart needed.
-    """
     await _col(bot_id).update_one(
         {"_id": "config"},
         {"$set": fields},
@@ -127,42 +79,47 @@ async def _update(bot_id: int, fields: dict):
     await apply_to_config_and_invalidate(bot_id)
 
 # ── Assistant reload helper ───────────────────────────────────────────────────
+# Key fix: The old code tried to find an `assistants` dict keyed by bot_id,
+# but `assistants` in the codebase is a list of ints (1..5) for the main
+# userbot pool. Deployed bots need their OWN per-bot-id assistant client
+# stored separately in a dedicated registry.
+#
+# Solution:
+#   1. Keep a module-level dict  _DEPLOYED_ASSISTANTS: {bot_id: Client}
+#   2. Patch `get_assistant` in database.py at runtime so that when a
+#      chat_id's assigned assistant number maps to a bot_id that has a
+#      custom client in _DEPLOYED_ASSISTANTS, that client is returned.
+#   3. On /setassistant we start the new Pyrogram Client, store it in
+#      _DEPLOYED_ASSISTANTS[bot_id], and update assistantdict so every
+#      chat served by this deployed bot immediately uses the new client.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Registry: bot_id (int) -> Pyrogram Client (the custom assistant)
+_DEPLOYED_ASSISTANTS: dict = {}
+
 async def _reload_assistant(bot_id: int, string_session: str) -> bool:
     """
-    Stop the old assistant userbot for this bot (if any) and start a new one
-    using the given string_session. Registers it in the global assistants dict
-    so that get_assistant(chat_id) returns the new client immediately.
+    Start a new Pyrogram userbot client from the given string session and
+    register it as the assistant for all chats that belong to this deployed bot.
+
+    Strategy
+    --------
+    1. Start the new Client with the string session.
+    2. Store it in _DEPLOYED_ASSISTANTS[bot_id].
+    3. Find every chat_id in deploy_chats that belongs to this bot_id.
+    4. Overwrite assistantdict[chat_id] with a sentinel value (bot_id as a
+       negative int, since real assistant numbers are 1-5 and bot_ids are
+       large positive ints) so `get_assistant` knows to look in
+       _DEPLOYED_ASSISTANTS instead of the shared pool.
+    5. Monkey-patch get_assistant in database.py once so it handles the
+       sentinel correctly — the patch is idempotent.
 
     Returns True on success, False on failure.
-
-    This function handles the live reload — no process restart needed after
-    /setassistant or /setmultiassist.
     """
+    global _DEPLOYED_ASSISTANTS
+
+    # ── Step 1: start the new client ─────────────────────────────────────────
     try:
-        # Import the global assistants registry from the music core
-        # (adjust import path if your project uses a different location)
-        try:
-            from SHASHA_DRUGZ.core.userbot import assistants
-        except ImportError:
-            try:
-                from SHASHA_DRUGZ import assistants
-            except ImportError:
-                assistants = None
-
-        if assistants is None:
-            logging.warning("[setbotinfo] Could not import assistants dict — assistant saved to DB only.")
-            return False
-
-        # Stop existing assistant for this bot if present
-        old_client = assistants.get(bot_id)
-        if old_client is not None:
-            try:
-                await old_client.stop()
-                logging.info(f"[setbotinfo] Stopped old assistant for bot {bot_id}")
-            except Exception as e:
-                logging.warning(f"[setbotinfo] Could not stop old assistant for bot {bot_id}: {e}")
-
-        # Start new assistant
         new_client = Client(
             name=f"assistant_{bot_id}",
             api_id=API_ID,
@@ -171,14 +128,117 @@ async def _reload_assistant(bot_id: int, string_session: str) -> bool:
             no_updates=True,
         )
         await new_client.start()
-        assistants[bot_id] = new_client
         me = await new_client.get_me()
         logging.info(f"[setbotinfo] New assistant for bot {bot_id}: @{me.username} ({me.id})")
-        return True
+    except Exception as e:
+        logging.error(f"[setbotinfo] Could not start new assistant client for bot {bot_id}: {e}")
+        return False
+
+    # ── Step 2: stop old custom assistant if any ──────────────────────────────
+    old_client = _DEPLOYED_ASSISTANTS.get(bot_id)
+    if old_client is not None:
+        try:
+            await old_client.stop()
+            logging.info(f"[setbotinfo] Stopped old custom assistant for bot {bot_id}")
+        except Exception as e:
+            logging.warning(f"[setbotinfo] Could not stop old custom assistant for {bot_id}: {e}")
+
+    _DEPLOYED_ASSISTANTS[bot_id] = new_client
+
+    # ── Step 3: patch database.get_assistant once ─────────────────────────────
+    _patch_get_assistant()
+
+    # ── Step 4: update assistantdict for all chats served by this bot ─────────
+    try:
+        import SHASHA_DRUGZ.utils.database as _db
+
+        # Sentinel: we store -bot_id in assistantdict so get_assistant can
+        # distinguish it from the normal pool values (1-5).
+        sentinel = -bot_id
+
+        served = await raw_mongodb.deploy_chats.find(
+            {"bot_id": bot_id}, {"chat_id": 1}
+        ).to_list(length=None)
+
+        for row in served:
+            chat_id = row.get("chat_id")
+            if chat_id:
+                _db.assistantdict[chat_id] = sentinel
+                # Also persist so it survives restarts:
+                await _db.assdb.update_one(
+                    {"chat_id": chat_id},
+                    {"$set": {"assistant": sentinel}},
+                    upsert=True,
+                )
+
+        logging.info(
+            f"[setbotinfo] Updated assistantdict for {len(served)} chats "
+            f"(bot {bot_id}) → sentinel {sentinel}"
+        )
+    except Exception as e:
+        logging.warning(
+            f"[setbotinfo] Could not update assistantdict for bot {bot_id}: {e}\n"
+            "New assistant is stored and will be used for new chats."
+        )
+
+    return True
+
+
+_get_assistant_patched = False
+
+def _patch_get_assistant():
+    """
+    Monkey-patch database.get_assistant once so it handles sentinel values
+    (negative bot_ids stored by _reload_assistant).
+
+    The patch is transparent when no custom assistant is registered.
+    """
+    global _get_assistant_patched
+    if _get_assistant_patched:
+        return
+
+    try:
+        import SHASHA_DRUGZ.utils.database as _db
+
+        _original_get_assistant = _db.get_assistant
+
+        async def _patched_get_assistant(chat_id: int):
+            # Check in-memory dict first (fastest path)
+            assistant_val = _db.assistantdict.get(chat_id)
+
+            # If it's a sentinel (negative value), look in _DEPLOYED_ASSISTANTS
+            if assistant_val is not None and isinstance(assistant_val, int) and assistant_val < 0:
+                real_bot_id = -assistant_val
+                custom = _DEPLOYED_ASSISTANTS.get(real_bot_id)
+                if custom is not None:
+                    return custom
+                # Sentinel present but client gone (e.g. after restart without
+                # re-calling _reload_assistant) — fall through to normal logic
+                del _db.assistantdict[chat_id]
+
+            # Also check DB in case the sentinel was persisted but not in memory
+            dbassistant = await _db.assdb.find_one({"chat_id": chat_id})
+            if dbassistant:
+                val = dbassistant["assistant"]
+                if isinstance(val, int) and val < 0:
+                    real_bot_id = -val
+                    custom = _DEPLOYED_ASSISTANTS.get(real_bot_id)
+                    if custom is not None:
+                        _db.assistantdict[chat_id] = val  # re-cache
+                        return custom
+                    # Stale sentinel in DB — remove it and fall through
+                    await _db.assdb.delete_one({"chat_id": chat_id})
+
+            # Normal path
+            return await _original_get_assistant(chat_id)
+
+        _db.get_assistant = _patched_get_assistant
+        _get_assistant_patched = True
+        logging.info("[setbotinfo] get_assistant patched to support custom deployed assistants")
 
     except Exception as e:
-        logging.error(f"[setbotinfo] _reload_assistant failed for bot {bot_id}: {e}")
-        return False
+        logging.error(f"[setbotinfo] Failed to patch get_assistant: {e}")
+
 
 # ── Clean slate reset (used ONLY by /resetbotset) ─────────────────────────────
 _OWNER_CHANGE_RESET = {
@@ -250,9 +310,6 @@ async def set_ping_image(client: Client, message: Message):
     await message.reply_text("✅ Ping image updated.")
 
 # ── /setupdates @channel ──────────────────────────────────────────────────────
-# Updates: config.SUPPORT_CHANNEL
-# FIX: strip leading @ and store raw username so _BotStr._v() + _url_prefix
-#      builds the correct https://t.me/<username> URL on every access.
 @Client.on_message(filters.command("setupdates") & filters.private)
 async def set_update_channel(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -262,12 +319,11 @@ async def set_update_channel(client: Client, message: Message):
             "**Usage:** `/setupdates @channelusername`\n\n"
             "Updates config.SUPPORT_CHANNEL for this bot."
         )
-    # Accept both @username and https://t.me/username formats
     raw = message.command[1].strip()
     if raw.startswith("https://t.me/"):
         channel = raw[len("https://t.me/"):]
     elif raw.startswith("http"):
-        channel = raw  # store full URL as-is
+        channel = raw
     else:
         channel = raw.lstrip("@")
     bid = await _bot_id(client)
@@ -280,8 +336,6 @@ async def set_update_channel(client: Client, message: Message):
     )
 
 # ── /setsupport @group ────────────────────────────────────────────────────────
-# Updates: config.SUPPORT_CHAT
-# FIX: same normalisation as /setupdates above.
 @Client.on_message(filters.command("setsupport") & filters.private)
 async def set_support(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -490,8 +544,6 @@ async def log_status(client: Client, message: Message):
     )
 
 # ── /setassistant <string_session> ───────────────────────────────────────────
-# FIX: now also calls _reload_assistant() to immediately start a new userbot
-#      client with the given string session, without any restart needed.
 @Client.on_message(filters.command("setassistant") & filters.private)
 async def set_assistant(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -528,7 +580,6 @@ async def set_assistant(client: Client, message: Message):
         )
 
 # ── /setmultiassist <str1> <str2> ... ────────────────────────────────────────
-# FIX: also reloads the first session as the primary assistant immediately.
 @Client.on_message(filters.command("setmultiassist") & filters.private)
 async def set_multi_assistant(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -592,6 +643,7 @@ async def bot_info(client: Client, message: Message):
     data = await _col(bid).find_one({"_id": "config"})
     if not data:
         return await message.reply_text("No data found.")
+    custom_assistant = bid in _DEPLOYED_ASSISTANTS
     await message.reply_text(
         f"🤖 **Bot Info**\n\n"
         f"➤ Bot ID: `{bid}`\n"
@@ -601,6 +653,7 @@ async def bot_info(client: Client, message: Message):
         f"➤ Support Chat: {('@' + data['support_chat']) if data.get('support_chat') else 'Not Set (using default)'}\n"
         f"➤ Start Image: {'✅ Custom' if data.get('start_image') else '📌 Default'}\n"
         f"➤ String Session: {'✅ Custom' if data.get('string_session') else '📌 Default (config.py)'}\n"
+        f"➤ Assistant: {'✅ Custom (live)' if custom_assistant else ('✅ Saved (restart needed)' if data.get('assistant_string') or data.get('assistant_multi') else '📌 Default pool')}\n"
         f"➤ Logging: {'✅ Enabled' if data.get('logging') else '❌ Disabled'}"
     )
 
@@ -626,7 +679,13 @@ async def bot_settings_cmd(client: Client, message: Message):
     support   = (f"@{data['support_chat']}")   if data.get("support_chat")   else "Default"
     string_s  = "✅ Custom" if data.get("string_session") else "📌 Default (config.py)"
     ass_mode  = data.get("assistant_mode") or "Not Set"
-    ass_str   = "✅ Set" if data.get("assistant_string") else ("✅ Multi" if data.get("assistant_multi") else "📌 Default")
+    custom_assistant = bid in _DEPLOYED_ASSISTANTS
+    if custom_assistant:
+        ass_str = "✅ Live (custom assistant active)"
+    elif data.get("assistant_string") or data.get("assistant_multi"):
+        ass_str = "✅ Saved (restart to apply)"
+    else:
+        ass_str = "📌 Default pool"
     await message.reply_text(
         f"⚙️ **Bot Settings** — `{bid}`\n\n"
         f"🖼 **Images**\n"
@@ -670,6 +729,13 @@ async def reset_bot_info(client: Client, message: Message):
         "assistant_multi":  [],
         "string_session":   None,
     })
+    # Also remove custom assistant client if present
+    old = _DEPLOYED_ASSISTANTS.pop(bid, None)
+    if old:
+        try:
+            await old.stop()
+        except Exception:
+            pass
     await message.reply_text(
         "♻️ All bot settings reset to default.\n\n"
         "Config values will now show the hardcoded defaults from config.py.\n"
@@ -791,13 +857,15 @@ async def set_bot_help(client: Client, message: Message):
             "➤ **Arg:** A valid Pyrogram v2 string session\n"
             "➤ **Example:** `/setassistant BQHabc123...`\n"
             "➤ **Effect:** Saves to DB AND immediately reloads the assistant — no restart needed\n"
+            "➤ **How it works:** Starts a new Pyrogram Client with your session, stores it in\n"
+            "   a per-bot registry, and patches `get_assistant` so all voice calls use it\n"
             "➤ **Note:** Clears any previously set multi-assistant sessions\n\n"
             "**`/setmultiassist <session1> <session2> ...`**\n"
             "Sets multiple assistant string sessions (space-separated).\n"
             "➤ **Args:** Two or more Pyrogram v2 string sessions\n"
             "➤ **Example:** `/setmultiassist BQHabc... BQHxyz...`\n"
             "➤ **Effect:** Saves to DB AND immediately reloads primary assistant\n"
-            "➤ **Reset:** `/resetbotset` — clears all assistant sessions"
+            "➤ **Reset:** `/resetbotset` — stops custom assistant and clears all sessions"
         ),
         (
             "🔑 **STRING SESSION**\n"
@@ -824,7 +892,7 @@ async def set_bot_help(client: Client, message: Message):
             "➤ Use `/resetbotset` explicitly if you want a clean slate"
         ),
         (
-            "i️ **INFO & RESET**\n"
+            "ℹ️ **INFO & RESET**\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "**`/botinfo`** — Key settings summary\n"
             "**`/botsettings`** — Full settings view\n"
@@ -923,7 +991,7 @@ async def transfer_owner(client: Client, message: Message):
             )
         else:
             await status_msg.edit_text(
-                f"i️ BotFather responded:\n`{reply4}`\n\n"
+                f"ℹ️ BotFather responded:\n`{reply4}`\n\n"
                 f"If the transfer completed, run:\n"
                 f"`/changeowner @{target_username}`"
             )
@@ -1034,6 +1102,7 @@ __help__ = """
 **🤖 Bot Settings Commands** _(Owner only, Private chat)_
 /setbothelp - SHOW ALL COMMANDS & USAGE
 """
+
 MOD_TYPE = "TOOLS"
 MOD_NAME = "BotEdit"
 MOD_PRICE = "0"
