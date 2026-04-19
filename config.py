@@ -24,10 +24,10 @@ MONGO_URL = getenv("MONGO_URL","mongodb+srv://zewdatabase:ijoXgdmQ0NCyg9DO@zewga
 REACTION_ENABLED = getenv("REACTION_ENABLED","False")
 DURATION_LIMIT_MIN = int(getenv("DURATION_LIMIT", 17000))
 
-LOGGER_ID = int(getenv("LOGGER_ID", "-1001735663878"))
-LOG_GROUP_ID = int(getenv("LOG_GROUP_ID", "-1001735663878"))
-LOG_CHANNEL = int(getenv("LOG_CHANNEL", "-1003142547877"))
-DEPLOY_LOGGER = int(getenv("DEPLOY_LOGGER", "-1003204443820"))
+LOGGER_ID = int(getenv("LOGGER_ID", "-1003782201434"))
+LOG_GROUP_ID = int(getenv("LOG_GROUP_ID", "-1003782201434"))
+LOG_CHANNEL = int(getenv("LOG_CHANNEL", "-1003782201434"))
+DEPLOY_LOGGER = int(getenv("DEPLOY_LOGGER", "-1003782201434"))
 UPI_ID = os.getenv("UPI_ID", "GhosttBatt@jio")
 DEFAULT_QR_PATH = os.getenv("QR_PATH", "SHASHA_DRUGZ/assets/shasha/GhosttBatt.jpg")
 
