@@ -108,3 +108,34 @@ async def get_assistant_config(bot_id: int) -> dict:
         "string": d.get("assistant_string"),
         "multi":  d.get("assistant_multi") or [],
     }
+
+async def get_assistant_session(bot_id: int) -> Optional[str]:
+    """
+    Returns the assistant string session stored for this bot via /setassistant.
+    Returns None if not set (falls back to config.py STRING1).
+    Call this from get_assistant() in database.py to support per-bot assistants.
+    """
+    d = await get_bot_settings(bot_id)
+    mode = d.get("assistant_mode")
+    if mode == "single":
+        return d.get("assistant_string") or None
+    # multi-assistant: return first string in the list
+    if mode == "multi":
+        multi = d.get("assistant_multi") or []
+        return multi[0] if multi else None
+    return None
+
+async def get_all_assistant_sessions(bot_id: int) -> list:
+    """
+    Returns all assistant string sessions for this bot.
+    Used when assistant_mode == 'multi'.
+    Returns [] if not set.
+    """
+    d = await get_bot_settings(bot_id)
+    mode = d.get("assistant_mode")
+    if mode == "multi":
+        return d.get("assistant_multi") or []
+    if mode == "single":
+        s = d.get("assistant_string")
+        return [s] if s else []
+    return []
