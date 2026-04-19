@@ -1,16 +1,4 @@
 # SHASHA_DRUGZ/dplugins/COMMON/bot/start.py
-#
-# CHANGES vs original:
-#   1. start_pm / start_gp / welcome now read start_image & start_message
-#      from per-bot DB settings (via bot_settings utility).
-#   2. config.START_IMG_URL is the fallback only when no custom image is set.
-#   3. Custom start_message supports {mention} and {bot} placeholders.
-#   4. client.me.mention used in captions so deployed bots show their own name.
-#   5. Assistant join logic in start_gp and welcome now:
-#      - Checks member status BEFORE attempting to join (avoids false errors).
-#      - RESTRICTED / MEMBER / ADMIN → already in, skip join silently.
-#      - Only shows "make me admin" message when the bot genuinely lacks rights.
-# ─────────────────────────────────────────────────────────────────────────────
 import time
 from time import time
 import asyncio
@@ -39,8 +27,6 @@ from SHASHA_DRUGZ.utils.inline import first_page, dprivate_panel, dstart_panel
 from config import BANNED_USERS, SHASHA_PICS
 from strings import get_string
 from SHASHA_DRUGZ.utils.database import get_assistant
-
-# ── per-bot settings reader ──────────────────────────────────────────────────
 from SHASHA_DRUGZ.utils.bot_settings import get_start_image, get_start_message
 
 # ── Spam guard ───────────────────────────────────────────────────────────────
@@ -65,21 +51,23 @@ def _is_spam(user_id: int) -> bool:
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  ASSISTANT JOIN HELPER
-#  Shared by start_gp and welcome.
-#  Returns (joined: bool, msg_text: str)
-#  msg_text is shown to the group — empty string means "show nothing".
+#
+#  THE ROOT FIX:
+#  All get_chat_member / create_chat_invite_link / export_chat_invite_link
+#  calls now use `client` (the deployed bot with admin rights in the group),
+#  NOT `app` (the main bot which has no rights in the group).
+#
+#  The old code used `app` everywhere, so permission checks always returned
+#  False even though the deployed bot had full admin rights, causing the
+#  false "make me admin" message every single time.
 # ─────────────────────────────────────────────────────────────────────────────
 async def _ensure_assistant_joined(client: Client, chat_id: int) -> tuple[bool, str]:
     """
-    Check if the assistant is already in the chat.
-    If yes  → return (True, "").
-    If no   → try to invite, return (True/False, status_message).
+    Ensure the assistant userbot is a member of the group.
+    Uses `client` (the deployed bot) for all Telegram API calls.
 
-    Status meanings:
-      MEMBER / ADMINISTRATOR / OWNER → already in, do nothing.
-      RESTRICTED                     → already in (limited perms), do nothing.
-      BANNED                         → we cannot join without unban; skip silently.
-      None                           → not in chat, try to join.
+    Returns (success: bool, message_for_group: str).
+    Empty string = no message needed (silent success or silent skip).
     """
     try:
         userbot = await get_assistant(chat_id)
@@ -88,64 +76,71 @@ async def _ensure_assistant_joined(client: Client, chat_id: int) -> tuple[bool, 
 
     assistant_id = userbot.id
 
-    # ── Check current membership ──────────────────────────────────────────────
+    # ── Check current membership using the DEPLOYED BOT (client), not app ────
+    status = None
     try:
-        member = await app.get_chat_member(chat_id, assistant_id)
+        member = await client.get_chat_member(chat_id, assistant_id)
         status = member.status
     except UserNotParticipant:
         status = None
-    except (PeerIdInvalid, Exception):
-        status = None
+    except Exception:
+        # last resort: try app
+        try:
+            member = await app.get_chat_member(chat_id, assistant_id)
+            status = member.status
+        except UserNotParticipant:
+            status = None
+        except Exception:
+            status = None
 
-    # Already present — no action needed, no message shown
+    # Any "in the chat" status → nothing to do
     if status in (
         ChatMemberStatus.MEMBER,
         ChatMemberStatus.ADMINISTRATOR,
         ChatMemberStatus.OWNER,
-        ChatMemberStatus.RESTRICTED,
+        ChatMemberStatus.RESTRICTED,  # in chat, just limited — do NOT try to rejoin
     ):
         return True, ""
 
-    # Banned — can't join without unban; don't show error (guard handles it)
+    # Banned → assistant_guard.py handles this, skip here
     if status == ChatMemberStatus.BANNED:
         return False, ""
 
-    # Not in chat → try to join
-    # 1. Public username (no bot permission needed)
+    # ── Not in chat → try to join ─────────────────────────────────────────────
+
+    # Method A: join via public @username (no extra permission needed)
     try:
-        chat = await app.get_chat(chat_id)
-        if chat.username:
+        chat = await client.get_chat(chat_id)
+        if getattr(chat, "username", None):
             await userbot.join_chat(chat.username)
-            return True, (
-                f"**My [Assistant](tg://openmessage?user_id={assistant_id}) "
-                f"joined the group. You can now play songs.**"
-            )
+            return True, ""
     except UserAlreadyParticipant:
         return True, ""
     except Exception:
         pass
 
-    # 2. Invite link (needs can_invite_users on bot)
+    # Method B: generate invite link using CLIENT (deployed bot has admin rights)
+    invite_link = None
     try:
-        # Try create_chat_invite_link first — more reliable
-        try:
-            link_obj = await app.create_chat_invite_link(chat_id)
-            invite_link = link_obj.invite_link
-        except Exception:
-            invite_link = await app.export_chat_invite_link(chat_id)
-
-        await asyncio.sleep(1)
-        await userbot.join_chat(invite_link)
-        return True, (
-            f"**My [Assistant](tg://openmessage?user_id={assistant_id}) "
-            f"joined via invite link. You can now play songs.**"
-        )
-    except UserAlreadyParticipant:
-        return True, ""
+        link_obj = await client.create_chat_invite_link(chat_id)
+        invite_link = link_obj.invite_link
     except Exception:
-        pass
+        try:
+            invite_link = await client.export_chat_invite_link(chat_id)
+        except Exception:
+            pass
 
-    # All methods failed — bot genuinely lacks invite permission
+    if invite_link:
+        try:
+            await asyncio.sleep(1)
+            await userbot.join_chat(invite_link)
+            return True, ""
+        except UserAlreadyParticipant:
+            return True, ""
+        except Exception:
+            pass
+
+    # Genuinely failed — only show the error message now
     return False, (
         f"**Please make me admin with 'Invite Users' permission so I can invite my "
         f"[Assistant](tg://openmessage?user_id={assistant_id}) to this group.**"
@@ -168,7 +163,6 @@ async def start_pm(client: Client, message: Message, _):
 
     await add_served_user(message.from_user.id)
 
-    # Deep-link parameters
     if len(message.text.split()) > 1:
         name = message.text.split(None, 1)[1]
 
@@ -308,13 +302,11 @@ async def start_gp(client: Client, message: Message, _):
     )
     await add_served_chat(message.chat.id)
 
-    # ── Assistant check (silent — no false error messages) ────────────────────
+    # Assistant check — fully silent, uses client not app
     try:
-        userbot = await get_assistant(message.chat.id)
         joined, join_msg = await _ensure_assistant_joined(client, message.chat.id)
         if join_msg:
             await message.reply_text(join_msg)
-        # Silently pass if already joined or couldn't join
     except Exception:
         pass
 
@@ -354,12 +346,11 @@ async def welcome(client: Client, message: Message):
                 start_img = await get_start_image(client.me.id)
                 out = await dstart_panel(client, _, message.chat.id)
 
-                # ── Assistant join — check first, act only if needed ──────────
+                # Assistant join — uses client for all API calls, not app
                 try:
                     joined, join_msg = await _ensure_assistant_joined(client, message.chat.id)
                     if join_msg:
                         await message.reply_text(join_msg)
-                    # If joined silently or already in — no message shown
                 except Exception:
                     pass
 
