@@ -38,17 +38,9 @@ from SHASHA_DRUGZ.mongo.deploydb import (
     is_deploy_owner, cleanup_expired_bot
 )
 from SHASHA_DRUGZ.utils.invoice import generate_invoice
-
 os.makedirs("deploy_sessions", exist_ok=True)
-
 # ─── DEPLOY_LOGGER resolver ───────────────────────────────────────────────────
-# Resolves DEPLOY_LOGGER to a numeric int chat ID at startup.
-# Set DEPLOY_LOGGER in config as either:
-#   • An integer like -1001234567890  (preferred)
-#   • A string username like "@mychannel"
-# The bot MUST be an admin in that channel/group.
 _RESOLVED_DEPLOY_LOGGER: Optional[int] = None
-
 async def _resolve_deploy_logger():
     global _RESOLVED_DEPLOY_LOGGER
     if isinstance(DEPLOY_LOGGER, int):
@@ -101,7 +93,6 @@ BOT_OWNERS: Dict[int, int] = {}
 # ─── Constants ────────────────────────────────────────────────────────────────
 MODULES_PATH = "SHASHA_DRUGZ/dplugins"
 COMMON_PATH  = "COMMON"
-
 AUTO_BOT_TYPES = {
     "REACTION":   {"path": "REACTION", "price": 100,  "display": "ʀᴇᴀᴄᴛɪᴏɴ ʙᴏᴛ"},
     "CHAT":       {"path": "CHAT",     "price": 250,  "display": "ᴄʜᴀᴛ ʙᴏᴛ"},
@@ -111,7 +102,6 @@ AUTO_BOT_TYPES = {
     "PRO-BOTS":   {"path": "PRO-BOTS", "price": 899,  "display": "ᴘʀᴏ ʙᴏᴛs"},
     "GAME":       {"path": "GAMES",    "price": 1999, "display": "ɢᴀᴍᴇ ʙᴏᴛ"},
 }
-
 AUTO_COMBOS = {
     "CHAT+REACTION":              {"bots": ["CHAT","REACTION"],               "price": 299,  "display": "ᴄʜᴀᴛ+ʀᴇᴀᴄᴛɪᴏɴ"},
     "MUSIC+MENTION":              {"bots": ["MUSIC","MENTION"],               "price": 549,  "display": "ᴍᴜsɪᴄ+ᴍᴇɴᴛɪᴏɴ"},
@@ -253,11 +243,6 @@ async def _safe_edit(msg, text: str, reply_markup=None, **kwargs):
         logging.warning(f"[deploy] edit failed: {e}")
 
 async def _edit_approval_msg(msg, text: str, reply_markup=None):
-    """
-    Edit the admin approval message (which may be a photo OR a plain text
-    message depending on whether a screenshot was attached).
-    Always attaches the reply_markup regardless of message type.
-    """
     if msg.photo or msg.document or msg.video or msg.audio or msg.voice:
         try:
             await msg.edit_caption(text, reply_markup=reply_markup)
@@ -538,14 +523,12 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
     user_id = cq.from_user.id
     data    = cq.data
     session = await get_deploy_session(user_id)
-
     if data == "deploy_cancel":
         await clear_deploy_session(user_id)
         try: await cq.message.delete()
         except Exception: pass
         await client.send_message(user_id, "<blockquote>✅ ᴅᴇᴘʟᴏʏᴍᴇɴᴛ ᴄᴀɴᴄᴇʟʟᴇᴅ.</blockquote>")
         await cq.answer(); return
-
     if data == "deploy_mode_auto":
         await save_deploy_session(user_id, {"mode": "auto", "step": "auto_main", "selected_bundles": []})
         await _safe_edit(cq.message,
@@ -553,7 +536,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
             "<blockquote>sᴇʟᴇᴄᴛ ᴛʜᴇ ʙᴏᴛ ᴛʏᴘᴇs ʏᴏᴜ ᴡᴀɴᴛ:</blockquote>",
             reply_markup=auto_main_kb([]))
         await cq.answer(); return
-
     if data == "deploy_mode_manual":
         await save_deploy_session(user_id, {"mode": "manual", "step": "select_type", "enabled_modules": []})
         await _safe_edit(cq.message,
@@ -561,7 +543,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
             "<blockquote>sᴇʟᴇᴄᴛ ᴍᴏᴅᴜʟᴇ ᴛʏᴘᴇ:</blockquote>",
             reply_markup=type_selection_kb())
         await cq.answer(); return
-
     if data.startswith("auto_toggle_"):
         bot_name = data.split("_", 2)[2]
         selected = session.get("selected_bundles", [])
@@ -571,7 +552,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
         try: await cq.message.edit_reply_markup(reply_markup=auto_main_kb(selected))
         except MessageNotModified: pass
         await cq.answer(); return
-
     if data == "auto_show_combos":
         selected = session.get("selected_bundles", [])
         await save_deploy_session(user_id, {"step": "auto_combo"})
@@ -579,7 +559,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
             "<blockquote>**🎲 ᴄᴏᴍʙᴏ sᴇʟᴇᴄᴛɪᴏɴ**</blockquote>",
             reply_markup=auto_combo_kb([b for b in selected if b in AUTO_COMBOS]))
         await cq.answer(); return
-
     if data == "auto_back_to_main":
         selected = session.get("selected_bundles", [])
         await save_deploy_session(user_id, {"step": "auto_main"})
@@ -587,7 +566,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
             "<blockquote>**🤖 ᴀᴜᴛᴏ ᴅᴇᴘʟᴏʏ**</blockquote>",
             reply_markup=auto_main_kb(selected))
         await cq.answer(); return
-
     if data.startswith("auto_combo_toggle_"):
         combo_name = data.split("_", 3)[3]
         selected   = session.get("selected_bundles", [])
@@ -598,7 +576,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
                 reply_markup=auto_combo_kb([b for b in selected if b in AUTO_COMBOS]))
         except MessageNotModified: pass
         await cq.answer(); return
-
     if data == "auto_go_payment":
         selected = session.get("selected_bundles", [])
         if not selected:
@@ -715,7 +692,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
             "<blockquote>**sᴇʟᴇᴄᴛ ᴘᴀʏᴍᴇɴᴛ ᴍᴇᴛʜᴏᴅ:**</blockquote>",
             reply_markup=payment_method_kb())
         await cq.answer(); return
-
     if data == "deploy_pay_upi":
         await save_deploy_session(user_id, {"payment_method": "upi"})
         caption = (f"<blockquote>ᴘᴀʏ ᴛᴏ ᴜᴘɪ: `{UPI_ID}`</blockquote>\n"
@@ -728,7 +704,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
         try: await cq.message.delete()
         except Exception: pass
         await cq.answer(); return
-
     if data == "deploy_pay_qr":
         await save_deploy_session(user_id, {"payment_method": "qr"})
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ ɪ ʜᴀᴠᴇ ᴘᴀɪᴅ", callback_data="deploy_have_paid")]])
@@ -743,7 +718,6 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
         try: await cq.message.delete()
         except Exception: pass
         await cq.answer(); return
-
     if data == "deploy_have_paid":
         await save_deploy_session(user_id, {"step": "waiting_screenshot"})
         await cq.message.reply_text(
@@ -751,27 +725,21 @@ async def deploy_callbacks(client: Client, cq: CallbackQuery):
         try: await cq.message.delete()
         except Exception: pass
         await cq.answer(); return
-
     if data.startswith("num_"):
         await handle_numeric_keypad(client, cq, user_id, session); return
-
     # admin_ catch-all LAST — approve/reject/refund only
     if data.startswith("admin_"):
         await handle_admin_callback(client, cq, user_id); return
-
     if data.startswith("renew_"):
         await handle_renew_cb(client, cq, user_id, int(data.split("_")[1])); return
-
     if data.startswith("update_modules_"):
         await handle_update_modules(client, cq, user_id, int(data.split("_")[2])); return
-
     await cq.answer()
 
 # ─── Numeric keypad ────────────────────────────────────────────────────────────
 async def handle_numeric_keypad(client, cq: CallbackQuery, user_id: int, session: dict):
     action      = cq.data.split("_", 1)[1]
     temp_amount = session.get("temp_amount", "")
-
     if action.isdigit():
         temp_amount += action
     elif action == "dot":
@@ -834,7 +802,6 @@ async def handle_numeric_keypad(client, cq: CallbackQuery, user_id: int, session
             f"💰 ₹{amount} | 💳 {pm.upper()} | 📦 {mode.upper()}\n"
             f"🤖 `{pd['token']}`</blockquote>"
         )
-        # ── FIX: use _log() instead of direct send to DEPLOY_LOGGER ─────────
         if session.get("screenshot_file_id"):
             await _log(client, caption,
                        photo=session["screenshot_file_id"],
@@ -843,7 +810,6 @@ async def handle_numeric_keypad(client, cq: CallbackQuery, user_id: int, session
             await _log(client, caption, reply_markup=admin_review_kb(pid))
         await _safe_edit(cq.message, "✅ ᴘᴀʏᴍᴇɴᴛ ʀᴇǫᴜᴇsᴛ sᴇɴᴛ. ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...")
         await save_deploy_session(user_id, {"temp_amount": ""}); return
-
     await save_deploy_session(user_id, {"temp_amount": temp_amount})
     await _safe_edit(cq.message,
         f"<blockquote>**ᴇɴᴛᴇʀ ᴀᴍᴏᴜɴᴛ ᴘᴀɪᴅ (₹):**</blockquote>\n\n`{temp_amount or '0'}`",
@@ -876,14 +842,12 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
     payment    = await get_pending_payment(payment_id)
     if not payment:
         await cq.answer("ᴘᴀʏᴍᴇɴᴛ ɴᴏᴛ ғᴏᴜɴᴅ.", show_alert=True); return
-
     if action == "approve":
         await cq.answer("Processing...", show_alert=False)
         token      = payment["token"]
         is_update  = payment.get("is_update", False)
         is_renewal = payment.get("is_renewal", False)
         mode       = payment.get("type", "manual")
-
         # RENEWAL — only extend expiry, NEVER re-deploy
         if is_renewal:
             bot_id  = payment["bot_id"]
@@ -926,7 +890,6 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             await delete_pending_payment(payment_id)
             await clear_deploy_session(payment["user_id"])
             return
-
         # Validate token (update + fresh deploy)
         try:
             resp = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=5)
@@ -938,7 +901,6 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             await cq.answer("ɪɴᴠᴀʟɪᴅ ᴛᴏᴋᴇɴ.", show_alert=True)
             await _send_to_user(client, payment["user_id"], "❌ ɪɴᴠᴀʟɪᴅ ʙᴏᴛ ᴛᴏᴋᴇɴ.")
             await delete_pending_payment(payment_id); return
-
         if is_update:
             bot_id  = payment["bot_id"]
             old_bot = await get_deployed_bot_by_id(bot_id)
@@ -974,6 +936,8 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             BOT_ALLOWED_PLUGINS[bot_id] = set(new_plugins)
             BOT_OWNERS[bot_id]          = old_bot["owner_id"]
             _iso_cache[bot_id]          = old_bot["owner_id"]
+            # ── FIX 1: Restore custom assistant after module update (redeploy) ──
+            await _restore_custom_assistant(bot_id)
             await _send_to_user(client, payment["user_id"],
                 f"<blockquote>✅ ʙᴏᴛ @{bot_username} ᴜᴘᴅᴀᴛᴇᴅ!\n"
                 f"ɴᴇᴡ ᴍᴏᴅᴜʟᴇs: {', '.join(added_modules) or 'none'}\n"
@@ -982,7 +946,6 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
                 cq.message,
                 f"✅ ᴜᴘᴅᴀᴛᴇᴅ @{bot_username} | ʀᴇɴᴇᴡᴀʟ=₹{new_renewal_amt}"
             )
-
         else:
             # FRESH DEPLOY PATH
             if mode == "auto":
@@ -1057,10 +1020,8 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
                 f"<blockquote>✅ ᴅᴇᴘʟᴏʏᴇᴅ @{bot_username} | ₹{payment['amount']}</blockquote>",
                 reply_markup=admin_connection_kb(payment["user_id"], isc)
             )
-
         await delete_pending_payment(payment_id)
         await clear_deploy_session(payment["user_id"])
-
     elif action == "reject":
         await cq.answer("Rejected.", show_alert=False)
         await _send_to_user(client, payment["user_id"],
@@ -1068,7 +1029,6 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
         await _edit_approval_msg(cq.message, "❌ Rejected.")
         await delete_pending_payment(payment_id)
         await clear_deploy_session(payment["user_id"])
-
     elif action == "refund":
         await cq.answer("Refund processing...", show_alert=False)
         await create_refund({
@@ -1091,6 +1051,12 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             BOT_ALLOWED_PLUGINS.pop(bid, None)
             BOT_OWNERS.pop(bid, None)
             _iso_cache.pop(bid, None)
+            # ── Unregister custom assistant on refund ──────────────────────────
+            try:
+                from SHASHA_DRUGZ.dplugins.COMMON.PREMIUM.setbotinfo import unregister_bot
+                unregister_bot(bid)
+            except Exception:
+                pass
             await delete_deployed_bot(bid)
             await cleanup_bot_data(bid)
         await _send_to_user(client, payment["user_id"],
@@ -1098,6 +1064,45 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
         await _edit_approval_msg(cq.message, "💸 Refunded.")
         await delete_pending_payment(payment_id)
         await clear_deploy_session(payment["user_id"])
+
+# ─── Custom assistant restore helper ─────────────────────────────────────────
+async def _restore_custom_assistant(bot_id: int):
+    """
+    FIX 1: After a bot is started (fresh deploy, module update, or restart),
+    check if a custom assistant was saved via /setassistant and reload it.
+    This ensures the custom assistant is NEVER lost across restarts or redeployments.
+    """
+    try:
+        from SHASHA_DRUGZ.utils.bot_settings import get_bot_settings
+        from SHASHA_DRUGZ.dplugins.COMMON.PREMIUM.setbotinfo import (
+            _reload_assistant, _CUSTOM_ASSISTANTS
+        )
+        settings = await get_bot_settings(bot_id, force=True)
+        mode = settings.get("assistant_mode")
+        if not mode:
+            return  # No custom assistant configured — use default pool
+        session_str = None
+        if mode == "single":
+            session_str = settings.get("assistant_string")
+        elif mode == "multi":
+            multi = settings.get("assistant_multi") or []
+            session_str = multi[0] if multi else None
+        if not session_str:
+            return  # No session stored
+        # Don't reload if already running (e.g. called during module update)
+        if bot_id in _CUSTOM_ASSISTANTS:
+            existing = _CUSTOM_ASSISTANTS[bot_id]
+            if existing.is_connected:
+                logging.info(f"[deploy] bot {bot_id} custom assistant already running, skipping restore")
+                return
+        logging.info(f"[deploy] Restoring custom assistant for bot {bot_id}...")
+        ok = await _reload_assistant(bot_id, session_str)
+        if ok:
+            logging.info(f"[deploy] ✅ Custom assistant restored for bot {bot_id}")
+        else:
+            logging.warning(f"[deploy] ⚠️ Custom assistant restore failed for bot {bot_id}")
+    except Exception as e:
+        logging.error(f"[deploy] _restore_custom_assistant failed for bot {bot_id}: {e}")
 
 # ─── Expiry checker ────────────────────────────────────────────────────────────
 async def expiry_checker():
@@ -1113,6 +1118,12 @@ async def expiry_checker():
                 BOT_ALLOWED_PLUGINS.pop(bid, None)
                 BOT_OWNERS.pop(bid, None)
                 _iso_cache.pop(bid, None)
+                # Unregister custom assistant on expiry
+                try:
+                    from SHASHA_DRUGZ.dplugins.COMMON.PREMIUM.setbotinfo import unregister_bot
+                    unregister_bot(bid)
+                except Exception:
+                    pass
                 await cleanup_expired_bot(bid)
                 await cleanup_bot_data(bid)
                 await app.send_message(bot["owner_id"],
@@ -1120,7 +1131,6 @@ async def expiry_checker():
                     f"ᴅᴇᴘʟᴏʏ ᴀɢᴀɪɴ ᴛᴏ ʀᴇsᴛᴀʀᴛ ғʀᴇsʜ.</blockquote>")
                 for admin in ADMINS_ID:
                     await app.send_message(admin, f"⚠️ @{bot['username']} expired & wiped.")
-                # ── FIX: use _log() instead of direct send to DEPLOY_LOGGER ─
                 await _log(app, f"⚠️ @{bot['username']} expired & cleaned.")
             for bot in await get_bots_expiring_soon(days=2):
                 if bot.get("warning_sent"):
@@ -1335,6 +1345,12 @@ async def remove_deployed_bot_cmd(client: Client, message: Message):
     BOT_ALLOWED_PLUGINS.pop(bid, None)
     BOT_OWNERS.pop(bid, None)
     _iso_cache.pop(bid, None)
+    # Unregister custom assistant on removal
+    try:
+        from SHASHA_DRUGZ.dplugins.COMMON.PREMIUM.setbotinfo import unregister_bot
+        unregister_bot(bid)
+    except Exception:
+        pass
     await delete_deployed_bot(bid)
     await cleanup_bot_data(bid)
     await message.reply_text(
@@ -1362,6 +1378,23 @@ async def confirm_rmalldeploy_cb(_, cq: CallbackQuery):
         BOT_ALLOWED_PLUGINS.clear(); BOT_OWNERS.clear(); _iso_cache.clear()
         from SHASHA_DRUGZ.utils.bot_settings import _cache as _settings_cache
         _settings_cache.clear()
+        # Unregister all custom assistants
+        try:
+            from SHASHA_DRUGZ.dplugins.COMMON.PREMIUM.setbotinfo import (
+                _CUSTOM_PYTGCALLS, _CUSTOM_ASSISTANTS, _CHAT_TO_BOT, _BOT_ASSISTANT_IDS
+            )
+            for ptc in list(_CUSTOM_PYTGCALLS.values()):
+                try: await ptc.stop()
+                except Exception: pass
+            for pyro in list(_CUSTOM_ASSISTANTS.values()):
+                try: await pyro.stop()
+                except Exception: pass
+            _CUSTOM_PYTGCALLS.clear()
+            _CUSTOM_ASSISTANTS.clear()
+            _CHAT_TO_BOT.clear()
+            _BOT_ASSISTANT_IDS.clear()
+        except Exception:
+            pass
         await deploy_bots_col.delete_many({})
         await raw_mongodb.deploy_chats.delete_many({})
         await raw_mongodb.deploy_users.delete_many({})
@@ -1417,7 +1450,6 @@ async def admin_earnings_dashboard(client, message):
 # ─── Restart on startup ────────────────────────────────────────────────────────
 async def restart_bots():
     global DEPLOYED_CLIENTS, DEPLOYED_BOTS, BOT_ALLOWED_PLUGINS, BOT_OWNERS
-    # ── FIX: resolve DEPLOY_LOGGER to numeric ID before using it ────────────
     await _resolve_deploy_logger()
     logging.info("Restarting all deployed bots...")
     bots = await deploy_bots_col.find({"status": "active"}).to_list(length=None)
@@ -1459,10 +1491,12 @@ async def restart_bots():
             BOT_ALLOWED_PLUGINS[bm.id] = set(ap)
             BOT_OWNERS[bm.id]          = bot["owner_id"]
             _iso_cache[bm.id]          = bot["owner_id"]
+            # ── FIX 1: Restore custom assistant saved via /setassistant ────────
+            # Run as a background task so one failing assistant doesn't block others
+            asyncio.create_task(_restore_custom_assistant(bm.id))
             await asyncio.sleep(5)
         except Exception as e:
             logging.error(f"Failed to start @{bot.get('username','?')}: {e}")
-    # ── FIX: use _log() instead of direct send to DEPLOY_LOGGER ─────────────
     await _log(app, "✅ ᴀʟʟ ᴅᴇᴘʟᴏʏᴇᴅ ʙᴏᴛs ʀᴇsᴛᴀʀᴛᴇᴅ!")
 
 # ─── /start deploy ────────────────────────────────────────────────────────────
