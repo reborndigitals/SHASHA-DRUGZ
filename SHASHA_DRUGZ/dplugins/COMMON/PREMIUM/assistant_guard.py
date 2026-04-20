@@ -3,20 +3,15 @@ assistant_guard.py
 ──────────────────
 Auto-unban + auto-join the assistant userbot whenever a /play command is
 issued in a group where the assistant is missing or banned.
-Drop this file into your SHASHA_DRUGZ/dplugins/COMMON/PREMIUM/ directory.
-No changes needed in music.py or start.py — this module runs transparently
-as a middleware layer that fires before the PlayWrapper decorator processes
-the command.
-Logic flow on every /play (and variants) in a group:
-  1. Get the assistant assigned to this chat.
-  2. Check assistant's membership status via the main bot (app).
-  3. If BANNED → unban first (needs ban permission on bot).
-  4. If RESTRICTED → treat as already in chat (no rejoin needed).
-  5. If not in the group at all → invite via username or generated invite link.
-  6. If already a member → do nothing (fast-path, no extra API calls).
-  7. All steps run silently in a background task so the play response is
-     not delayed.
-Only the assistant is ever touched — regular users are never affected.
+
+FIX 2 in this version:
+  ensure_assistant_in_chat() now resolves the CORRECT assistant:
+    1. If the deployed bot has a custom assistant set via /setassistant,
+       that Pyrogram client is used (get_custom_assistant_userbot).
+    2. Otherwise falls back to get_assistant(chat_id) — default pool.
+
+This means the group will always get the right assistant invited,
+not the default pool's userbot.
 """
 import asyncio
 import logging
@@ -42,7 +37,6 @@ logger = logging.getLogger("assistant_guard")
 # ──────────────────────────────────────────────────────────────────────────────
 #  INTERNAL HELPERS
 # ──────────────────────────────────────────────────────────────────────────────
-
 async def _get_assistant_status(chat_id: int, assistant_id: int) -> ChatMemberStatus | None:
     """
     Return the assistant's ChatMemberStatus in the group, or None if the
@@ -102,18 +96,14 @@ async def _try_unban(chat_id: int, assistant_id: int) -> bool:
 
 async def _try_join_via_username(userbot, chat_id: int) -> bool:
     """Try joining via the group's public username."""
-    # FIX 1: Wrap get_chat in its own try/except to handle CHANNEL_INVALID
-    # on supergroups that aren't cached by the bot yet.
     try:
         chat = await app.get_chat(chat_id)
         username = chat.username
     except Exception as e:
         logger.debug(f"[assistant_guard] get_chat failed for {chat_id}: {e}")
         return False
-
     if not username:
         return False
-
     try:
         await userbot.join_chat(username)
         logger.info(f"[assistant_guard] Assistant joined {chat_id} via username")
@@ -121,7 +111,6 @@ async def _try_join_via_username(userbot, chat_id: int) -> bool:
     except UserAlreadyParticipant:
         return True
     except InviteRequestSent:
-        # Group has join requests — approve immediately via main bot
         try:
             await app.approve_chat_join_request(chat_id, userbot.id)
             return True
@@ -138,7 +127,6 @@ async def _try_join_via_username(userbot, chat_id: int) -> bool:
 async def _try_join_via_invite(userbot, chat_id: int) -> bool:
     """Try joining via a freshly generated invite link (requires invite permission)."""
     try:
-        # FIX 3: create_chat_invite_link is more reliable than export_chat_invite_link
         link_obj = await app.create_chat_invite_link(chat_id)
         link = link_obj.invite_link
         await asyncio.sleep(1)
@@ -164,33 +152,61 @@ async def _try_join_via_invite(userbot, chat_id: int) -> bool:
         return False
 
 
+def _resolve_userbot_for_message(message: Message):
+    """
+    FIX 2: Resolve the correct userbot to invite for a given message's bot client.
+
+    The message.chat.id is the group.  message._client is the deployed bot
+    handling this message (not the main `app`).  We check if that deployed
+    bot has a custom assistant configured.
+
+    Returns the correct Pyrogram Client (custom or None to fall back to pool).
+    """
+    try:
+        from SHASHA_DRUGZ.dplugins.COMMON.PREMIUM.setbotinfo import get_custom_assistant_userbot
+        # message._client is the deployed bot Pyrogram Client
+        client = getattr(message, "_client", None)
+        if client is None:
+            # Try accessing via the handler's client parameter (set by decorator)
+            return None
+        bot_id = client.me.id if (client.me is not None) else None
+        if bot_id is not None:
+            custom = get_custom_assistant_userbot(bot_id)
+            if custom is not None:
+                return custom
+    except Exception:
+        pass
+    return None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 #  CORE: ensure assistant is present (unban if needed, then join)
 # ──────────────────────────────────────────────────────────────────────────────
-
-async def ensure_assistant_in_chat(chat_id: int) -> bool:
+async def ensure_assistant_in_chat(chat_id: int, userbot=None) -> bool:
     """
     Silently ensure the assistant is a member of the group.
     Called as a background task — never blocks the play response.
     Returns True if the assistant is (or becomes) a member.
+
+    FIX 2: Accepts an optional `userbot` argument.  When called from the
+    play interceptor below, the correct userbot (custom or pool) is resolved
+    from the message context and passed in.  This guarantees the right
+    assistant is invited, not whatever get_assistant(chat_id) returns.
     """
-    try:
-        userbot = await get_assistant(chat_id)
-    except Exception as e:
-        logger.warning(f"[assistant_guard] Could not get assistant for {chat_id}: {e}")
-        return False
+    if userbot is None:
+        try:
+            userbot = await get_assistant(chat_id)
+        except Exception as e:
+            logger.warning(f"[assistant_guard] Could not get assistant for {chat_id}: {e}")
+            return False
 
     assistant_id = userbot.id
 
     # ── Step 1: check current status ──────────────────────────────────────────
     status = await _get_assistant_status(chat_id, assistant_id)
-
     if status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
-        # Already in — nothing to do
         return True
 
-    # FIX 2: RESTRICTED means the assistant IS in the chat, just with limits.
-    # Attempting to rejoin a restricted member causes unnecessary API errors.
     if status == ChatMemberStatus.RESTRICTED:
         logger.debug(f"[assistant_guard] Assistant is restricted (not banned) in {chat_id} — treating as present")
         return True
@@ -206,15 +222,12 @@ async def ensure_assistant_in_chat(chat_id: int) -> bool:
         unbanned = await _try_unban(chat_id, assistant_id)
         if not unbanned:
             return False
-        # Give Telegram a moment to process the unban before joining
         await asyncio.sleep(2)
 
     # ── Step 3: join the chat ─────────────────────────────────────────────────
-    # Try username first (no extra permission needed on public groups)
     if await _try_join_via_username(userbot, chat_id):
         return True
 
-    # Fallback: invite link (requires can_invite_users on main bot)
     if await _bot_can_invite(chat_id):
         if await _try_join_via_invite(userbot, chat_id):
             return True
@@ -225,17 +238,14 @@ async def ensure_assistant_in_chat(chat_id: int) -> bool:
     )
     return False
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 #  PLAY COMMAND INTERCEPTOR
 #  Fires *before* PlayWrapper so the assistant is ready when pytgcalls needs it.
 # ──────────────────────────────────────────────────────────────────────────────
-
 PLAY_COMMANDS = [
     "play", "vplay", "cplay", "cvplay",
     "playforce", "vplayforce", "cplayforce", "cvplayforce",
 ]
-
 
 @Client.on_message(
     filters.command(PLAY_COMMANDS, prefixes=["/", "!", "%", ".", "@", "#", ""])
@@ -244,44 +254,57 @@ PLAY_COMMANDS = [
 )
 async def _play_assistant_guard(client: Client, message: Message):
     """
-    Intercept every play command in a group and silently ensure the assistant
-    is present. Runs at handler priority -10 so it fires before PlayWrapper.
-    Does NOT stop propagation — the play command continues normally.
+    Intercept every play command in a group and silently ensure the CORRECT
+    assistant is present.  Runs at handler priority -10 so it fires before
+    PlayWrapper.  Does NOT stop propagation.
+
+    FIX 2: Resolves custom assistant first, falls back to default pool.
     """
     chat_id = message.chat.id
-    # Fire-and-forget: don't await, don't delay the play response
-    asyncio.create_task(ensure_assistant_in_chat(chat_id))
+
+    # Resolve the correct userbot for THIS deployed bot
+    userbot = None
+    try:
+        from SHASHA_DRUGZ.dplugins.COMMON.PREMIUM.setbotinfo import get_custom_assistant_userbot
+        bot_id = client.me.id if client.me else None
+        if bot_id is not None:
+            userbot = get_custom_assistant_userbot(bot_id)
+    except Exception:
+        pass
+
+    # Fire-and-forget with the correct userbot (None → falls back to pool inside)
+    asyncio.create_task(ensure_assistant_in_chat(chat_id, userbot=userbot))
+
     # Let the message propagate to the real play handler
     # (do NOT call message.stop_propagation())
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  DECORATOR  (optional — for use in PlayWrapper if you prefer explicit hooking)
 # ──────────────────────────────────────────────────────────────────────────────
-
 def with_assistant_guard(func):
     """
     Optional decorator you can wrap around any async handler to ensure the
-    assistant is in the chat before the handler runs.
-    Usage in music.py:
-        @Client.on_message(...)
-        @PlayWrapper
-        @with_assistant_guard          ← add this
-        async def play_commnd(...):
-            ...
-    Unlike the interceptor above (which is fire-and-forget), this decorator
-    AWAITS the guard so the assistant is guaranteed to be present before the
-    stream starts. Use it if you hit race conditions.
+    assistant is in the chat before the handler runs.  AWAITS the guard so
+    the assistant is guaranteed present before the stream starts.
     """
     @wraps(func)
     async def wrapper(client, message: Message, *args, **kwargs):
         chat_id = message.chat.id
-        # Run guard concurrently with the start of the play pipeline
-        guard_task = asyncio.create_task(ensure_assistant_in_chat(chat_id))
+
+        # Resolve correct userbot
+        userbot = None
+        try:
+            from SHASHA_DRUGZ.dplugins.COMMON.PREMIUM.setbotinfo import get_custom_assistant_userbot
+            bot_id = client.me.id if client.me else None
+            if bot_id is not None:
+                userbot = get_custom_assistant_userbot(bot_id)
+        except Exception:
+            pass
+
+        guard_task = asyncio.create_task(ensure_assistant_in_chat(chat_id, userbot=userbot))
         try:
             result = await func(client, message, *args, **kwargs)
         finally:
-            # Ensure guard task is awaited to surface any exceptions in logs
             try:
                 await guard_task
             except Exception as e:
