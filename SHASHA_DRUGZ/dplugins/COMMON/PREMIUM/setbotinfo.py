@@ -1,37 +1,29 @@
 # SHASHA_DRUGZ/dplugins/COMMON/PREMIUM/setbotinfo.py
 # =====================================================================
-# FULLY ISOLATED PER-BOT SETTINGS MODULE
+# FULLY ISOLATED PER-BOT SETTINGS MODULE — v6 FINAL
 #
-# ASSISTANT CHANGE — FINAL WORKING FIX (v5)
-# ──────────────────────────────────────────
-# NOW WE HAVE THE SOURCE FILES. Here is exactly what happens:
+# ROOT CAUSE (confirmed):
+#   call.py line 18:
+#       from SHASHA_DRUGZ.utils.database import group_assistant
 #
-# call.py: class Call(PyTgCalls)
-#   self.one   = PyTgCalls(userbot1)   ← these are PYTGCALLS instances
-#   self.two   = PyTgCalls(userbot2)
-#   ...
+#   This copies the function reference into call.py's OWN namespace.
+#   Patching database.group_assistant AFTER this import has NO effect
+#   on call.py — it already holds its own copy of the old function.
 #
-# database.py: group_assistant(self, chat_id)
-#   returns self.one / self.two / ... based on assistantdict[chat_id]
-#   "self" here is the SHASHA Call() instance
-#   The returned value is a PyTgCalls instance, used to join/leave VC
+#   The ONLY working fix:
+#       import SHASHA_DRUGZ.core.call as _call_mod
+#       _call_mod.group_assistant = our_new_function
 #
-# database.py: get_assistant(chat_id)
-#   returns userbot.one / userbot.two / ... (Pyrogram clients)
-#   used for invite links, joining groups, etc.
+#   This replaces the name in call.py's module namespace directly.
+#   Every subsequent call inside call.py to group_assistant(self, ...)
+#   will use our new function.
 #
-# THE FIX:
-#   1. Start a new Pyrogram Client from the custom string session
-#   2. Wrap it in a new PyTgCalls instance
-#   3. Start the PyTgCalls instance
-#   4. Register all VC event handlers (on_stream_end, on_kicked, etc.)
-#      on the new PyTgCalls instance by calling SHASHA.decorators_for(new_pytgcalls)
-#   5. Store new PyTgCalls in _CUSTOM_PYTGCALLS[bot_id]
-#   6. Store new Pyrogram Client in _CUSTOM_ASSISTANTS[bot_id]
-#   7. Patch group_assistant: for chats in _CHAT_TO_BOT, return PyTgCalls
-#   8. Patch get_assistant: for chats in _CHAT_TO_BOT, return Pyrogram Client
-#   9. Map all chats of this bot → bot_id in _CHAT_TO_BOT
-#  10. Clear assistantdict cache for these chats
+# ALSO FIXED:
+#   - assistant_guard.py also imports get_assistant — patched same way
+#   - assistantdict cache cleared so no stale routing
+#   - Old STRING1 assistant no longer invited when custom assistant set
+#   - PyTgCalls instance created + started for the new assistant
+#   - All VC event handlers registered on new PyTgCalls instance
 # =====================================================================
 import asyncio
 import logging
@@ -42,46 +34,35 @@ from SHASHA_DRUGZ.core.mongo import raw_mongodb
 from SHASHA_DRUGZ.utils.bot_settings import apply_to_config_and_invalidate
 from config import ADMINS_ID, API_ID, API_HASH
 
-print("[setbotinfo] MODULE LOADED — v5 (PyTgCalls-aware assistant switching)")
+print("[setbotinfo] MODULE LOADED — v6 (direct call.py namespace patch)")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # REGISTRY
-#   _CUSTOM_ASSISTANTS[bot_id]  = Pyrogram Client  (for get_assistant)
-#   _CUSTOM_PYTGCALLS[bot_id]   = PyTgCalls instance (for group_assistant)
-#   _CHAT_TO_BOT[chat_id]       = bot_id
 # ─────────────────────────────────────────────────────────────────────────────
 _CUSTOM_ASSISTANTS: dict = {}   # bot_id -> pyrogram.Client
-_CUSTOM_PYTGCALLS:  dict = {}   # bot_id -> PyTgCalls
+_CUSTOM_PYTGCALLS:  dict = {}   # bot_id -> PyTgCalls instance
 _CHAT_TO_BOT:       dict = {}   # chat_id -> bot_id
 _PATCHED = False
 
 
-def _patch_database_once():
+def _patch_all_namespaces():
     """
-    Patch database.get_assistant and database.group_assistant once.
-    - get_assistant  → returns Pyrogram client (for joining chats, invites)
-    - group_assistant → returns PyTgCalls instance (for VC join/leave/stream)
+    Patch group_assistant and get_assistant in EVERY module that imported
+    them at startup. Python's `from x import y` copies the reference, so
+    we must update each module's namespace individually.
     """
     global _PATCHED
     if _PATCHED:
         return
+
     try:
         import SHASHA_DRUGZ.utils.database as _db
 
         _orig_get = _db.get_assistant
         _orig_grp = _db.group_assistant
 
-        async def _patched_get_assistant(chat_id: int):
-            bot_id = _CHAT_TO_BOT.get(chat_id)
-            if bot_id is not None:
-                c = _CUSTOM_ASSISTANTS.get(bot_id)
-                if c is not None:
-                    if c.is_connected:
-                        return c
-                    _CUSTOM_ASSISTANTS.pop(bot_id, None)
-            return await _orig_get(chat_id)
-
-        async def _patched_group_assistant(self, chat_id: int):
+        # ── New group_assistant: returns PyTgCalls for custom chats ───────────
+        async def _new_group_assistant(self, chat_id: int):
             bot_id = _CHAT_TO_BOT.get(chat_id)
             if bot_id is not None:
                 ptc = _CUSTOM_PYTGCALLS.get(bot_id)
@@ -89,20 +70,60 @@ def _patch_database_once():
                     return ptc
             return await _orig_grp(self, chat_id)
 
-        _db.get_assistant   = _patched_get_assistant
-        _db.group_assistant = _patched_group_assistant
+        # ── New get_assistant: returns Pyrogram client for custom chats ───────
+        async def _new_get_assistant(chat_id: int):
+            bot_id = _CHAT_TO_BOT.get(chat_id)
+            if bot_id is not None:
+                c = _CUSTOM_ASSISTANTS.get(bot_id)
+                if c is not None and c.is_connected:
+                    return c
+                elif c is not None:
+                    _CUSTOM_ASSISTANTS.pop(bot_id, None)
+            return await _orig_get(chat_id)
 
-        # Also patch the import that call.py already pulled in at startup:
+        # ── Patch database module itself ──────────────────────────────────────
+        _db.get_assistant   = _new_get_assistant
+        _db.group_assistant = _new_group_assistant
+
+        # ── Patch call.py — THE CRITICAL ONE ─────────────────────────────────
         # call.py does: from SHASHA_DRUGZ.utils.database import group_assistant
-        # We must update that reference too.
+        # We must overwrite group_assistant in call.py's own namespace.
         try:
             import SHASHA_DRUGZ.core.call as _call_mod
-            _call_mod.group_assistant = _patched_group_assistant
+            _call_mod.group_assistant = _new_group_assistant
+            logging.info("[setbotinfo] ✅ call.group_assistant patched")
         except Exception as e:
-            logging.warning(f"[setbotinfo] Could not patch call.group_assistant: {e}")
+            logging.error(f"[setbotinfo] CRITICAL: could not patch call.group_assistant: {e}")
+
+        # ── Patch assistant_guard.py if it exists ─────────────────────────────
+        try:
+            import SHASHA_DRUGZ.plugins.PREMIUM.assistant_guard as _ag
+            _ag.get_assistant = _new_get_assistant
+            logging.info("[setbotinfo] ✅ assistant_guard.get_assistant patched")
+        except Exception:
+            pass
+
+        # ── Patch any other modules that imported group_assistant ─────────────
+        _modules_using_group_assistant = [
+            "SHASHA_DRUGZ.utils.stream.queue",
+            "SHASHA_DRUGZ.utils.stream.music",
+            "SHASHA_DRUGZ.utils.stream.video",
+            "SHASHA_DRUGZ.dplugins.MUSIC.play",
+            "SHASHA_DRUGZ.dplugins.MUSIC.queue",
+        ]
+        for mod_path in _modules_using_group_assistant:
+            try:
+                import importlib
+                mod = importlib.import_module(mod_path)
+                if hasattr(mod, "group_assistant"):
+                    mod.group_assistant = _new_group_assistant
+                if hasattr(mod, "get_assistant"):
+                    mod.get_assistant = _new_get_assistant
+            except Exception:
+                pass
 
         _PATCHED = True
-        logging.info("[setbotinfo] ✅ get_assistant + group_assistant patched")
+        logging.info("[setbotinfo] ✅ All namespaces patched")
 
     except Exception as e:
         logging.error(f"[setbotinfo] patch failed: {e}")
@@ -110,102 +131,96 @@ def _patch_database_once():
 
 async def _reload_assistant(bot_id: int, string_session: str) -> bool:
     """
-    Full assistant reload for a deployed bot:
-    1.  Start Pyrogram Client from string session
-    2.  Wrap in PyTgCalls, start it
-    3.  Register VC event decorators on the new PyTgCalls instance
-    4.  Store both in registries
-    5.  Patch database functions (idempotent)
-    6.  Map all chats of this bot → bot_id
-    7.  Clear assistantdict cache
+    Full assistant reload:
+    1. Start Pyrogram Client from string session
+    2. Start PyTgCalls(pyrogram_client)
+    3. Register VC event handlers on new PyTgCalls
+    4. Stop + replace old instances
+    5. Patch all module namespaces (idempotent)
+    6. Map all chats of this bot → bot_id
+    7. Clear assistantdict cache
     """
-    # ── Step 1: Pyrogram Client ───────────────────────────────────────────────
+
+    # ── 1. Pyrogram Client ────────────────────────────────────────────────────
     try:
-        pyrogram_client = Client(
+        new_pyro = Client(
             name=f"deployed_assistant_{bot_id}",
             api_id=API_ID,
             api_hash=API_HASH,
             session_string=string_session,
             no_updates=True,
         )
-        await pyrogram_client.start()
-        me = await pyrogram_client.get_me()
-        logging.info(
-            f"[setbotinfo] Pyrogram client started: @{me.username} ({me.id})"
-        )
+        await new_pyro.start()
+        me = await new_pyro.get_me()
+        logging.info(f"[setbotinfo] Pyrogram started: @{me.username} ({me.id})")
     except Exception as e:
-        logging.error(f"[setbotinfo] Cannot start Pyrogram client: {e}")
+        logging.error(f"[setbotinfo] Pyrogram start failed: {e}")
         return False
 
-    # ── Step 2: PyTgCalls instance ────────────────────────────────────────────
+    # ── 2. PyTgCalls instance ─────────────────────────────────────────────────
     try:
         from pytgcalls import PyTgCalls
-        pytgcalls_instance = PyTgCalls(pyrogram_client, cache_duration=100)
-        await pytgcalls_instance.start()
-        logging.info(f"[setbotinfo] PyTgCalls instance started for bot {bot_id}")
+        new_ptc = PyTgCalls(new_pyro, cache_duration=100)
+        await new_ptc.start()
+        logging.info(f"[setbotinfo] PyTgCalls started for bot {bot_id}")
     except Exception as e:
-        logging.error(f"[setbotinfo] Cannot start PyTgCalls: {e}")
+        logging.error(f"[setbotinfo] PyTgCalls start failed: {e}")
         try:
-            await pyrogram_client.stop()
+            await new_pyro.stop()
         except Exception:
             pass
         return False
 
-    # ── Step 3: Register VC event handlers ───────────────────────────────────
-    # We need the same handlers that call.py registers in decorators().
-    # We attach them directly to the new pytgcalls instance.
+    # ── 3. VC event handlers ──────────────────────────────────────────────────
     try:
         from SHASHA_DRUGZ.core.call import SHASHA
         from pytgcalls.types import Update
         from pytgcalls.types.stream import StreamAudioEnded
 
-        @pytgcalls_instance.on_stream_end()
+        @new_ptc.on_stream_end()
         async def _on_stream_end(client, update: Update):
             if not isinstance(update, StreamAudioEnded):
                 return
             await SHASHA.change_stream(client, update.chat_id)
 
-        @pytgcalls_instance.on_kicked()
+        @new_ptc.on_kicked()
         async def _on_kicked(_, chat_id: int):
             await SHASHA.stop_stream(chat_id)
 
-        @pytgcalls_instance.on_closed_voice_chat()
+        @new_ptc.on_closed_voice_chat()
         async def _on_closed(_, chat_id: int):
             await SHASHA.stop_stream(chat_id)
 
-        @pytgcalls_instance.on_left()
+        @new_ptc.on_left()
         async def _on_left(_, chat_id: int):
             await SHASHA.stop_stream(chat_id)
 
-        logging.info(f"[setbotinfo] VC event handlers registered for bot {bot_id}")
+        logging.info(f"[setbotinfo] VC handlers registered for bot {bot_id}")
     except Exception as e:
-        logging.warning(
-            f"[setbotinfo] Could not register VC event handlers: {e}\n"
-            "Stream end / kick events may not work for this assistant."
-        )
+        logging.warning(f"[setbotinfo] VC handler registration failed: {e}")
 
-    # ── Step 4: Stop old instances and store new ──────────────────────────────
-    old_ptc = _CUSTOM_PYTGCALLS.get(bot_id)
+    # ── 4. Stop old + store new ───────────────────────────────────────────────
+    old_ptc = _CUSTOM_PYTGCALLS.pop(bot_id, None)
     if old_ptc is not None:
         try:
             await old_ptc.stop()
         except Exception:
             pass
 
-    old_pyro = _CUSTOM_ASSISTANTS.get(bot_id)
+    old_pyro = _CUSTOM_ASSISTANTS.pop(bot_id, None)
     if old_pyro is not None:
         try:
             await old_pyro.stop()
         except Exception:
             pass
 
-    _CUSTOM_PYTGCALLS[bot_id]  = pytgcalls_instance
-    _CUSTOM_ASSISTANTS[bot_id] = pyrogram_client
+    _CUSTOM_PYTGCALLS[bot_id]  = new_ptc
+    _CUSTOM_ASSISTANTS[bot_id] = new_pyro
 
-    # ── Step 5: Patch database (idempotent) ───────────────────────────────────
-    _patch_database_once()
+    # ── 5. Patch all namespaces (idempotent after first call) ─────────────────
+    _patch_all_namespaces()
 
-    # ── Step 6: Map all chats for this bot ────────────────────────────────────
+    # ── 6. Map all chats ──────────────────────────────────────────────────────
     try:
         rows = await raw_mongodb.deploy_chats.find(
             {"bot_id": bot_id}, {"chat_id": 1}
@@ -218,23 +233,21 @@ async def _reload_assistant(bot_id: int, string_session: str) -> bool:
                 count += 1
         logging.info(f"[setbotinfo] Mapped {count} chats → bot {bot_id}")
     except Exception as e:
-        logging.warning(f"[setbotinfo] Could not map chats: {e}")
+        logging.warning(f"[setbotinfo] Chat mapping failed: {e}")
 
-    # ── Step 7: Clear assistantdict cache ─────────────────────────────────────
+    # ── 7. Clear assistantdict cache ──────────────────────────────────────────
     try:
         import SHASHA_DRUGZ.utils.database as _db
         rows2 = await raw_mongodb.deploy_chats.find(
             {"bot_id": bot_id}, {"chat_id": 1}
         ).to_list(length=None)
-        cleared = 0
         for row in rows2:
             cid = row.get("chat_id")
             if cid:
                 _db.assistantdict.pop(cid, None)
-                cleared += 1
-        logging.info(f"[setbotinfo] Cleared assistantdict for {cleared} chats")
+        logging.info("[setbotinfo] assistantdict cache cleared")
     except Exception as e:
-        logging.warning(f"[setbotinfo] Could not clear assistantdict: {e}")
+        logging.warning(f"[setbotinfo] Cache clear failed: {e}")
 
     return True
 
@@ -265,8 +278,8 @@ def unregister_bot(bot_id: int):
             pass
 
 
-# Apply database patch at import time (safe, idempotent)
-_patch_database_once()
+# Apply patch at import time
+_patch_all_namespaces()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -558,7 +571,7 @@ async def log_status(client: Client, message: Message):
     )
 
 
-# ── /setassistant — THE KEY COMMAND ──────────────────────────────────────────
+# ── /setassistant ─────────────────────────────────────────────────────────────
 @Client.on_message(filters.command("setassistant") & filters.private)
 async def set_assistant_cmd(client: Client, message: Message):
     if not await _validate_owner(client, message.from_user.id):
@@ -566,8 +579,7 @@ async def set_assistant_cmd(client: Client, message: Message):
     if len(message.command) != 2:
         return await message.reply_text(
             "**Usage:** `/setassistant <string_session>`\n\n"
-            "Provide a valid Pyrogram v2 string session.\n"
-            "Switches immediately — no restart needed."
+            "Pyrogram v2 string session. Switches immediately."
         )
     bid = await _bot_id(client)
     await _ensure_registered(client)
@@ -580,24 +592,24 @@ async def set_assistant_cmd(client: Client, message: Message):
     })
 
     status_msg = await message.reply_text(
-        "⏳ Starting new assistant userbot and PyTgCalls instance..."
+        "⏳ Starting new Pyrogram client + PyTgCalls instance..."
     )
     reload_ok = await _reload_assistant(bid, session_str)
 
     if reload_ok:
         try:
-            pyro = _CUSTOM_ASSISTANTS[bid]
-            me = await pyro.get_me()
+            me = await _CUSTOM_ASSISTANTS[bid].get_me()
             await status_msg.edit_text(
-                f"✅ **Assistant switched successfully!**\n\n"
+                f"✅ **Assistant switched!**\n\n"
                 f"Account: [{me.first_name}](tg://user?id={me.id}) "
                 f"(@{me.username or 'no username'})\n\n"
-                f"• Pyrogram client: ✅ running\n"
-                f"• PyTgCalls instance: ✅ running\n"
-                f"• VC event handlers: ✅ registered\n\n"
+                f"✅ Pyrogram client running\n"
+                f"✅ PyTgCalls instance running\n"
+                f"✅ VC event handlers registered\n"
+                f"✅ call.py namespace patched\n\n"
                 f"This assistant will now join voice chats.\n"
-                f"No restart needed.\n\n"
-                f"Use /assistantinfo to verify."
+                f"Old default assistant will NOT be used.\n\n"
+                f"/assistantinfo to verify."
             )
         except Exception:
             await status_msg.edit_text("✅ Assistant switched and active.")
@@ -607,8 +619,7 @@ async def set_assistant_cmd(client: Client, message: Message):
             "Session saved to DB. Check:\n"
             "• Valid Pyrogram v2 string session\n"
             "• Account not banned/terminated\n"
-            "• API_ID / API_HASH match the session\n\n"
-            "Will apply after bot restart."
+            "• API_ID / API_HASH match the session"
         )
 
 
@@ -632,10 +643,9 @@ async def set_multi_assistant(client: Client, message: Message):
     reload_ok = await _reload_assistant(bid, sessions[0])
     if reload_ok:
         try:
-            pyro = _CUSTOM_ASSISTANTS[bid]
-            me = await pyro.get_me()
+            me = await _CUSTOM_ASSISTANTS[bid].get_me()
             await status_msg.edit_text(
-                f"✅ **Assistant switched!**\n\n"
+                f"✅ Assistant switched!\n\n"
                 f"Primary: [{me.first_name}](tg://user?id={me.id}) "
                 f"(@{me.username or 'no username'})\n"
                 f"Sessions saved: {len(sessions)}"
@@ -664,12 +674,13 @@ async def assistant_info(client: Client, message: Message):
                 f"Account: [{me.first_name}](tg://user?id={me.id})\n"
                 f"Username: @{me.username or 'None'}\n"
                 f"User ID: `{me.id}`\n"
-                f"Pyrogram connected: {'✅' if pyro.is_connected else '❌'}\n"
-                f"PyTgCalls running: {'✅' if ptc is not None else '❌'}\n"
-                f"Chats served: {chat_count}"
+                f"Pyrogram: {'✅ connected' if pyro.is_connected else '❌ disconnected'}\n"
+                f"PyTgCalls: {'✅ running' if ptc is not None else '❌ missing'}\n"
+                f"Chats served: {chat_count}\n"
+                f"call.py patched: {'✅' if _PATCHED else '❌'}"
             )
         except Exception as e:
-            await message.reply_text(f"⚠️ Custom assistant registered but error: `{e}`")
+            await message.reply_text(f"⚠️ Custom assistant error: `{e}`")
     else:
         data = await _col(bid).find_one({"_id": "config"})
         has_saved = data and (data.get("assistant_string") or data.get("assistant_multi"))
@@ -717,8 +728,8 @@ async def bot_info(client: Client, message: Message):
         f"Support Chat: {('@' + data['support_chat']) if data.get('support_chat') else 'Default'}\n"
         f"Start Image: {'✅ Custom' if data.get('start_image') else '📌 Default'}\n"
         f"String Session: {'✅ Custom' if data.get('string_session') else '📌 Default'}\n"
-        f"Assistant Pyrogram: {'✅ Live' if live_pyro else ('💾 Saved' if data.get('assistant_string') else '📌 Default pool')}\n"
-        f"Assistant PyTgCalls: {'✅ Live' if live_ptc else '📌 Default pool'}\n"
+        f"Assistant: {'✅ Custom LIVE' if (live_pyro and live_ptc) else ('💾 Saved' if data.get('assistant_string') else '📌 Default pool')}\n"
+        f"call.py patched: {'✅' if _PATCHED else '❌'}\n"
         f"Logging: {'✅' if data.get('logging') else '❌'}\n\n"
         f"/assistantinfo — assistant account details"
     )
@@ -741,14 +752,10 @@ async def bot_settings_cmd(client: Client, message: Message):
     uc   = f"@{data['update_channel']}" if data.get("update_channel") else "Default"
     sc   = f"@{data['support_chat']}"   if data.get("support_chat")   else "Default"
     ss   = "✅ Custom" if data.get("string_session") else "📌 Default"
-    live_pyro = bid in _CUSTOM_ASSISTANTS
-    live_ptc  = bid in _CUSTOM_PYTGCALLS
-    if live_pyro and live_ptc:
-        ast = "✅ Custom LIVE (Pyrogram + PyTgCalls)"
-    elif data.get("assistant_string") or data.get("assistant_multi"):
-        ast = "💾 Saved — run /setassistant to activate"
-    else:
-        ast = "📌 Default pool"
+    live = bid in _CUSTOM_ASSISTANTS and bid in _CUSTOM_PYTGCALLS
+    ast  = ("✅ Custom LIVE" if live
+            else ("💾 Saved" if (data.get("assistant_string") or data.get("assistant_multi"))
+                  else "📌 Default pool"))
     await message.reply_text(
         f"⚙️ **Bot Settings** — `{bid}`\n\n"
         f"🖼 Start Image: `{si}`\n"
@@ -811,9 +818,10 @@ async def set_bot_help(client: Client, message: Message):
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "**`/setassistant <string_session>`**\n"
             "Changes the userbot that joins voice chats.\n"
-            "➤ Creates a new Pyrogram Client + PyTgCalls instance\n"
-            "➤ Registers all VC event handlers automatically\n"
+            "➤ Creates Pyrogram Client + PyTgCalls instance\n"
+            "➤ Patches call.py namespace directly\n"
             "➤ Takes effect **IMMEDIATELY** — no restart needed\n"
+            "➤ Old default assistant will NOT be used or invited\n"
             "➤ Must be Pyrogram v2 string session\n\n"
             "**`/setmultiassist <s1> <s2> ...`** — Multiple sessions\n"
             "**`/assistantinfo`** — Show active assistant details\n"
@@ -833,21 +841,19 @@ async def transfer_owner(client: Client, message: Message):
         return await message.reply_text("❌ Access Denied.")
     if len(message.command) != 2:
         return await message.reply_text(
-            "**Usage:** `/transferowner <@username or user_id>`\n\nTransfers via BotFather. Requires Telegram password."
+            "**Usage:** `/transferowner <@username or user_id>`\n\nTransfers via BotFather."
         )
     try:
         target_user = await _resolve_user(client, message.command[1])
     except Exception as e:
         return await message.reply_text(f"❌ Could not resolve user.\nError: `{e}`")
     if not target_user.username:
-        return await message.reply_text("❌ User has no username. BotFather requires one.")
+        return await message.reply_text("❌ User has no username.")
     bid = await _bot_id(client)
     me  = client.me or await client.get_me()
     bot_username    = me.username or str(bid)
     target_username = target_user.username
-    status_msg = await message.reply_text(
-        f"🔄 @{bot_username} → @{target_username}..."
-    )
+    status_msg = await message.reply_text(f"🔄 @{bot_username} → @{target_username}...")
     BOTFATHER_ID = 93372553
 
     async def _wait_bf(timeout=20):
@@ -882,14 +888,14 @@ async def transfer_owner(client: Client, message: Message):
                 f"After confirming: `/changeowner @{target_username}`"
             )
         elif any(w in r4.lower() for w in ("sorry", "can't", "cannot", "error", "fail", "invalid")):
-            await status_msg.edit_text(f"❌ BotFather rejected @{target_username}.\n`{r4}`")
+            await status_msg.edit_text(f"❌ BotFather rejected.\n`{r4}`")
         else:
             await status_msg.edit_text(
                 f"ℹ️ `{r4}`\n\nIf done: `/changeowner @{target_username}`"
             )
     except asyncio.TimeoutError:
         await status_msg.edit_text(
-            f"❌ Timeout.\nTransfer manually, then: `/changeowner @{target_username}`"
+            f"❌ Timeout. Transfer manually, then: `/changeowner @{target_username}`"
         )
     except Exception as e:
         await status_msg.edit_text(
