@@ -1,60 +1,18 @@
 # SHASHA_DRUGZ/dplugins/COMMON/PREMIUM/setbotinfo.py
 # =====================================================================
-# FULLY ISOLATED PER-BOT SETTINGS MODULE — v7 FINAL
+# FULLY ISOLATED PER-BOT SETTINGS MODULE — v8
 #
-# ROOT CAUSE (now fully confirmed from all source files):
+# FIXES in this version:
+#   1. Custom assistant is NEVER lost across restarts or redeployments.
+#      deploy.py calls _restore_custom_assistant(bot_id) after every
+#      bot start, which reads the saved session from DB and re-runs
+#      _reload_assistant() if not already running.
 #
-#   The log shows: "Mapped 0 chats → bot 8244250546"
-#   Because deploy_chats collection stores billing data, NOT the
-#   chat_id → assistant mapping used for routing.
-#
-#   The actual routing is in database.py:
-#     assdb = mongodb.assistants   ← this is where chat→assistant is stored
-#     assistantdict = {}           ← in-memory cache of the above
-#
-#   group_assistant(self, chat_id) reads assistantdict[chat_id] which
-#   returns a number (1-5), then returns self.one/.two/... (PyTgCalls).
-#
-#   PROBLEM: There is no number 6+ for custom assistants.
-#   _CHAT_TO_BOT was always empty so the patch never fired.
-#
-# CORRECT APPROACH (v7):
-#
-#   Instead of trying to intercept via chat_id → bot_id mapping,
-#   we OVERRIDE the methods on the SHASHA Call() instance directly.
-#
-#   The SHASHA object is a singleton. We replace its join_call,
-#   pause_stream, resume_stream, stop_stream, skip_stream, seek_stream,
-#   speedup_stream, force_stop_stream methods with new versions that:
-#     1. Check if the chat_id is in _BOT_CHAT_MAP (custom assistant chats)
-#     2. If yes, use the custom PyTgCalls instance directly
-#     3. If no, call the original method (default pool)
-#
-#   For _BOT_CHAT_MAP population: we hook into assdb writes.
-#   When a deployed bot's group first uses /play, set_assistant(chat_id)
-#   is called and writes to assdb. We patch that too.
-#
-#   SIMPLER: We patch group_assistant in call.py's namespace (confirmed
-#   working from v6 — call.py patched: ✅), BUT we also directly write
-#   to assistantdict for the current chat when /play is used.
-#
-#   The key insight: the patch IS working (call.py patched: ✅), but
-#   _CHAT_TO_BOT[chat_id] is never populated because deploy_chats is
-#   empty. We need to populate _CHAT_TO_BOT from assdb instead, AND
-#   ensure every NEW /play call for this bot's chats also gets mapped.
-#
-# SOLUTION:
-#   1. On /setassistant: query assdb for all chats where the assigned
-#      assistant belongs to the deployed bot's userbot IDs, and map them.
-#   2. Also store the custom assistant's Pyrogram user ID so we can
-#      identify which assdb entries belong to this bot.
-#   3. Patch set_assistant in database.py so that when a NEW chat is
-#      assigned an assistant, if that chat belongs to a deployed bot
-#      with a custom assistant, we immediately add it to _CHAT_TO_BOT.
-#   4. The group_assistant patch in call.py then works correctly.
-#
-#   EVEN SIMPLER: Store bot_id → custom_assistant mapping and hook
-#   into the Call.join_call method directly on the SHASHA singleton.
+#   2. NEW public helper: get_custom_assistant_userbot(bot_id)
+#      Returns the custom Pyrogram Client set via /setassistant, or
+#      None if the bot uses the default pool.
+#      Used by start.py and assistant_guard.py to invite the RIGHT
+#      assistant to groups instead of always using assistant #1.
 # =====================================================================
 import asyncio
 import logging
@@ -65,7 +23,7 @@ from SHASHA_DRUGZ.core.mongo import raw_mongodb
 from SHASHA_DRUGZ.utils.bot_settings import apply_to_config_and_invalidate
 from config import ADMINS_ID, API_ID, API_HASH
 
-print("[setbotinfo] MODULE LOADED — v7 (SHASHA method override + assdb routing)")
+print("[setbotinfo] MODULE LOADED — v8 (persistent assistant + correct invite)")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # REGISTRY
@@ -76,19 +34,32 @@ _CUSTOM_PYTGCALLS: dict = {}
 _CUSTOM_ASSISTANTS: dict = {}
 # chat_id → bot_id  (populated from assdb + new joins)
 _CHAT_TO_BOT: dict = {}
-# bot_id → set of Telegram user IDs of the custom assistant account
-# Used to identify which assdb entries belong to this bot
-_BOT_ASSISTANT_IDS: dict = {}   # bot_id -> int (telegram user id of custom assistant)
+# bot_id → int (telegram user id of custom assistant)
+_BOT_ASSISTANT_IDS: dict = {}
 
 _PATCHED = False
 _SHASHA_OVERRIDDEN = False
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PUBLIC HELPER — used by start.py and assistant_guard.py
+# ─────────────────────────────────────────────────────────────────────────────
+def get_custom_assistant_userbot(bot_id: int):
+    """
+    FIX 2: Return the custom Pyrogram Client for bot_id if one was set via
+    /setassistant AND is currently connected.  Returns None if the bot
+    is using the default assistant pool (no custom assistant).
+
+    start.py and assistant_guard.py use this to know WHICH userbot to
+    invite into a group — the custom one, not the default pool client.
+    """
+    client = _CUSTOM_ASSISTANTS.get(bot_id)
+    if client is not None and client.is_connected:
+        return client
+    return None
+
+
 def _patch_all_namespaces():
-    """
-    Patch group_assistant in call.py's namespace (the critical one).
-    Also patches database module and assistant_guard.
-    """
     global _PATCHED
     if _PATCHED:
         return
@@ -117,21 +88,12 @@ def _patch_all_namespaces():
             return await _orig_get(chat_id)
 
         async def _new_set_assistant(chat_id: int):
-            """
-            Intercept set_assistant so that when a NEW chat gets an assistant
-            assigned, we check if any deployed bot has a custom assistant and
-            should own this chat.
-            """
-            # For now just call original — chat ownership is established
-            # via _populate_chat_map which is called after /setassistant.
-            # New chats are handled by the override on SHASHA.join_call below.
             return await _orig_set(chat_id)
 
         _db.get_assistant   = _new_get_assistant
         _db.group_assistant = _new_group_assistant
         _db.set_assistant   = _new_set_assistant
 
-        # ── THE CRITICAL ONE: patch call.py's local namespace ─────────────────
         try:
             import SHASHA_DRUGZ.core.call as _call_mod
             _call_mod.group_assistant = _new_group_assistant
@@ -139,7 +101,6 @@ def _patch_all_namespaces():
         except Exception as e:
             logging.error(f"[setbotinfo] CRITICAL: call.py patch failed: {e}")
 
-        # ── assistant_guard ───────────────────────────────────────────────────
         try:
             import SHASHA_DRUGZ.plugins.PREMIUM.assistant_guard as _ag
             _ag.get_assistant = _new_get_assistant
@@ -147,7 +108,6 @@ def _patch_all_namespaces():
         except Exception:
             pass
 
-        # ── Any other music plugin modules ────────────────────────────────────
         for mod_path in [
             "SHASHA_DRUGZ.utils.stream.queue",
             "SHASHA_DRUGZ.utils.stream.music",
@@ -167,77 +127,45 @@ def _patch_all_namespaces():
 
         _PATCHED = True
         logging.info("[setbotinfo] ✅ All namespaces patched")
-
     except Exception as e:
         logging.error(f"[setbotinfo] patch failed: {e}")
 
 
 def _override_shasha_join_call():
-    """
-    Override SHASHA.join_call so that when a /play is issued in a group,
-    if the deployed bot handling that play has a custom assistant,
-    we: 1) add chat_id to _CHAT_TO_BOT, and 2) use the custom PyTgCalls.
-
-    This handles NEW chats that weren't in assdb when /setassistant was called.
-
-    The trick: join_call receives chat_id. We check _current_bot_id (isolation
-    context) to know which deployed bot is handling this /play command, then
-    look up if that bot has a custom assistant.
-    """
     global _SHASHA_OVERRIDDEN
     if _SHASHA_OVERRIDDEN:
         return
     try:
         from SHASHA_DRUGZ.core.call import SHASHA
         from SHASHA_DRUGZ.core.isolation import _current_bot_id
-
-        _orig_join_call = SHASHA.join_call.__func__  # unbound method
+        _orig_join_call = SHASHA.join_call.__func__
 
         async def _new_join_call(self, chat_id, original_chat_id, link,
                                   video=None, image=None):
-            # Check if the currently executing deployed bot has a custom assistant
             bot_id = _current_bot_id.get(None)
             if bot_id is not None and bot_id in _CUSTOM_PYTGCALLS:
-                # Register this chat → bot mapping so future calls route correctly
                 _CHAT_TO_BOT[chat_id] = bot_id
                 logging.info(
                     f"[setbotinfo] join_call: mapped chat {chat_id} → bot {bot_id}"
                 )
-                # Also update assdb cache so group_assistant returns right value
                 try:
                     import SHASHA_DRUGZ.utils.database as _db
                     _db.assistantdict.pop(chat_id, None)
                 except Exception:
                     pass
-
-            # Now call the original — group_assistant will use our patched
-            # version which checks _CHAT_TO_BOT and returns custom PyTgCalls
             return await _orig_join_call(self, chat_id, original_chat_id,
                                           link, video, image)
 
-        # Bind the new method to the SHASHA instance
         import types
         SHASHA.join_call = types.MethodType(_new_join_call, SHASHA)
         _SHASHA_OVERRIDDEN = True
         logging.info("[setbotinfo] ✅ SHASHA.join_call overridden")
-
     except Exception as e:
         logging.error(f"[setbotinfo] SHASHA.join_call override failed: {e}")
 
 
 async def _populate_chat_map(bot_id: int, assistant_telegram_id: int):
-    """
-    Populate _CHAT_TO_BOT for all chats already using this deployed bot.
-    We look in assdb (mongodb.assistants) for chat_ids where the assistant
-    number maps to the custom assistant's Telegram user ID.
-
-    ALSO: look through assistantdict (in-memory cache) for chats that have
-    already been assigned to any assistant, and check if those chats are
-    in deploy_chats for this bot_id.
-    """
     count = 0
-
-    # Method 1: Use deploy_chats (might be empty for some bots, but try)
     try:
         rows = await raw_mongodb.deploy_chats.find(
             {"bot_id": bot_id}, {"chat_id": 1}
@@ -252,15 +180,8 @@ async def _populate_chat_map(bot_id: int, assistant_telegram_id: int):
     except Exception as e:
         logging.warning(f"[setbotinfo] deploy_chats query failed: {e}")
 
-    # Method 2: Use assdb — find chats that have been served by this bot.
-    # We check the assdb collection for chat_ids where assistant == any of 1-5.
-    # Then cross-reference with assistantdict in-memory.
-    # Since we can't directly know which chats belong to this deployed bot from
-    # assdb alone, we use the isolation context: deployed bot has its own
-    # isolated MongoDB collections (bot_{id}_assistants).
     try:
         import SHASHA_DRUGZ.utils.database as _db
-        # Try bot-isolated assistants collection
         isolated_assdb = raw_mongodb[f"bot_{bot_id}_assistants"]
         async for doc in isolated_assdb.find({}):
             cid = doc.get("chat_id")
@@ -275,7 +196,6 @@ async def _populate_chat_map(bot_id: int, assistant_telegram_id: int):
     except Exception as e:
         logging.debug(f"[setbotinfo] isolated assdb query: {e}")
 
-    # Method 3: Also clear assistantdict for any known chats
     try:
         import SHASHA_DRUGZ.utils.database as _db
         cleared = 0
@@ -288,7 +208,8 @@ async def _populate_chat_map(bot_id: int, assistant_telegram_id: int):
     except Exception as e:
         logging.debug(f"[setbotinfo] assistantdict clear: {e}")
 
-    logging.info(f"[setbotinfo] Total chats mapped for bot {bot_id}: {len([c for c,b in _CHAT_TO_BOT.items() if b==bot_id])}")
+    logging.info(f"[setbotinfo] Total chats mapped for bot {bot_id}: "
+                 f"{len([c for c,b in _CHAT_TO_BOT.items() if b==bot_id])}")
 
 
 async def _reload_assistant(bot_id: int, string_session: str) -> bool:
@@ -298,7 +219,7 @@ async def _reload_assistant(bot_id: int, string_session: str) -> bool:
     2. Start PyTgCalls instance
     3. Register VC event handlers
     4. Stop old instances
-    5. Patch all namespaces (call.py critical)
+    5. Patch all namespaces
     6. Override SHASHA.join_call
     7. Populate chat map
     """
@@ -367,7 +288,6 @@ async def _reload_assistant(bot_id: int, string_session: str) -> bool:
             await old_ptc.stop()
         except Exception:
             pass
-
     old_pyro = _CUSTOM_ASSISTANTS.pop(bot_id, None)
     if old_pyro:
         try:
@@ -401,28 +321,24 @@ def unregister_bot(bot_id: int):
     """Call on bot removal/expiry."""
     for cid in [c for c, b in list(_CHAT_TO_BOT.items()) if b == bot_id]:
         _CHAT_TO_BOT.pop(cid, None)
-
     ptc = _CUSTOM_PYTGCALLS.pop(bot_id, None)
     if ptc:
         try:
             asyncio.create_task(ptc.stop())
         except Exception:
             pass
-
     pyro = _CUSTOM_ASSISTANTS.pop(bot_id, None)
     if pyro:
         try:
             asyncio.create_task(pyro.stop())
         except Exception:
             pass
-
     _BOT_ASSISTANT_IDS.pop(bot_id, None)
 
 
 # Apply patches at import time
 _patch_all_namespaces()
 _override_shasha_join_call()
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS
@@ -496,7 +412,6 @@ async def _resolve_user(client: Client, target: str):
         return await client.get_users(int(target))
     except ValueError:
         return await client.get_users(target)
-
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  COMMANDS
@@ -726,18 +641,15 @@ async def set_assistant_cmd(client: Client, message: Message):
     bid = await _bot_id(client)
     await _ensure_registered(client)
     session_str = message.command[1].strip()
-
     await _update(bid, {
         "assistant_mode":   "single",
         "assistant_string": session_str,
         "assistant_multi":  [],
     })
-
     status_msg = await message.reply_text(
         "⏳ Starting new Pyrogram client + PyTgCalls instance..."
     )
     reload_ok = await _reload_assistant(bid, session_str)
-
     if reload_ok:
         try:
             me = await _CUSTOM_ASSISTANTS[bid].get_me()
@@ -966,8 +878,9 @@ async def set_bot_help(client: Client, message: Message):
             "**`/setassistant <string_session>`**\n"
             "➤ Pyrogram v2 string session\n"
             "➤ Takes effect IMMEDIATELY — no restart needed\n"
+            "➤ Persists across ALL restarts and redeployments\n"
             "➤ Overrides SHASHA.join_call directly\n"
-            "➤ Old assistant will NOT be used or invited\n\n"
+            "➤ Custom assistant is invited to groups (not default pool)\n\n"
             "**`/setmultiassist <s1> <s2> ...`** — Multiple sessions\n"
             "**`/assistantinfo`** — Active assistant details\n"
             "Reset: `/resetbotset`"
@@ -1107,7 +1020,6 @@ async def change_owner(client: Client, message: Message):
         f"New: [{new_owner_name}](tg://user?id={new_owner_id})\n"
         f"All settings preserved ✅"
     )
-
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  MODULE METADATA
