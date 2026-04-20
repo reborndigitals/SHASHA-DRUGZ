@@ -35,7 +35,6 @@ user_command_count = {}
 SPAM_THRESHOLD = 2
 SPAM_WINDOW_SECONDS = 5
 
-
 def _is_spam(user_id: int) -> bool:
     current_time = time()
     last = user_last_message_time.get(user_id, 0)
@@ -48,31 +47,54 @@ def _is_spam(user_id: int) -> bool:
         user_last_message_time[user_id] = current_time
         return False
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 #  ASSISTANT JOIN HELPER
 #
-#  THE ROOT FIX:
-#  All get_chat_member / create_chat_invite_link / export_chat_invite_link
-#  calls now use `client` (the deployed bot with admin rights in the group),
-#  NOT `app` (the main bot which has no rights in the group).
+#  FIX 2: We now look up the CORRECT assistant to invite.
 #
-#  The old code used `app` everywhere, so permission checks always returned
-#  False even though the deployed bot had full admin rights, causing the
-#  false "make me admin" message every single time.
+#  Priority:
+#    1. If the deployed bot has a custom assistant set via /setassistant,
+#       use that Pyrogram client (get_custom_assistant_userbot).
+#    2. Otherwise fall back to get_assistant(chat_id) — the default pool.
+#
+#  All Telegram API calls still use `client` (the deployed bot which has
+#  admin rights in the group), NOT `app` (the main bot).
 # ─────────────────────────────────────────────────────────────────────────────
-async def _ensure_assistant_joined(client: Client, chat_id: int) -> tuple[bool, str]:
+def _get_userbot_for_bot(client: Client):
     """
-    Ensure the assistant userbot is a member of the group.
-    Uses `client` (the deployed bot) for all Telegram API calls.
-
-    Returns (success: bool, message_for_group: str).
-    Empty string = no message needed (silent success or silent skip).
+    FIX 2: Return the correct userbot to invite into a group.
+    If the deployed bot (client) has a custom assistant configured via
+    /setassistant, return that. Otherwise return None so the caller
+    falls back to get_assistant(chat_id) from the default pool.
     """
     try:
-        userbot = await get_assistant(chat_id)
+        from SHASHA_DRUGZ.dplugins.COMMON.PREMIUM.setbotinfo import get_custom_assistant_userbot
+        bot_id = client.me.id if client.me else None
+        if bot_id is not None:
+            custom = get_custom_assistant_userbot(bot_id)
+            if custom is not None:
+                return custom
     except Exception:
-        return False, ""
+        pass
+    return None
+
+
+async def _ensure_assistant_joined(client: Client, chat_id: int) -> tuple[bool, str]:
+    """
+    Ensure the correct assistant userbot is a member of the group.
+
+    FIX 2: Resolves the custom assistant first (if set via /setassistant),
+    then falls back to the default pool.  Uses `client` (the deployed bot)
+    for all Telegram API permission checks and invite-link generation.
+    """
+    # ── Resolve the correct userbot ───────────────────────────────────────────
+    userbot = _get_userbot_for_bot(client)
+    if userbot is None:
+        # No custom assistant → use default pool assignment for this chat
+        try:
+            userbot = await get_assistant(chat_id)
+        except Exception:
+            return False, ""
 
     assistant_id = userbot.id
 
@@ -102,12 +124,11 @@ async def _ensure_assistant_joined(client: Client, chat_id: int) -> tuple[bool, 
     ):
         return True, ""
 
-    # Banned → assistant_guard.py handles this, skip here
+    # Banned → assistant_guard.py handles this; skip here
     if status == ChatMemberStatus.BANNED:
         return False, ""
 
     # ── Not in chat → try to join ─────────────────────────────────────────────
-
     # Method A: join via public @username (no extra permission needed)
     try:
         chat = await client.get_chat(chat_id)
@@ -146,7 +167,6 @@ async def _ensure_assistant_joined(client: Client, chat_id: int) -> tuple[bool, 
         f"[Assistant](tg://openmessage?user_id={assistant_id}) to this group.**"
     )
 
-
 # ── /start private ────────────────────────────────────────────────────────────
 @Client.on_message(filters.command(["start"]) & filters.private & ~BANNED_USERS)
 @LanguageStart
@@ -160,12 +180,9 @@ async def start_pm(client: Client, message: Message, _):
         await asyncio.sleep(3)
         await hu.delete()
         return
-
     await add_served_user(message.from_user.id)
-
     if len(message.text.split()) > 1:
         name = message.text.split(None, 1)[1]
-
         if name[0:4] == "help":
             keyboard = first_page(_)
             return await message.reply_photo(
@@ -173,7 +190,6 @@ async def start_pm(client: Client, message: Message, _):
                 caption=_["help_1"].format(config.SUPPORT_CHAT),
                 reply_markup=keyboard,
             )
-
         if name[0:3] == "sud":
             await sudoers_list(client=client, message=message, _=_)
             if await is_on_off(2):
@@ -187,7 +203,6 @@ async def start_pm(client: Client, message: Message, _):
                     ),
                 )
             return
-
         if name[0:3] == "inf":
             m = await message.reply_text("🔎")
             query = str(name).replace("info_", "", 1)
@@ -233,12 +248,10 @@ async def start_pm(client: Client, message: Message, _):
                     ),
                 )
             return
-
     # Normal /start
     bot_id = client.me.id
     start_img = await get_start_image(bot_id)
     custom_msg = await get_start_message(bot_id)
-
     if custom_msg:
         caption = (
             custom_msg
@@ -247,14 +260,12 @@ async def start_pm(client: Client, message: Message, _):
         )
     else:
         caption = _["dstart_1"].format(message.from_user.mention, client.me.mention)
-
     out = await dprivate_panel(client, _, message.chat.id)
     await message.reply_photo(
         photo=start_img,
         caption=caption,
         reply_markup=InlineKeyboardMarkup(out),
     )
-
     if await is_on_off(2):
         return await app.send_message(
             chat_id=config.LOGGER_ID,
@@ -264,7 +275,6 @@ async def start_pm(client: Client, message: Message, _):
                 f"<b>ᴜsᴇʀɴᴀᴍᴇ :</b> @{message.from_user.username}"
             ),
         )
-
 
 # ── /start group ──────────────────────────────────────────────────────────────
 @Client.on_message(filters.command(["start"]) & filters.group & ~BANNED_USERS)
@@ -279,13 +289,11 @@ async def start_gp(client: Client, message: Message, _):
         await asyncio.sleep(3)
         await hu.delete()
         return
-
     bot_id = client.me.id
     start_img = await get_start_image(bot_id)
     custom_msg = await get_start_message(bot_id)
     out = await dstart_panel(client, _, message.chat.id)
     BOT_UP = await bot_up_time()
-
     if custom_msg:
         caption = (
             custom_msg
@@ -294,22 +302,19 @@ async def start_gp(client: Client, message: Message, _):
         )
     else:
         caption = _["dstart_2"].format(message.from_user.mention, BOT_UP)
-
     await message.reply_photo(
         photo=start_img,
         caption=caption,
         reply_markup=InlineKeyboardMarkup(out),
     )
     await add_served_chat(message.chat.id)
-
-    # Assistant check — fully silent, uses client not app
+    # Assistant check — FIX 2: uses custom assistant if set, silent, uses client not app
     try:
         joined, join_msg = await _ensure_assistant_joined(client, message.chat.id)
         if join_msg:
             await message.reply_text(join_msg)
     except Exception:
         pass
-
 
 # ── New member welcome ────────────────────────────────────────────────────────
 @Client.on_message(filters.new_chat_members, group=-1)
@@ -318,19 +323,16 @@ async def welcome(client: Client, message: Message):
         try:
             language = await get_lang(message.chat.id)
             _ = get_string(language)
-
             if await is_banned_user(member.id):
                 try:
                     await message.chat.ban_member(member.id)
                 except Exception:
                     pass
-
             if member.id == client.me.id:
                 if message.chat.type != ChatType.SUPERGROUP:
                     await message.reply_text(_["start_4"])
                     await client.leave_chat(message.chat.id)
                     return
-
                 if message.chat.id in await blacklisted_chats():
                     await message.reply_text(
                         _["start_5"].format(
@@ -342,18 +344,15 @@ async def welcome(client: Client, message: Message):
                     )
                     await client.leave_chat(message.chat.id)
                     return
-
                 start_img = await get_start_image(client.me.id)
                 out = await dstart_panel(client, _, message.chat.id)
-
-                # Assistant join — uses client for all API calls, not app
+                # FIX 2: invite the correct (custom) assistant, using client for API calls
                 try:
                     joined, join_msg = await _ensure_assistant_joined(client, message.chat.id)
                     if join_msg:
                         await message.reply_text(join_msg)
                 except Exception:
                     pass
-
                 await message.reply_photo(
                     random.choice(SHASHA_PICS),
                     caption=_["start_3"].format(
@@ -366,6 +365,5 @@ async def welcome(client: Client, message: Message):
                 )
                 await add_served_chat(message.chat.id)
                 await message.stop_propagation()
-
         except Exception as ex:
             print(ex)
