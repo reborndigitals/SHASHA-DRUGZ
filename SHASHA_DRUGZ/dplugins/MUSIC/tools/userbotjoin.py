@@ -1,4 +1,4 @@
-SHASHA_DRUGZ/dplugins/MUSIC/tools/userbotjoin.py
+#SHASHA_DRUGZ/dplugins/MUSIC/tools/userbotjoin.py
 import asyncio
 import random
 from pyrogram import Client, filters
