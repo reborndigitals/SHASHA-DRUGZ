@@ -927,7 +927,7 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             sdir = f"deploy_sessions/{bot_id}"; os.makedirs(sdir, exist_ok=True)
             bc = Client(name=f"deploy_{bot_id}", api_id=API_ID, api_hash=API_HASH,
                         bot_token=token, workdir=sdir,
-                        plugins=dict(root="SHASHA_DRUGZ.dplugins", include=new_plugins))
+                        plugins=dict(root=MODULES_PATH, include=new_plugins))
             await bc.start()
             _register_isolation_handlers(bc, bot_id, old_bot["owner_id"])
             await apply_to_config(bot_id)
@@ -963,7 +963,7 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             sdir = f"deploy_sessions/{bot_id}"; os.makedirs(sdir, exist_ok=True)
             bc = Client(name=f"deploy_{bot_id}", api_id=API_ID, api_hash=API_HASH,
                         bot_token=token, workdir=sdir,
-                        plugins=dict(root="SHASHA_DRUGZ.dplugins", include=ap))
+                        plugins=dict(root=MODULES_PATH, include=ap))
             await bc.start()
             bot_me       = await bc.get_me()
             bot_id       = bot_me.id
@@ -1466,12 +1466,6 @@ async def restart_bots():
     await _resolve_deploy_logger()
     logging.info("Restarting all deployed bots...")
 
-    # Absolute path to the dplugins directory so Pyrogram can always find it
-    # regardless of the current working directory at startup.
-    _DPLUGINS_ROOT = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "dplugins")
-    )
-
     bots = await deploy_bots_col.find({"status": "active"}).to_list(length=None)
     n = 1
     for bot in bots:
@@ -1530,7 +1524,7 @@ async def restart_bots():
                 api_hash=API_HASH,
                 bot_token=token,
                 workdir=sdir,
-                plugins=dict(root="SHASHA_DRUGZ.dplugins", include=ap),
+                plugins=dict(root=MODULES_PATH, include=ap),
             )
             await bc.start()
             logging.info(f"Bot {n} started: @{bot.get('username','?')}"); n += 1
