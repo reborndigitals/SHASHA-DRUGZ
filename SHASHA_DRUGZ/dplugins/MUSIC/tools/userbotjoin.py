@@ -15,6 +15,43 @@ from SHASHA_DRUGZ.utils.shasha_ban import admin_filter
 
 links = {}
 
+# ─── Fix: resolve SUDOERS to a plain list of integer user IDs ────────────────
+def _sudoers_ids():
+    """
+    SUDOERS may be a Pyrogram filter object, a list of User objects, a list of
+    ints, or a set of ints.  filters.user() only accepts ints — extract them.
+    """
+    raw = SUDOERS
+    # Already a plain list/set/tuple of ints
+    if isinstance(raw, (list, set, tuple)):
+        ids = []
+        for item in raw:
+            if isinstance(item, int):
+                ids.append(item)
+            elif hasattr(item, "id"):          # User / Chat object
+                ids.append(item.id)
+        return ids
+    # Pyrogram AndFilter / OrFilter wrapping user IDs stored in .data
+    if hasattr(raw, "data"):
+        data = raw.data
+        if isinstance(data, (list, set, tuple)):
+            ids = []
+            for item in data:
+                if isinstance(item, int):
+                    ids.append(item)
+                elif hasattr(item, "id"):
+                    ids.append(item.id)
+            return ids
+    # Single User object
+    if hasattr(raw, "id"):
+        return [raw.id]
+    # Fallback: try int cast
+    try:
+        return [int(raw)]
+    except Exception:
+        return []
+
+SUDOERS_IDS = _sudoers_ids()
 
 # ─── Helper: get the correct userbot + its numeric ID ────────────────────────
 async def _get_client_id(userbot: Client) -> int:
@@ -52,7 +89,6 @@ async def _resolve_userbot(client: Client, chat_id: int):
                 return custom, uid
     except Exception:
         pass
-
     userbot = await get_assistant(chat_id)
     uid = await _get_client_id(userbot)
     return userbot, uid
@@ -76,7 +112,6 @@ def _ub_username(userbot: Client, fallback_id: int) -> str:
 )
 async def join_group(client: Client, message):
     chat_id = message.chat.id
-
     try:
         userbot, userbot_id = await _resolve_userbot(client, chat_id)
     except Exception as e:
@@ -229,7 +264,7 @@ async def leave_one(client: Client, message):
 @Client.on_message(
     filters.command("leaveall")
     & filters.group
-    & filters.user(SUDOERS)
+    & filters.user(SUDOERS_IDS)          # ← fixed: plain list of ints
 )
 async def leave_all(client: Client, message):
     left = 0
