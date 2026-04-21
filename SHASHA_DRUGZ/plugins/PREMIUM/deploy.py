@@ -906,10 +906,10 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             old_bot = await get_deployed_bot_by_id(bot_id)
             if not old_bot:
                 await cq.answer("ᴏʀɪɢɪɴᴀʟ ʙᴏᴛ ɴᴏᴛ ғᴏᴜɴᴅ.", show_alert=True); return
-            old_modules     = old_bot.get("modules", [])
-            incoming        = payment.get("modules", payment.get("modules_plugins", []))
-            new_modules     = list(set(old_modules + incoming))
-            new_plugins     = list(set(get_plugins_for_manual_modules(new_modules) + COMMON_PLUGINS))
+            old_modules     = [m for m in old_bot.get("modules", []) if isinstance(m, str) and m.strip()]
+            incoming        = [m for m in payment.get("modules", payment.get("modules_plugins", [])) if isinstance(m, str) and m.strip()]
+            new_modules     = list({m for m in (old_modules + incoming)})
+            new_plugins     = _sanitize_plugins(get_plugins_for_manual_modules(new_modules) + COMMON_PLUGINS)
             added_modules   = [m for m in incoming if m not in old_modules]
             added_cost      = sum(MODULE_PRICES.get(m, 0) for m in added_modules)
             old_renewal_amt = old_bot.get("renewal_amount", old_bot.get("payment_amount", 0))
@@ -949,15 +949,16 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
         else:
             # FRESH DEPLOY PATH
             if mode == "auto":
-                ap     = list(set(payment.get("modules_plugins", []) + COMMON_PLUGINS))
+                ap     = _sanitize_plugins(payment.get("modules_plugins", []) + COMMON_PLUGINS)
                 dm     = []
                 for item in payment.get("selected_bundles", []):
                     if item in AUTO_BOT_TYPES:  dm.append(AUTO_BOT_TYPES[item]["display"])
                     elif item in AUTO_COMBOS:   dm.append(AUTO_COMBOS[item]["display"])
                 bundle = "+".join(payment.get("selected_bundles", []))
             else:
-                ap     = list(set(get_plugins_for_manual_modules(payment.get("modules", [])) + COMMON_PLUGINS))
-                dm     = payment.get("modules", [])
+                raw_mods = [m for m in payment.get("modules", []) if isinstance(m, str) and m.strip()]
+                ap     = _sanitize_plugins(get_plugins_for_manual_modules(raw_mods) + COMMON_PLUGINS)
+                dm     = raw_mods
                 bundle = "manual"
             sdir = f"deploy_sessions/{bot_id}"; os.makedirs(sdir, exist_ok=True)
             bc = Client(name=f"deploy_{bot_id}", api_id=API_ID, api_hash=API_HASH,
@@ -1447,11 +1448,30 @@ async def admin_earnings_dashboard(client, message):
     )
     await message.reply_text(text)
 
+# ─── Plugin list sanitizer ────────────────────────────────────────────────────
+def _sanitize_plugins(raw: list) -> list:
+    """
+    Return a deduplicated list of plain non-empty strings suitable for
+    passing to Pyrogram's plugins=dict(include=...).
+    Drops anything that is not a str (dicts, Pyrogram User objects, None, etc.)
+    which would cause 'unhashable type' or 'name SHASHA_DRUGZ is not defined'.
+    """
+    if not isinstance(raw, list):
+        return []
+    return list({p for p in raw if isinstance(p, str) and p.strip()})
+
 # ─── Restart on startup ────────────────────────────────────────────────────────
 async def restart_bots():
     global DEPLOYED_CLIENTS, DEPLOYED_BOTS, BOT_ALLOWED_PLUGINS, BOT_OWNERS
     await _resolve_deploy_logger()
     logging.info("Restarting all deployed bots...")
+
+    # Absolute path to the dplugins directory so Pyrogram can always find it
+    # regardless of the current working directory at startup.
+    _DPLUGINS_ROOT = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "dplugins")
+    )
+
     bots = await deploy_bots_col.find({"status": "active"}).to_list(length=None)
     n = 1
     for bot in bots:
@@ -1463,24 +1483,55 @@ async def restart_bots():
                 await update_deployed_bot(bot_id, {"status": "revoked"}); continue
         except Exception as e:
             logging.error(f"Token error {token}: {e}"); continue
-        ap     = bot.get("plugins", [])
-        common = COMMON_PLUGINS
-        if ap:
-            ap = list(set(ap + common))
+
+        # ── Build & sanitize plugin list ──────────────────────────────────────
+        common = _sanitize_plugins(COMMON_PLUGINS)
+        raw_ap = bot.get("plugins", [])
+
+        if raw_ap:
+            ap = _sanitize_plugins(raw_ap + common)
         else:
-            if "bundle" in bot and bot["bundle"] != "manual":
-                ps = set(common)
-                for p in bot["bundle"].split("+"):
-                    ps.update(AUTO_BOT_PLUGINS.get(p, []))
-                    ps.update(AUTO_COMBO_PLUGINS.get(p, []))
+            bundle = bot.get("bundle", "manual") or "manual"
+            if bundle != "manual":
+                ps: set = set(common)
+                for part in bundle.split("+"):
+                    part = part.strip()
+                    ps.update(_sanitize_plugins(AUTO_BOT_PLUGINS.get(part, [])))
+                    ps.update(_sanitize_plugins(AUTO_COMBO_PLUGINS.get(part, [])))
                 ap = list(ps)
             else:
-                ap = list(set(get_plugins_for_manual_modules(bot.get("modules", [])) + common))
+                raw_modules = bot.get("modules", [])
+                if not isinstance(raw_modules, list):
+                    raw_modules = []
+                modules = [m for m in raw_modules if isinstance(m, str) and m.strip()]
+                ap = _sanitize_plugins(
+                    get_plugins_for_manual_modules(modules) + common
+                )
+
+        # Safety net: if ap is somehow still empty, fall back to COMMON only
+        if not ap:
+            ap = common
+            logging.warning(
+                f"[restart] bot {bot_id} had no valid plugins — "
+                f"falling back to COMMON plugins only"
+            )
+
+        logging.info(
+            f"[restart] bot {bot_id} (@{bot.get('username','?')}) "
+            f"loading {len(ap)} plugins"
+        )
+
         try:
-            sdir = f"deploy_sessions/{bot_id}"; os.makedirs(sdir, exist_ok=True)
-            bc = Client(name=f"deploy_{bot_id}", api_id=API_ID, api_hash=API_HASH,
-                        bot_token=token, workdir=sdir,
-                        plugins=dict(root="SHASHA_DRUGZ.dplugins", include=ap))
+            sdir = f"deploy_sessions/{bot_id}"
+            os.makedirs(sdir, exist_ok=True)
+            bc = Client(
+                name=f"deploy_{bot_id}",
+                api_id=API_ID,
+                api_hash=API_HASH,
+                bot_token=token,
+                workdir=sdir,
+                plugins=dict(root="SHASHA_DRUGZ.dplugins", include=ap),
+            )
             await bc.start()
             logging.info(f"Bot {n} started: @{bot.get('username','?')}"); n += 1
             bm = await bc.get_me()
@@ -1491,8 +1542,7 @@ async def restart_bots():
             BOT_ALLOWED_PLUGINS[bm.id] = set(ap)
             BOT_OWNERS[bm.id]          = bot["owner_id"]
             _iso_cache[bm.id]          = bot["owner_id"]
-            # ── FIX 1: Restore custom assistant saved via /setassistant ────────
-            # Run as a background task so one failing assistant doesn't block others
+            # Restore custom assistant saved via /setassistant
             asyncio.create_task(_restore_custom_assistant(bm.id))
             await asyncio.sleep(5)
         except Exception as e:
