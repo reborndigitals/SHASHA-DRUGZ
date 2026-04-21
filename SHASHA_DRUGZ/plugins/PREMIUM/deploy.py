@@ -1,6 +1,7 @@
 # SHASHA_DRUGZ/plugins/PREMIUM/deploy.py
 import re
 import os
+import sys
 import logging
 import asyncio
 import uuid
@@ -39,6 +40,13 @@ from SHASHA_DRUGZ.mongo.deploydb import (
 )
 from SHASHA_DRUGZ.utils.invoice import generate_invoice
 os.makedirs("deploy_sessions", exist_ok=True)
+
+# ─── Ensure project root is on sys.path so plugins can import SHASHA_DRUGZ ──
+# This is required because deployed bot clients load plugins in a subprocess-like
+# context where the cwd may differ from the project root.
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 # ─── DEPLOY_LOGGER resolver ───────────────────────────────────────────────────
 _RESOLVED_DEPLOY_LOGGER: Optional[int] = None
 async def _resolve_deploy_logger():
@@ -927,7 +935,7 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             sdir = f"deploy_sessions/{bot_id}"; os.makedirs(sdir, exist_ok=True)
             bc = Client(name=f"deploy_{bot_id}", api_id=API_ID, api_hash=API_HASH,
                         bot_token=token, workdir=sdir,
-                        plugins=dict(root=MODULES_PATH, include=new_plugins))
+                        plugins=dict(root=MODULES_PATH))
             await bc.start()
             _register_isolation_handlers(bc, bot_id, old_bot["owner_id"])
             await apply_to_config(bot_id)
@@ -963,7 +971,7 @@ async def handle_admin_callback(client, cq: CallbackQuery, admin_id: int):
             sdir = f"deploy_sessions/{bot_id}"; os.makedirs(sdir, exist_ok=True)
             bc = Client(name=f"deploy_{bot_id}", api_id=API_ID, api_hash=API_HASH,
                         bot_token=token, workdir=sdir,
-                        plugins=dict(root=MODULES_PATH, include=ap))
+                        plugins=dict(root=MODULES_PATH))
             await bc.start()
             bot_me       = await bc.get_me()
             bot_id       = bot_me.id
@@ -1524,7 +1532,7 @@ async def restart_bots():
                 api_hash=API_HASH,
                 bot_token=token,
                 workdir=sdir,
-                plugins=dict(root=MODULES_PATH, include=ap),
+                plugins=dict(root=MODULES_PATH),
             )
             await bc.start()
             logging.info(f"Bot {n} started: @{bot.get('username','?')}"); n += 1
@@ -1540,7 +1548,7 @@ async def restart_bots():
             asyncio.create_task(_restore_custom_assistant(bm.id))
             await asyncio.sleep(5)
         except Exception as e:
-            logging.error(f"Failed to start @{bot.get('username','?')}: {e}")
+            logging.exception(f"Failed to start @{bot.get('username','?')}: {e}")
     await _log(app, "✅ ᴀʟʟ ᴅᴇᴘʟᴏʏᴇᴅ ʙᴏᴛs ʀᴇsᴛᴀʀᴛᴇᴅ!")
 
 # ─── /start deploy ────────────────────────────────────────────────────────────
