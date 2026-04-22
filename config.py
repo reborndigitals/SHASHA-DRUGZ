@@ -67,7 +67,7 @@ CLEANMODE_DELETE_MINS = int(getenv("CLEANMODE_MINS", "5"))
 
 HEROKU_APP_NAME = getenv("HEROKU_APP_NAME")
 HEROKU_API_KEY = getenv("HEROKU_API_KEY", "HRKU-fc1b7aea-b37a-4015-9877-8c3967ee97bc")
-UPSTREAM_REPO = getenv("UPSTREAM_REPO", "https://github.com/reborndigitals/SHASHATEST")
+UPSTREAM_REPO = getenv("UPSTREAM_REPO", "https://github.com/reborndigitals/SHASHA-TEST")
 UPSTREAM_BRANCH = getenv("UPSTREAM_BRANCH", "master")
 GIT_TOKEN = getenv("GIT_TOKEN", None)
 
