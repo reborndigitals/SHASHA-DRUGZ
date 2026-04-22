@@ -1,8 +1,9 @@
+# SHASHA_DRUGZ/plugins/bot/start.py
 from time import time
 import asyncio
 import random
-import httpx
 
+import httpx
 from pyrogram import filters
 from pyrogram.enums import ChatMemberStatus, ChatType
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -29,58 +30,19 @@ from SHASHA_DRUGZ.utils.database import get_assistant
 from SHASHA_DRUGZ.utils.extraction import extract_user
 from strings import get_string
 
-# ─── ADDED IMPORTS FOR ASSISTANT JOIN ERRORS ────────────────────────────────
-from pyrogram.errors import FloodWait, UserAlreadyParticipant, InviteHashExpired, InviteHashInvalid
+# ─── Assistant join error types ──────────────────────────────────────────────
+from pyrogram.errors import (
+    FloodWait,
+    UserAlreadyParticipant,
+    InviteHashExpired,
+    InviteHashInvalid,
+)
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  START STICKERS
-# ══════════════════════════════════════════════════════════════════════════════
-START_STICKERS = [
-    "CAACAgUAAxkBAAIKDGm80g_znNZjQLXko2KEZM1nr0qEAAKyCAACjfw5Vwmuqla3_0AwHgQ",
-    "CAACAgUAAxkBAAIKDWm80hS0mpeZOgABlTG9UNpjvZI1WgACTgwAAiJJMFc40-Yhki2wlB4E",
-    "CAACAgUAAxkBAAIKDmm80hnC_EQGNXEgg8bmiCWE32XLAALGCAAC0v05V82aflzlC23sHgQ",
-    "CAACAgUAAxkBAAIKD2m80iHXNRg0a4YBB0Maz42ng4qTAAJxDAACyE0xV6aQfPRMeUokHgQ",
-    "CAACAgUAAxkBAAIKEGm80iwLSwNsqJS6oiaK4qSfIekqAAIqCwACRA85V3w-iuqpGDgIHgQ",
-    "CAACAgUAAxkBAAIKEWm80jUmiL-rSOgsVbvwGNoisya4AAJJDQACE6w5V--cufZUktLVHgQ",
-    "CAACAgUAAxkBAAIKFmm80nwIlTijORY4AZPvzJN-uLW0AAKTDwAC8Bo4V2-xyEBcNmShHgQ",
-    "CAACAgUAAxkBAAIKF2m80osFfSdFLU-i5rod-FsD4o1uAAL8CQACVOkwV5SIz-4RtYj2HgQ",
-    "CAACAgUAAxkBAAIKGGm80pDOhtCP8mXTonXUlOLZ9mQzAALUCwACc045VwWrfNtzzpHvHgQ",
-    "CAACAgUAAxkBAAIKG2m80qzrJSaBtSoAAasJasyuJ8X5VQACNwoAApLnMFfso_6k-QJv-x4E",
-]
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  EFFECT IDs  (sticker மட்டும்)
-# ══════════════════════════════════════════════════════════════════════════════
-PRIMARY_EFFECTS = [
-    "5159385139981059251",   # ❤️  Hearts
-    "5066970843586925436",   # 🔥 Flame
-    "5070445174516318631",   # 🎉 Confetti
-    "5104841245755180586",   # 😂 Laugh
-    "5107584321108051015",   # 😍 Love Eyes
-    "5104841245755180587",   # 😮 Wow
-    "5107584321108051016",   # 😢 Sad
-    "5104841245755180588",   # 👏 Clap
-    "5107584321108051017",   # 🤯 Mind Blow
-    "5046509860389126442",   # 💥 Explosion
-    "5046589136895476101",   # ⚡ Lightning
-    "5046589136895476102",   # 💫 Sparkle
-    "5046589136895476103",   # 🌈 Rainbow
-    "5046589136895476104",   # 🎶 Music
-    "5046589136895476105",   # 🎯 Target
-    "5046589136895476107",   # 💎 Diamond
-    "5046589136895476108",   # 🚀 Rocket
-    "5046589136895476109",   # 🌀 Spiral
-    "5046589136895476110",   # 🌟 Star
-]
-
-SAFE_EFFECTS = [
-    "5159385139981059251",   # ❤️  Hearts
-    "5107584321108051014",   # 👍 Like
-    "5070445174516318631",   # 🎉 Confetti
-    "5066970843586925436",   # 🔥 Flame
-]
-
-BOT_API_URL = f"https://api.telegram.org/bot{config.BOT_TOKEN}"
+# ─── Animation module (separated) ────────────────────────────────────────────
+from SHASHA_DRUGZ.plugins.bot.start_anim import (
+    send_sticker_with_effect,
+    run_start_animation,
+)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ANTI-SPAM
@@ -90,119 +52,44 @@ user_command_count:     dict = {}
 SPAM_THRESHOLD      = 2
 SPAM_WINDOW_SECONDS = 5
 
-
 # ══════════════════════════════════════════════════════════════════════════════
-#  BOT API HELPER
+#  ASSISTANT JOIN HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
-async def _api_post(endpoint: str, payload: dict) -> dict:
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            resp = await client.post(f"{BOT_API_URL}/{endpoint}", json=payload)
-            return resp.json()
-    except Exception as e:
-        return {"ok": False, "description": str(e)}
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  DELAYED DELETE
-# ══════════════════════════════════════════════════════════════════════════════
-async def delayed_delete(chat_id: int, message_id: int) -> None:
-    await asyncio.sleep(3)
-    await _api_post("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
-
-
-async def _delete_msg(chat_id: int, message_id: int) -> None:
-    await _api_post("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  SEND STICKER + EFFECT
-#  Fallback: primary (3 tries) → safe → sticker alone → None
-# ══════════════════════════════════════════════════════════════════════════════
-async def send_sticker_with_effect(chat_id: int) -> int | None:
-    # Ensure app.username is populated before private_panel() builds buttons
-    try:
-        if not app.username:
-            await app.get_me()
-    except Exception:
-        pass
-
-    sticker_id   = random.choice(START_STICKERS)
-    primary_pool = random.sample(PRIMARY_EFFECTS, min(3, len(PRIMARY_EFFECTS)))
-
-    for effect_id in primary_pool:
-        data = await _api_post("sendSticker", {
-            "chat_id":           chat_id,
-            "sticker":           sticker_id,
-            "message_effect_id": effect_id,
-        })
-        if data.get("ok"):
-            return data["result"]["message_id"]
-
-    for effect_id in SAFE_EFFECTS:
-        data = await _api_post("sendSticker", {
-            "chat_id":           chat_id,
-            "sticker":           sticker_id,
-            "message_effect_id": effect_id,
-        })
-        if data.get("ok"):
-            return data["result"]["message_id"]
-
-    # Sticker alone — no effect fallback
-    data = await _api_post("sendSticker", {
-        "chat_id": chat_id,
-        "sticker": sticker_id,
-    })
-    if data.get("ok"):
-        return data["result"]["message_id"]
-
-    return None
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  ASSISTANT JOIN HELPERS (Improved retry system)
-# ══════════════════════════════════════════════════════════════════════════════
-
-# 🔥 CONFIG
 MAX_RETRIES = 5
 RETRY_DELAY = 10  # seconds
 
-async def has_invite_permission(chat_id: int):
-    try:
-        bot = await app.get_me()
-        member = await app.get_chat_member(chat_id, bot.id)
 
+async def has_invite_permission(chat_id: int) -> bool:
+    try:
+        bot    = await app.get_me()
+        member = await app.get_chat_member(chat_id, bot.id)
         if member.status != ChatMemberStatus.ADMINISTRATOR:
             return False
-
         if not member.privileges.can_invite_users:
             return False
-
         return True
-    except:
+    except Exception:
         return False
 
 
-async def get_available_assistant(chat_id):
+async def get_available_assistant(chat_id: int):
     try:
-        userbot = await get_assistant(chat_id)
-        return userbot
-    except:
+        return await get_assistant(chat_id)
+    except Exception:
         return None
 
 
 async def join_assistant(chat_id: int):
     userbot = await get_available_assistant(chat_id)
-
     if not userbot:
         return False, "No assistant available"
 
-    # ✅ Already joined check (SAFE)
+    # ✅ Already joined check
     try:
         member = await app.get_chat_member(chat_id, userbot.id)
         if member:
             return True, "Already in group"
-    except:
+    except Exception:
         pass
 
     # ✅ Username join
@@ -220,87 +107,76 @@ async def join_assistant(chat_id: int):
     try:
         if not await has_invite_permission(chat_id):
             return False, "Bot needs invite permission"
-
         link = await app.export_chat_invite_link(chat_id)
         await asyncio.sleep(1)
-
         await userbot.join_chat(link)
         return True, "Joined via invite"
-
     except UserAlreadyParticipant:
         return True, "Already in group"
-
     except (InviteHashExpired, InviteHashInvalid):
         return False, "Invite link invalid"
-
     except Exception as e:
         print("Invite join fail:", e)
 
     return False, "Join failed"
 
 
-async def auto_retry_join(chat_id: int):
+async def auto_retry_join(chat_id: int) -> bool:
     for i in range(MAX_RETRIES):
         try:
             success, msg = await join_assistant(chat_id)
-
             if success:
                 print(f"[ASSISTANT JOINED] {chat_id} → {msg}")
                 return True
-
-            print(f"[RETRY {i+1}] {msg}")
+            print(f"[RETRY {i + 1}] {msg}")
             await asyncio.sleep(RETRY_DELAY)
-
         except FloodWait as e:
             print(f"[FLOODWAIT] Sleeping {e.value}s")
             await asyncio.sleep(e.value)
-
         except Exception as e:
             print("Retry error:", e)
             await asyncio.sleep(5)
-
     print(f"[FAILED] Assistant join failed in {chat_id}")
     return False
 
 
-async def instant_assistant_join(chat_id: int):
+async def instant_assistant_join(chat_id: int) -> None:
     asyncio.create_task(auto_retry_join(chat_id))
 
 
-# 🔥 ADDED: Assistant checker UI
-async def ensure_assistant_joined(message: Message):
+async def ensure_assistant_joined(message: Message) -> None:
     chat_id = message.chat.id
-
     try:
         userbot = await get_assistant(chat_id)
-    except Exception as e:
-        return await message.reply_text("❌ Assistant not available.")
+    except Exception:
+        await message.reply_text("❌ Assistant not available.")
+        return
 
     msg = await message.reply_text(
         f"🔍 **Checking [Assistant](tg://openmessage?user_id={userbot.id})...**"
     )
 
-    # 🔥 RUN BACKGROUND JOIN ALWAYS (IMPORTANT)
+    # Always kick off background retry
     asyncio.create_task(auto_retry_join(chat_id))
 
-    # ✅ Check already joined
+    # Check if already joined
     try:
         await app.get_chat_member(chat_id, userbot.id)
-        return await msg.edit_text(
+        await msg.edit_text(
             f"✅ **[Assistant](tg://openmessage?user_id={userbot.id}) already in this group.**"
         )
-    except:
+        return
+    except Exception:
         pass
 
-    # ❌ Not joined → try immediate
+    # Attempt immediate join
     success, result = await join_assistant(chat_id)
-
     if success:
-        return await msg.edit_text(
+        await msg.edit_text(
             f"✅ **[Assistant](tg://openmessage?user_id={userbot.id}) joined successfully!**"
         )
     else:
-        return await msg.edit_text(
+        await msg.edit_text(
             f"⚠️ **{result}**\n🔄 Retrying in background..."
         )
 
@@ -311,7 +187,6 @@ async def ensure_assistant_joined(message: Message):
 @app.on_message(filters.command(["start"]) & filters.private & ~BANNED_USERS)
 @LanguageStart
 async def start_pm(client, message: Message, _):
-
     bot_mention  = app.mention
     user_mention = message.from_user.mention
 
@@ -320,7 +195,7 @@ async def start_pm(client, message: Message, _):
     except Exception:
         caption = f"Hello {user_mention}\n\nI am {bot_mention}"
 
-    # Anti-spam
+    # ── Anti-spam ─────────────────────────────────────────────────────────────
     user_id      = message.from_user.id
     current_time = time()
     last_time    = user_last_message_time.get(user_id, 0)
@@ -341,7 +216,7 @@ async def start_pm(client, message: Message, _):
 
     await add_served_user(user_id)
 
-    # /start param handlers
+    # ── /start param handlers ─────────────────────────────────────────────────
     if len(message.text.split()) > 1:
         name = message.text.split(None, 1)[1]
 
@@ -358,7 +233,7 @@ async def start_pm(client, message: Message, _):
             return
 
         if name.startswith("inf"):
-            m = await message.reply_text("🔎")
+            m     = await message.reply_text("🔎")
             query = name.replace("info_", "", 1)
             query = f"https://www.youtube.com/watch?v={query}"
             results = VideosSearch(query, limit=1)
@@ -399,35 +274,17 @@ async def start_pm(client, message: Message, _):
             return
 
     # ── Normal start flow ─────────────────────────────────────────────────────
+    # Ensure app.username is populated before private_panel() builds buttons
+    try:
+        if not app.username:
+            await app.get_me()
+    except Exception:
+        pass
 
-    # Step A — Sticker + full-screen effect
-    sticker_msg_id = await send_sticker_with_effect(message.chat.id)
-    # FIX 1: Let the effect animation fully render before next message
-    await asyncio.sleep(0.6)
+    # Run full-screen animation (sticker + effect + ding dong + starting text)
+    await run_start_animation(message)
 
-    # Step B — Ding ding animation
-    vip = await message.reply_text("**ᴅιиg ᴅσиg ꨄ︎❣️.....**")
-    for dots in [".❣️....", "..❣️...", "...❣️..", "....❣️.", ".....❣️"]:
-        await asyncio.sleep(0.1)
-        await vip.edit_text(f"**ᴅιиg ᴅσиg ꨄ︎{dots}**")
-    await asyncio.sleep(0.05)
-    await vip.delete()
-
-    # Step C — Starting animation
-    vips = await message.reply_text("**⚡ѕ**")
-    for step in ["⚡ѕт", "⚡ѕтα", "⚡ѕтαя", "⚡ѕтαят", "⚡ѕтαятι", "⚡ѕтαятιи", "⚡ѕтαятιиg"]:
-        await vips.edit_text(f"**{step}**")
-        await asyncio.sleep(0.02)
-    await vips.delete()
-
-    # Step D — FIX 2: delayed delete (background task, don't block UI)
-    # Immediate delete breaks Telegram client UI state after effect animation.
-    if sticker_msg_id:
-        asyncio.create_task(delayed_delete(message.chat.id, sticker_msg_id))
-
-    # Step E — FIX 3: small gap before final message so UI state is clean
-    #await asyncio.sleep(0.5)
-
+    # Final welcome photo
     out = private_panel(_)
     await message.reply_photo(
         photo=config.START_IMG_URL,
@@ -450,8 +307,7 @@ async def start_gp(client, message: Message, _):
         reply_markup=InlineKeyboardMarkup(out),
     )
     await add_served_chat(message.chat.id)
-
-    # 🔥 Ensure assistant present when /start used in group
+    # Ensure assistant present when /start is used in a group
     await ensure_assistant_joined(message)
 
 
@@ -469,7 +325,7 @@ async def welcome(client, message: Message):
             if await is_banned_user(member.id):
                 try:
                     await message.chat.ban_member(member.id)
-                except:
+                except Exception:
                     pass
 
             # ✅ BOT ADDED
@@ -496,10 +352,9 @@ async def welcome(client, message: Message):
 
                 await add_served_chat(message.chat.id)
 
-                # 🔥 Use the new assistant checker instead of old join logic
+                # Ensure assistant joined (with UI feedback)
                 await ensure_assistant_joined(message)
-
-                # 🔥 EXTRA: instant background join
+                # Extra: fire-and-forget background retry
                 await instant_assistant_join(message.chat.id)
 
                 # 🎉 Welcome UI
@@ -513,7 +368,6 @@ async def welcome(client, message: Message):
                     ),
                     reply_markup=InlineKeyboardMarkup(start_panel(_)),
                 )
-
                 await message.stop_propagation()
 
         except Exception as ex:
