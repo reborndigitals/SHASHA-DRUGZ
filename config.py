@@ -4,10 +4,10 @@ from os import getenv
 from dotenv import load_dotenv
 from pyrogram import filters
 load_dotenv()
-
 API_ID = int(getenv("API_ID","8045459"))
 API_HASH = getenv("API_HASH", "e6d1f09120e17a4372fe022dde88511b")
 BOT_TOKEN = getenv("BOT_TOKEN", "8670336887:AAFA-h4TXYwUGvC1o1eMZKAC1Rscny1BjtU")
+
 
 OWNER_USERNAME = getenv("OWNER_USERNAME","GhosttBatt")
 BOT_USERNAME = getenv("BOT_USERNAME", "LubMeBot")
@@ -16,6 +16,7 @@ ASSUSERNAME = getenv("ASSUSERNAME", "Shaa_Shii")
 EVALOP = list(map(int, getenv("EVALOP", "1281282633 6773435708").split()))
 MONGO_DB_URI = getenv("MONGO_DB_URI","mongodb+srv://zewdatabase:ijoXgdmQ0NCyg9DO@zewgame.urb3i.mongodb.net/ontap?retryWrites=true&w=majority") #mongodb+srv://ghosttbatt:Ghost2021@ghosttbatt.ocbirts.mongodb.net/?retryWrites=true&w=majority")
 REDIS_URL = os.getenv("REDIS_URL","redis://default:LMXY37qj1iU91xEci0uaCcQa6kBEn4G3@redis-18407.crce286.ap-south-1-1.ec2.cloud.redislabs.com:18407")
+
 GPT_API = getenv("GPT_API", "sk-proj-h6pk40oVRIxpXwrf3i50T3BlbkFJGVET8wX1yJtdi0zCWjDQ")
 PLAYHT_API = getenv("PLAYHT_API", "22e323f342024c0fb4ee430eeb9d0011")
 DATABASE_NAME = getenv("DATABASE_NAME","ghosttFed")
@@ -23,14 +24,13 @@ MONGO_URL = getenv("MONGO_URL","mongodb+srv://zewdatabase:ijoXgdmQ0NCyg9DO@zewga
 
 REACTION_ENABLED = getenv("REACTION_ENABLED","False")
 DURATION_LIMIT_MIN = int(getenv("DURATION_LIMIT", 17000))
-
 LOGGER_ID = int(getenv("LOGGER_ID", "-1003782201434")) #1735663878"))
 LOG_GROUP_ID = int(getenv("LOG_GROUP_ID", "-1003782201434")) #1735663878"))
 LOG_CHANNEL = int(getenv("LOG_CHANNEL", "-1003782201434")) #3142547877"))
 DEPLOY_LOGGER = int(getenv("DEPLOY_LOGGER", "-1003782201434")) #3204443820"))
+
 UPI_ID = os.getenv("UPI_ID", "GhosttBatt@jio")
 DEFAULT_QR_PATH = os.getenv("QR_PATH", "SHASHA_DRUGZ/assets/shasha/GhosttBatt.jpg")
-
 OWNER_ID = int(getenv("OWNER_ID", 6773435708))
 ADMINS_ID_STR = getenv("ADMINS_ID", "1281282633 6773435708 7820081045").split()
 ADMINS_ID = [int(admin_id) for admin_id in ADMINS_ID_STR if admin_id.isdigit()]
@@ -43,40 +43,32 @@ _DEFAULT_AUTO_GCAST      = os.getenv("AUTO_GCAST",   "False")
 _DEFAULT_AUTO_GCAST_MSG  = getenv("AUTO_GCAST_MSG",  "<blockquote>⋆｡°✩ **𝐋ᴇᴛƨ𝐕ɪʙᴇ𝐎ᴜᴛ** ✩°｡⋆\n[˹𝐒ʜᴧƨнᴧ ༭ 𝐃꧊ꝛʋɢ𝗌˼𓆩𔘓⃭𓆪](https://t.me/SilukkuMusicBot)</blockquote>")
 _DEFAULT_START_IMG       = getenv("START_IMG_URL",   "https://files.catbox.moe/qz10e1.jpg")
 _DEFAULT_PING_IMG        = getenv("PING_IMG_URL",    "https://graph.org/file/ffdb1be822436121cf5fd.png")
-
 MUST_JOIN = _DEFAULT_MUST_JOIN
 
 #Ranking
 AUTOPOST_TIME_HOUR = 21
 AUTOPOST_TIME_MINUTE = 0
-
 SERVER_PLAYLIST_LIMIT = int(getenv("SERVER_PLAYLIST_LIMIT", "3000"))
 PLAYLIST_FETCH_LIMIT = int(getenv("PLAYLIST_FETCH_LIMIT", "2500"))
 AUTO_LEAVING_ASSISTANT = False
-
 SPOTIFY_CLIENT_ID = getenv("SPOTIFY_CLIENT_ID", "19609edb1b9f4ed7be0c8c1342039362")
 SPOTIFY_CLIENT_SECRET = getenv("SPOTIFY_CLIENT_SECRET", "409e31d3ddd64af08cfcc3b0f064fcbe")
 PLAYLIST_FETCH_LIMIT = int(getenv("PLAYLIST_FETCH_LIMIT", 2500))
-
 TG_AUDIO_FILESIZE_LIMIT = int(getenv("TG_AUDIO_FILESIZE_LIMIT", 5499999999)) #5 GB
 TG_VIDEO_FILESIZE_LIMIT = int(getenv("TG_VIDEO_FILESIZE_LIMIT", 5499999999)) #5 GB
-
 AUTO_SUGGESTION_TIME = int(getenv("AUTO_SUGGESTION_TIME", "3"))
 AUTO_SUGGESTION_MODE = getenv("AUTO_SUGGESTION_MODE", "True")
 CLEANMODE_DELETE_MINS = int(getenv("CLEANMODE_MINS", "5"))
-
 HEROKU_APP_NAME = getenv("HEROKU_APP_NAME")
 HEROKU_API_KEY = getenv("HEROKU_API_KEY", "HRKU-fc1b7aea-b37a-4015-9877-8c3967ee97bc")
 UPSTREAM_REPO = getenv("UPSTREAM_REPO", "https://github.com/reborndigitals/SHASHA-TEST")
 UPSTREAM_BRANCH = getenv("UPSTREAM_BRANCH", "master")
 GIT_TOKEN = getenv("GIT_TOKEN", None)
-
 STRING1 = getenv("STRING_SESSION1", "BQIrqUUAfBFBomAhrbgKzzKlwtoPhRVB0Yl9U0GHWQly29Dp6KHF68wEgbuU_0WIq39H8TBSM0L_wyOgWcQV2ZTF7H8HgdNnSVC0uc34Fl8tXJ0JRn9B0Lgr6q_-XftH0iD1FfDYpI0hxFNfY-TMebk6hDSeVOD0WbVZmfKWIJ3duRodlS1FBnEpgngtGJ8u4phvMQJptdr2YxQOvfMAAfRW_NgQXEEhxetSfsvtQkJ89DcDN_CQFn4bPk3mKmJ58GO54zvuePctsKO7eXXyQy6KTxLe1cuBVWvNBZUKGApXa6quiRsDSIo-zpy_eTfru_NE4QRI3QTHtbCu5fAynzVQPIGbygAAAAB574WoAA")
 STRING2 = getenv("STRING_SESSION2", None)
 STRING3 = getenv("STRING_SESSION3", None)
 STRING4 = getenv("STRING_SESSION4", None)
 STRING5 = getenv("STRING_SESSION5", None)
-
 SHASHA_PICS = [
     "https://files.catbox.moe/qz10e1.jpg",
     "https://files.catbox.moe/mus8qn.jpg",
@@ -88,9 +80,7 @@ SHASHA_PICS = [
     "https://files.catbox.moe/i8r1dm.jpg",
     "https://files.catbox.moe/5u11yx.jpg"
 ]
-
 RANKING_PIC = "https://files.catbox.moe/pfjca4.jpg"
-
 GREET = [
     "💞", "🥂", "🔍", "🧪", "🥂", "⚡️", "🔥", "🦋", "🎩", "🌈", "🍷", "🥂", "🦋", "🥃", "🥤", "🕊️",
     "🦋", "🦋", "🕊️", "⚡️", "🕊️", "⚡️", "⚡️", "🥂", "💌", "🥂", "🥂", "🧨"
@@ -107,7 +97,6 @@ START_REACTIONS = [
     "🗿", "🆒", "💘", "🙉", "🦄", "😘", "💊", "🙊",
     "😎", "👾", "🤷‍♂", "🤷", "🤷‍♀", "😡"
 ]
-
 # ─────────────────────────────────────────────────────────────────────────────
 # DYNAMIC PER-BOT CONFIG PROXIES
 # ─────────────────────────────────────────────────────────────────────────────
@@ -134,32 +123,25 @@ START_REACTIONS = [
 #   When /resetbotset is called: all DB fields are set to None.
 #   _BotStr._v() finds no value → falls back to the hardcoded default below.
 # ─────────────────────────────────────────────────────────────────────────────
-
 def _url_prefix(v: str) -> str:
     """Ensure support_chat / update_channel has https://t.me/ prefix."""
     v = v.strip().lstrip("@")
     return v if v.startswith("http") else f"https://t.me/{v}"
-
-
 class _BotStr(str):
     """
     A str subclass that resolves to the current deployed bot's per-bot DB value
     when any string operation is performed on it.
-
     Fallback chain:
       1. Current bot's MongoDB cache  (bot_{id}_settings)
       2. Hardcoded default            (original config.py value)
-
     Works transparently with `from config import X` — no module changes needed.
     """
     __slots__ = ("_db_key", "_transform")
-
     def __new__(cls, default: str, db_key: str, transform=None):
         obj = super().__new__(cls, default)
         obj._db_key = db_key
         obj._transform = transform
         return obj
-
     def _v(self) -> str:
         """Return the current bot's value or the hardcoded default."""
         try:
@@ -180,7 +162,6 @@ class _BotStr(str):
         except Exception:
             pass
         return str.__str__(self)   # original hardcoded default
-
     # ── str protocol overrides ───────────────────────────────────────────────
     def __str__(self):              return self._v()
     def __repr__(self):             return repr(self._v())
@@ -246,19 +227,15 @@ class _BotStr(str):
     def maketrans(self, *a):        return str.maketrans(*a)
     def removeprefix(self, p):      return self._v().removeprefix(p)
     def removesuffix(self, s):      return self._v().removesuffix(s)
-
-
 class _MustJoinStr(_BotStr):
     """
     Special _BotStr for MUST_JOIN.
-
     Logic:
       • If bot has registered settings AND must_join.enabled == True
         AND must_join.link is set → return the link (truthy → module enforces join)
       • If bot has registered settings AND must_join.enabled == False
         → return "" (falsy → module skips join check, even if default exists)
       • If bot has NO settings yet → return hardcoded default (truthy)
-
     This prevents the global default from leaking into deployed bots that
     have explicitly disabled must_join.
     """
@@ -281,24 +258,18 @@ class _MustJoinStr(_BotStr):
             pass
         # No bot context (main bot) → use global default
         return str.__str__(self)
-
-
 class _BotInt(int):
     """
     An int subclass that resolves to the current deployed bot's per-bot DB
     value for integer config fields (LOG_GROUP_ID, LOGGER_ID).
-
     Falls back to the hardcoded default when no per-bot value is stored.
-
     Note: __slots__ is intentionally omitted — int subclasses do not support
     nonempty __slots__ in CPython. _db_key is stored in the instance __dict__.
     """
-
     def __new__(cls, default: int, db_key: str):
         obj = super().__new__(cls, default)
         obj._db_key = db_key
         return obj
-
     def _v(self) -> int:
         try:
             from SHASHA_DRUGZ.core.isolation import _current_bot_id
@@ -313,7 +284,6 @@ class _BotInt(int):
         except Exception:
             pass
         return int.__int__(self)
-
     def __int__(self):        return self._v()
     def __index__(self):      return self._v()
     def __str__(self):        return str(self._v())
@@ -346,13 +316,10 @@ class _BotInt(int):
     def __rshift__(self, o):  return self._v() >> o
     def __invert__(self):     return ~self._v()
     def bit_length(self):     return self._v().bit_length()
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # DYNAMIC CONFIG VALUES
 # Each one wraps the original default and resolves from per-bot MongoDB cache
 # ─────────────────────────────────────────────────────────────────────────────
-
 # Images — /setstartimg updates "start_image" in DB
 # ALL image aliases point to the same db_key so one command updates everything
 START_IMG_URL            = _BotStr(_DEFAULT_START_IMG, "start_image")
@@ -367,26 +334,22 @@ YOUTUBE_IMG_URL          = _BotStr(_DEFAULT_START_IMG, "start_image")
 SPOTIFY_ARTIST_IMG_URL   = _BotStr(_DEFAULT_START_IMG, "start_image")
 SPOTIFY_ALBUM_IMG_URL    = _BotStr(_DEFAULT_START_IMG, "start_image")
 SPOTIFY_PLAYLIST_IMG_URL = _BotStr(_DEFAULT_START_IMG, "start_image")
-
 # Links — /setsupport and /setupdates update these
 # _url_prefix auto-adds https://t.me/ if needed
 SUPPORT_CHANNEL = _BotStr(_DEFAULT_SUPPORT_CHANNEL, "update_channel", _url_prefix)
 SUPPORT_CHAT    = _BotStr(_DEFAULT_SUPPORT_CHAT,    "support_chat",   _url_prefix)
-
 # Must join — /setmustjoin and /mustjoin enable|disable
 # _MustJoinStr handles the enabled flag check
 MUST_JOIN = _MustJoinStr(_DEFAULT_MUST_JOIN, "must_join.link")
-
 # Gcast — /autogcast enable|disable and /setgcastmsg
 AUTO_GCAST     = _BotStr(_DEFAULT_AUTO_GCAST,     "auto_gcast.enabled")
 AUTO_GCAST_MSG = _BotStr(_DEFAULT_AUTO_GCAST_MSG, "auto_gcast.message")
-
 # Log channel — /setlogger updates this
-LOG_GROUP_ID = _BotInt(int(getenv("LOG_GROUP_ID", "-1001735663878")), "log_channel")
-LOGGER_ID    = _BotInt(int(getenv("LOGGER_ID",    "-1001735663878")), "log_channel")
-
+# FIX: fallback now matches the plain-int values set at the top of this file,
+# so there is only ONE source of truth for the default log channel ID.
+LOG_GROUP_ID = _BotInt(int(getenv("LOG_GROUP_ID", "-1003782201434")), "log_channel")
+LOGGER_ID    = _BotInt(int(getenv("LOGGER_ID",    "-1003782201434")), "log_channel")
 # ─────────────────────────────────────────────────────────────────────────────
-
 BANNED_USERS = filters.user()
 adminlist = {}
 lyrical = {}
@@ -397,13 +360,10 @@ chatstats = {}
 userstats = {}
 clean = {}
 autoclean = []
-
 def time_to_seconds(time):
     stringt = str(time)
     return sum(int(x) * 60**i for i, x in enumerate(reversed(stringt.split(":"))))
-
 DURATION_LIMIT = int(time_to_seconds(f"{DURATION_LIMIT_MIN}:00"))
-
 # Validate using the DEFAULTS (these run at import time before any bot context)
 if _DEFAULT_SUPPORT_CHANNEL:
     if not re.match("(?:http|https)://", _DEFAULT_SUPPORT_CHANNEL):
