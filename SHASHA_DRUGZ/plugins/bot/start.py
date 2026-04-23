@@ -39,7 +39,7 @@ from pyrogram.errors import (
 )
 
 # ─── Animation module (separated) ────────────────────────────────────────────
-from SHASHA_DRUGZ.plugins.bot.start_anim import (
+from SHASHA_DRUGZ.plugins.PREMIUM.start_anim import (
     send_sticker_with_effect,
     run_start_animation,
 )
