@@ -22,16 +22,12 @@ forcesub_collection = fsubdb.status_db.status
 #   In-Memory Cache: chat_id → fsub data
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 _fsub_cache: dict[int, dict | None] = {}
-
 def _cache_get(chat_id: int):
     return _fsub_cache.get(chat_id, "MISS")
-
 def _cache_set(chat_id: int, data):
     _fsub_cache[chat_id] = data
-
 def _cache_del(chat_id: int):
     _fsub_cache.pop(chat_id, None)
-
 def _get_fsub_data(chat_id: int):
     """Fast cache-first DB lookup."""
     cached = _cache_get(chat_id)
@@ -45,6 +41,18 @@ def _get_fsub_data(chat_id: int):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 vc_call_chat_map: dict[int, int] = {}
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#   In-Memory: Muted users per chat
+#   Structure: { chat_id: set(user_id, ...) }
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+_muted_users: dict[int, set[int]] = {}
+def _track_muted(chat_id: int, user_id: int):
+    _muted_users.setdefault(chat_id, set()).add(user_id)
+def _untrack_muted(chat_id: int, user_id: int):
+    if chat_id in _muted_users:
+        _muted_users[chat_id].discard(user_id)
+        if not _muted_users[chat_id]:
+            del _muted_users[chat_id]
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #               HELPER FUNCTIONS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async def resolve_chat_id(client: Client, channel_input: str):
@@ -52,7 +60,6 @@ async def resolve_chat_id(client: Client, channel_input: str):
     if channel_input.lstrip("-").isdigit():
         return await client.get_chat(int(channel_input))
     return await client.get_chat(channel_input.lstrip("@"))
-
 async def is_owner_or_sudo(client: Client, chat_id: int, user_id: int) -> bool:
     if user_id in SUDOERS:
         return True
@@ -61,7 +68,6 @@ async def is_owner_or_sudo(client: Client, chat_id: int, user_id: int) -> bool:
         return member.status == ChatMemberStatus.OWNER
     except Exception:
         return False
-
 async def is_admin_or_above(client: Client, chat_id: int, user_id: int) -> bool:
     if user_id in SUDOERS:
         return True
@@ -70,7 +76,6 @@ async def is_admin_or_above(client: Client, chat_id: int, user_id: int) -> bool:
         return member.status in [ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR]
     except Exception:
         return False
-
 async def is_member_of(client: Client, chat_id: int, user_id: int) -> bool:
     try:
         m = await client.get_chat_member(chat_id, user_id)
@@ -79,7 +84,6 @@ async def is_member_of(client: Client, chat_id: int, user_id: int) -> bool:
         return False
     except Exception:
         return True  # Fail-open on unknown errors
-
 async def mute_in_chat(client: Client, chat_id: int, user_id: int) -> bool:
     try:
         await client.restrict_chat_member(
@@ -98,7 +102,6 @@ async def mute_in_chat(client: Client, chat_id: int, user_id: int) -> bool:
         return True
     except Exception:
         return False
-
 async def unmute_in_chat(client: Client, chat_id: int, user_id: int) -> bool:
     try:
         await client.restrict_chat_member(
@@ -117,7 +120,6 @@ async def unmute_in_chat(client: Client, chat_id: int, user_id: int) -> bool:
         return True
     except Exception:
         return False
-
 async def kick_from_vc(client: Client, chat_id: int, user_id: int) -> bool:
     try:
         await client.ban_chat_member(chat_id, user_id)
@@ -127,7 +129,6 @@ async def kick_from_vc(client: Client, chat_id: int, user_id: int) -> bool:
     except Exception as e:
         print(f"[FSub VC Kick Error] chat={chat_id} user={user_id}: {e}")
         return await admin_mute_in_vc(client, chat_id, user_id)
-
 async def admin_mute_in_vc(client: Client, chat_id: int, user_id: int) -> bool:
     try:
         call_input = await get_active_call(client, chat_id)
@@ -145,7 +146,6 @@ async def admin_mute_in_vc(client: Client, chat_id: int, user_id: int) -> bool:
     except Exception as e:
         print(f"[FSub VC AdminMute Error] chat={chat_id} user={user_id}: {e}")
         return False
-
 async def get_active_call(
     client: Client, chat_id: int
 ) -> "raw.base.InputGroupCall | None":
@@ -175,8 +175,49 @@ def _is_not_command(_, __, msg: Message) -> bool:
         return not text.startswith("/")
     except Exception:
         return False
-
 _not_command = filters.create(_is_not_command, name="NotCommandFilter")
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#   AUTO-UNMUTE BACKGROUND LOOP
+#   Polls every 30s, unmutes users who joined
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+async def _auto_unmute_loop(client: Client):
+    """Background task: checks muted users every 30s and unmutes if they joined."""
+    await asyncio.sleep(10)  # Small startup delay
+    while True:
+        try:
+            if _muted_users:
+                # Snapshot to avoid mutation during iteration
+                snapshot = {
+                    chat_id: set(users)
+                    for chat_id, users in _muted_users.items()
+                }
+                for chat_id, user_ids in snapshot.items():
+                    data = _get_fsub_data(chat_id)
+                    if not data:
+                        # FSub disabled — unmute everyone and clear
+                        for uid in user_ids:
+                            await unmute_in_chat(client, chat_id, uid)
+                            _untrack_muted(chat_id, uid)
+                        continue
+                    req_id = data["channel_id"]
+                    for user_id in user_ids:
+                        try:
+                            is_member = await asyncio.wait_for(
+                                is_member_of(client, req_id, user_id), timeout=3
+                            )
+                            if is_member:
+                                await unmute_in_chat(client, chat_id, user_id)
+                                _untrack_muted(chat_id, user_id)
+                        except asyncio.TimeoutError:
+                            continue
+                        except Exception as e:
+                            print(f"[FSub AutoUnmute Error] chat={chat_id} user={user_id}: {e}")
+                        await asyncio.sleep(0.3)  # Gentle rate-limit between users
+        except Exception as e:
+            print(f"[FSub _auto_unmute_loop Error] {e}")
+        await asyncio.sleep(30)
+# Start the background loop when module loads
+asyncio.get_event_loop().create_task(_auto_unmute_loop(app))
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #           /fsub COMMAND HANDLER
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -332,6 +373,7 @@ async def set_forcesub(client: Client, message: Message):
         f"🔒 **Now enforcing:**\n"
         f"  • 💬 Non-members → **Muted** in chat\n"
         f"  • 🎙️ Non-members → **Kicked** from Voice Chat\n\n"
+        f"⚡ Users will be **auto-unmuted** once they join the required chat.\n\n"
         f"⚙️ Config is **isolated to this chat only**.\n"
         f"Other chats are unaffected.",
         reply_markup=InlineKeyboardMarkup(buttons),
@@ -368,56 +410,6 @@ async def cb_close(client: Client, cq: CallbackQuery):
         await cq.message.delete()
     except Exception:
         pass
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#           CALLBACK: UNMUTE CHECK BUTTON
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@app.on_callback_query(filters.regex(r"^check_fsub_(\d+)$"))
-async def cb_check_fsub(client: Client, cq: CallbackQuery):
-    user_id = int(cq.matches[0].group(1))
-    if cq.from_user.id != user_id:
-        return await cq.answer("⚠️ This button is only for the muted user!", show_alert=True)
-    chat_id = cq.message.chat.id
-    data = _get_fsub_data(chat_id)
-    if not data:
-        await unmute_in_chat(client, chat_id, user_id)
-        await cq.answer("✅ FSub disabled. You are unmuted!", show_alert=True)
-        try:
-            await cq.message.delete()
-        except Exception:
-            pass
-        return
-    req_id = data["channel_id"]
-    req_username = data.get("channel_username")
-    req_title = data.get("channel_title", "Required Group")
-    req_url = f"https://t.me/{req_username}" if req_username else None
-    try:
-        is_member = await asyncio.wait_for(
-            is_member_of(client, req_id, user_id), timeout=3
-        )
-    except asyncio.TimeoutError:
-        return await cq.answer("⏳ Check timed out. Please try again.", show_alert=True)
-    if is_member:
-        await unmute_in_chat(client, chat_id, user_id)
-        await cq.answer("🎉 Verified! You are unmuted. Welcome!", show_alert=True)
-        try:
-            await cq.message.delete()
-        except Exception:
-            pass
-    else:
-        buttons = []
-        if req_url:
-            buttons.append([InlineKeyboardButton(f"📢 Join {req_title}", url=req_url)])
-        buttons.append([
-            InlineKeyboardButton("✅ I Joined — Unmute Me", callback_data=f"check_fsub_{user_id}")
-        ])
-        await cq.answer(
-            f"❌ You haven't joined {req_title} yet!\nJoin and try again.",
-            show_alert=True
-        )
-        try:
-            await cq.message.edit_reply_markup(InlineKeyboardMarkup(buttons))
-        except Exception:
-            pass
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #        AUTO-MUTE WHEN USER JOINS CHAT
 #        FIX: Added group=20
@@ -458,22 +450,20 @@ async def on_user_join_chat(client: Client, update):
         muted = await mute_in_chat(client, chat_id, user_id)
         if not muted:
             return
+        # Track for auto-unmute
+        _track_muted(chat_id, user_id)
         buttons = []
         if req_url:
             buttons.append([InlineKeyboardButton(f"📢 Join {req_title}", url=req_url)])
-        buttons.append([
-            InlineKeyboardButton("✅ I Joined — Unmute Me", callback_data=f"check_fsub_{user_id}")
-        ])
         try:
             await client.send_message(
                 chat_id,
                 f"🔒 **Hello {new_member.user.mention}!**\n\n"
                 f"You have been **muted** because you are not a member of **{req_title}**.\n\n"
                 f"**To get access:**\n"
-                f"1️⃣ Join **{req_title}**\n"
-                f"2️⃣ Click **'I Joined — Unmute Me'** below\n\n"
-                f"⚡ You'll be unmuted instantly after verification!",
-                reply_markup=InlineKeyboardMarkup(buttons),
+                f"1️⃣ Join **{req_title}** using the button below\n\n"
+                f"⚡ You'll be **unmuted automatically** once you join!",
+                reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
                 disable_web_page_preview=True
             )
         except Exception:
@@ -573,7 +563,6 @@ async def raw_update_handler(client: Client, update, users: dict, chats: dict):
                 continue
     except Exception as e:
         print(f"[FSub raw_update_handler Error] {e}")
-
 async def _handle_vc_violator(
     client: Client,
     chat_id: int,
@@ -676,24 +665,21 @@ async def check_forcesub(client: Client, message: Message) -> None:
             except Exception:
                 req_url = None
         await mute_in_chat(client, chat_id, user_id)
+        # Track for auto-unmute
+        _track_muted(chat_id, user_id)
         buttons = []
         if req_url:
             buttons.append([InlineKeyboardButton(f"📢 Join {req_title}", url=req_url)])
-        buttons.append([
-            InlineKeyboardButton(
-                "✅ I Joined — Unmute Me", callback_data=f"check_fsub_{user_id}"
-            )
-        ])
         try:
             await message.reply_photo(
                 photo="https://envs.sh/Tn_.jpg",
                 caption=(
                     f"🔒 **Hey {message.from_user.mention}!**\n\n"
                     f"You need to join **{req_title}** to send messages here.\n\n"
-                    f"1️⃣ Click **'Join'** below\n"
-                    f"2️⃣ Click **'Unmute Me'** after joining"
+                    f"1️⃣ Click **'Join'** below\n\n"
+                    f"⚡ You'll be **unmuted automatically** once you join!"
                 ),
-                reply_markup=InlineKeyboardMarkup(buttons)
+                reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
             )
         except Exception:
             pass
@@ -728,7 +714,6 @@ async def enforce_forcesub(client: Client, message: Message):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #              MODULE METADATA
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 __menu__ = "CMD_MANAGE"
 __mod_name__ = "H_B_42"
 __help__ = """
@@ -740,6 +725,6 @@ __help__ = """
 🔻 /forcesub disable ➠ ᴛᴜʀɴꜱ ᴏꜰꜰ ꜰᴏʀᴄᴇ ꜱᴜʙꜱᴄʀɪᴘᴛɪᴏɴ ꜰᴇᴀᴛᴜʀᴇ.
 🔻 (ᴀᴜᴛᴏ) ➠ ᴍᴜᴛᴇꜱ ᴜꜱᴇʀꜱ ᴡʜᴏ ᴊᴏɪɴ ᴛʜᴇ ɢʀᴏᴜᴘ ᴡɪᴛʜᴏᴜᴛ ᴊᴏɪɴɪɴɢ ᴛʜᴇ ꜱᴇᴛ ᴄʜᴀɴɴᴇʟ.
 🔻 (ᴀᴜᴛᴏ) ➠ ᴅᴇʟᴇᴛᴇꜱ ᴍᴇꜱꜱᴀɢᴇꜱ ꜰʀᴏᴍ ɴᴏɴ-ꜱᴜʙꜱᴄʀɪʙᴇᴅ ᴜꜱᴇʀꜱ.
-🔻 (ʙᴜᴛᴛᴏɴ) ➠ “ᴜɴᴍᴜᴛᴇ ᴍᴇ” — ᴠᴇʀɪꜰɪᴇꜱ ᴄʜᴀɴɴᴇʟ ᴊᴏɪɴ ᴀɴᴅ ᴜɴᴍᴜᴛᴇꜱ ᴛʜᴇ ᴜꜱᴇʀ.
+🔻 (ᴀᴜᴛᴏ) ➠ ᴜɴᴍᴜᴛᴇꜱ ᴜꜱᴇʀ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴏɴᴄᴇ ᴛʜᴇʏ ᴊᴏɪɴ ᴛʜᴇ ʀᴇQᴜɪʀᴇᴅ ᴄʜᴀɴɴᴇʟ.
 🔻 (ᴀᴜᴛᴏ) ➠ ꜱᴜᴅᴏᴇʀꜱ & ɢʀᴏᴜᴘ ᴀᴅᴍɪɴꜱ ᴀʀᴇ ᴇxᴇᴍᴘᴛ ꜰʀᴏᴍ ꜰᴏʀᴄᴇ ꜱᴜʙꜱᴄʀɪᴘᴛɪᴏɴ.
 """
