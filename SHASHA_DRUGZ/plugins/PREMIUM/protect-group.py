@@ -1,18 +1,19 @@
-#Protect-Group.py
+# Protect-Group.py
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║         BLOCKWORD MODULE — Pyrogram + MongoDB                    ║
 # ║  • Auto-detect bad words (multilingual, all cases/leetspeak)    ║
 # ║  • Per-group custom words (case-insensitive)                    ║
 # ║  • Owner global words, inline toggles, warn system, reporting   ║
+# ║  • Tags ALL admins on user violation                            ║
+# ║  • Tags group OWNER when an admin violates                      ║
 # ║  • Does NOT intercept other bot commands                        ║
 # ╚══════════════════════════════════════════════════════════════════╝
 import re
 import unicodedata
-from os import getenv
 from datetime import datetime, timedelta
 from SHASHA_DRUGZ import app
 from pyrogram import Client, filters
-from pyrogram.enums import ChatMemberStatus
+from pyrogram.enums import ChatMemberStatus, ChatMembersFilter
 from pyrogram.types import (
     Message,
     InlineKeyboardMarkup,
@@ -22,46 +23,39 @@ from pyrogram.types import (
 )
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import MONGO_DB_URI, ADMINS_ID
+
 # ──────────────────────────────────────────────────────────────────
 # 🗃️  MONGO SETUP
 # ──────────────────────────────────────────────────────────────────
 mongo           = AsyncIOMotorClient(MONGO_DB_URI)
 db              = mongo["BLOCKWORD_DB"]
-settings_col    = db["bw_settings"]      # per-group toggle / warn config
-group_words_col = db["bw_group_words"]   # per-group custom words (admins add)
-owner_words_col = db["bw_owner_words"]   # global words added by bot owner
-warns_col       = db["bw_warns"]         # per-user warn counts
+settings_col    = db["bw_settings"]
+group_words_col = db["bw_group_words"]
+owner_words_col = db["bw_owner_words"]
+warns_col       = db["bw_warns"]
+
 # ──────────────────────────────────────────────────────────────────
-# 🔡  NORMALISATION  (handles ALL case variants + leetspeak)
-#
-#  Pipeline:
-#   1. unicodedata.normalize("NFKC") — collapses full-width / homoglyphs
-#   2. casefold()                    — aggressive lowercase (ß→ss, etc.)
-#   3. strip zero-width chars        — \u200b, \u200c, \u200d, \ufeff
-#   4. leet-map substitution         — 0→o, 1→i, 3→e, 4→a, 5→s, 7→t …
-#
-#  Result: "DR0GZ", "Drugz", "d r u g s", "𝐃𝐑𝐔𝐆𝐒" all → "drugs"
+# 🔡  NORMALISATION
 # ──────────────────────────────────────────────────────────────────
-_LEET_MAP: dict[str, str] = {
+_LEET_MAP: dict = {
     "0": "o", "1": "i", "3": "e", "4": "a",
     "5": "s", "6": "g", "7": "t", "8": "b",
     "@": "a", "$": "s", "!": "i", "+": "t",
     "(": "c", ")": "o",
 }
 _ZERO_WIDTH = re.compile(r"[\u200b\u200c\u200d\ufeff\u00ad]")
+
 def _normalize(text: str) -> str:
-    """Return a fully normalised, casefolded version of text for matching."""
-    text = unicodedata.normalize("NFKC", text)   # homoglyph collapse
-    text = text.casefold()                        # aggressive lowercase
-    text = _ZERO_WIDTH.sub("", text)              # strip invisible chars
-    text = "".join(_LEET_MAP.get(ch, ch) for ch in text)  # leet decode
+    text = unicodedata.normalize("NFKC", text)
+    text = text.casefold()
+    text = _ZERO_WIDTH.sub("", text)
+    text = "".join(_LEET_MAP.get(ch, ch) for ch in text)
     return text
+
 # ──────────────────────────────────────────────────────────────────
-# 🤬  BUILT-IN UNIVERSAL BAD-WORD PATTERNS
-#  All patterns compiled with re.IGNORECASE | re.UNICODE.
-#  Applied AFTER _normalize() → catches every case variant + leetspeak.
+# 🤬  BUILT-IN BAD-WORD PATTERNS
 # ──────────────────────────────────────────────────────────────────
-BUILTIN_PATTERNS: list[str] = [
+BUILTIN_PATTERNS: list = [
     # ── Drugs ──────────────────────────────────────────────────────
     r"\bcocain[e]?\b", r"\bcoke\b", r"\bheroin\b", r"\bmeth\b",
     r"\bcrack\b", r"\bweed\b", r"\bganja\b", r"\bopium\b",
@@ -96,13 +90,13 @@ BUILTIN_PATTERNS: list[str] = [
     r"\bdick\b", r"\bpussy\b", r"\bwhore\b", r"\bslut\b",
     r"\bbastard?\b", r"\bdamn\b", r"\bcrap\b", r"\bprick\b",
     r"\bdouche\b", r"\bjerkoff\b", r"\bwanker\b",
-    # ── Tamil bad words (transliterated) ──────────────────────────
+    # ── Tamil bad words ────────────────────────────────────────────
     r"\bthevdiya\b", r"\bpundai\b", r"\bootha\b", r"\bsootha\b",
     r"\bkuthi\b", r"\bmyre\b", r"\bnaaye?\b", r"\bkazhuthai\b",
     r"\bnaayi\b", r"\bthayoli\b", r"\bpottai\b", r"\bkundi\b",
     r"\bsullu\b", r"\bsunni\b", r"\bnool\b", r"\bpaiyan\b",
     r"\bvadakkan\b", r"\berumai\b", r"\bthambi.?otha\b",
-    # ── Hindi bad words (transliterated) ──────────────────────────
+    # ── Hindi bad words ────────────────────────────────────────────
     r"\bchutiya\b", r"\bbehenchod\b", r"\bmadarchod\b",
     r"\bbc\b", r"\bmc\b", r"\bgandu\b", r"\blauda\b",
     r"\brandi\b", r"\bsaala\b", r"\bharamzada\b", r"\bharami\b",
@@ -112,30 +106,23 @@ BUILTIN_PATTERNS: list[str] = [
 _COMPILED_PATTERNS = [
     re.compile(p, re.IGNORECASE | re.UNICODE) for p in BUILTIN_PATTERNS
 ]
-def check_builtin(raw_text: str) -> str | None:
-    """
-    Normalise raw_text then test against all built-in patterns.
-    Handles: UPPERCASE / lowercase / MiXeD / l33t / unicode variants.
-    Returns the matched token or None.
-    """
+
+def check_builtin(raw_text: str):
     normalized = _normalize(raw_text)
     for pat in _COMPILED_PATTERNS:
         m = pat.search(normalized)
         if m:
             return m.group(0)
     return None
-def check_custom_words(raw_text: str, words: list[str]) -> str | None:
-    """
-    Check raw_text against a list of custom words.
-    Both the input text and stored words are normalised, so matching is
-    completely case-insensitive (WORD = word = WoRd = w0rd).
-    """
+
+def check_custom_words(raw_text: str, words: list):
     normalized = _normalize(raw_text)
     for w in words:
         pattern = re.compile(re.escape(_normalize(w)), re.IGNORECASE | re.UNICODE)
         if pattern.search(normalized):
             return w
     return None
+
 # ──────────────────────────────────────────────────────────────────
 # 🛠️  DATABASE HELPERS
 # ──────────────────────────────────────────────────────────────────
@@ -148,24 +135,30 @@ async def get_settings(chat_id: int) -> dict:
         "warn_limit": data.get("warn_limit", 3),
         "action":     data.get("action",     "mute"),
     }
+
 async def set_setting(chat_id: int, key: str, value) -> None:
     await settings_col.update_one(
         {"chat_id": chat_id}, {"$set": {key: value}}, upsert=True
     )
-async def get_group_words(chat_id: int) -> list[str]:
+
+async def get_group_words(chat_id: int) -> list:
     data = await group_words_col.find_one({"chat_id": chat_id})
     return data.get("words", []) if data else []
-async def save_group_words(chat_id: int, words: list[str]) -> None:
+
+async def save_group_words(chat_id: int, words: list) -> None:
     await group_words_col.update_one(
         {"chat_id": chat_id}, {"$set": {"words": words}}, upsert=True
     )
-async def get_owner_words() -> list[str]:
+
+async def get_owner_words() -> list:
     data = await owner_words_col.find_one({"_id": "global"})
     return data.get("words", []) if data else []
-async def save_owner_words(words: list[str]) -> None:
+
+async def save_owner_words(words: list) -> None:
     await owner_words_col.update_one(
         {"_id": "global"}, {"$set": {"words": words}}, upsert=True
     )
+
 async def add_warn(chat_id: int, user_id: int) -> int:
     await warns_col.update_one(
         {"chat_id": chat_id, "user_id": user_id},
@@ -174,11 +167,14 @@ async def add_warn(chat_id: int, user_id: int) -> int:
     )
     data = await warns_col.find_one({"chat_id": chat_id, "user_id": user_id})
     return data["count"]
+
 async def get_warn(chat_id: int, user_id: int) -> int:
     data = await warns_col.find_one({"chat_id": chat_id, "user_id": user_id})
     return data["count"] if data else 0
+
 async def reset_warn(chat_id: int, user_id: int) -> None:
     await warns_col.delete_one({"chat_id": chat_id, "user_id": user_id})
+
 # ──────────────────────────────────────────────────────────────────
 # 🔐  PERMISSION HELPERS
 # ──────────────────────────────────────────────────────────────────
@@ -190,6 +186,7 @@ async def is_admin_or_owner(client: Client, chat_id: int, user_id: int) -> bool:
         return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
     except Exception:
         return False
+
 async def is_group_owner(client: Client, chat_id: int, user_id: int) -> bool:
     if user_id in ADMINS_ID:
         return True
@@ -198,15 +195,35 @@ async def is_group_owner(client: Client, chat_id: int, user_id: int) -> bool:
         return member.status == ChatMemberStatus.OWNER
     except Exception:
         return False
+
 async def get_group_owner(client: Client, chat_id: int):
     """Return the owner ChatMember object, or None."""
     try:
-        async for member in client.get_chat_members(chat_id, filter="administrators"):
+        async for member in client.get_chat_members(
+            chat_id, filter=ChatMembersFilter.ADMINISTRATORS
+        ):
             if member.status == ChatMemberStatus.OWNER:
                 return member
     except Exception:
         pass
     return None
+
+async def get_all_admin_mentions(client: Client, chat_id: int) -> str:
+    """
+    Return a space-separated string of mentions for every non-bot admin.
+    Falls back to a placeholder if none are found.
+    """
+    mentions = []
+    try:
+        async for member in client.get_chat_members(
+            chat_id, filter=ChatMembersFilter.ADMINISTRATORS
+        ):
+            if member.user and not member.user.is_bot:
+                mentions.append(member.user.mention)
+    except Exception:
+        pass
+    return " ".join(mentions) if mentions else "_(no admins found)_"
+
 # ──────────────────────────────────────────────────────────────────
 # 🎛️  INLINE KEYBOARD BUILDERS
 # ──────────────────────────────────────────────────────────────────
@@ -224,6 +241,7 @@ def dashboard_kb(enabled: bool) -> InlineKeyboardMarkup:
             InlineKeyboardButton("❓ Help",             callback_data="bw_help"),
         ],
     ])
+
 def settings_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
@@ -232,6 +250,7 @@ def settings_kb() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton("« Back",                callback_data="bw_main")],
     ])
+
 def punishment_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
@@ -241,13 +260,16 @@ def punishment_kb() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton("« Back",                callback_data="bw_settings_menu")],
     ])
+
 def back_kb(cb: str = "bw_main") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data=cb)]])
+
 def wordlist_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("🔄 Refresh",             callback_data="bw_listwords"),
         InlineKeyboardButton("« Back",                 callback_data="bw_main"),
     ]])
+
 # ──────────────────────────────────────────────────────────────────
 # 📌  /blockword  — dashboard + quick on/off
 # ──────────────────────────────────────────────────────────────────
@@ -271,8 +293,9 @@ async def blockword_cmd(client: Client, message: Message):
         f"Use the buttons below to manage.",
         reply_markup=dashboard_kb(enabled),
     )
+
 # ──────────────────────────────────────────────────────────────────
-# 📝  /addword  — admin adds per-group word (stored normalised)
+# 📝  /addword  — admin adds per-group word
 # ──────────────────────────────────────────────────────────────────
 @app.on_message(filters.command("addword") & filters.group)
 async def add_word_cmd(client: Client, message: Message):
@@ -285,7 +308,6 @@ async def add_word_cmd(client: Client, message: Message):
                 InlineKeyboardButton("📋 View Words", callback_data="bw_listwords")
             ]]),
         )
-    # Normalise before storing so matching is always case-insensitive
     word = _normalize(message.text.split(None, 1)[1].strip())
     words = await get_group_words(message.chat.id)
     if word in words:
@@ -306,6 +328,7 @@ async def add_word_cmd(client: Client, message: Message):
             InlineKeyboardButton("➕ Add More",   callback_data="bw_addword_hint"),
         ]]),
     )
+
 # ──────────────────────────────────────────────────────────────────
 # 🗑️  /removeword  — GROUP OWNER ONLY
 # ──────────────────────────────────────────────────────────────────
@@ -332,6 +355,7 @@ async def remove_word_cmd(client: Client, message: Message):
             InlineKeyboardButton("📋 View Words", callback_data="bw_listwords")
         ]]),
     )
+
 # ──────────────────────────────────────────────────────────────────
 # 📋  /blockwords  — list words (admin)
 # ──────────────────────────────────────────────────────────────────
@@ -345,6 +369,7 @@ async def list_words_cmd(client: Client, message: Message):
     text += ("**📌 This Group:**\n" + "\n".join(f"  • `{w}`" for w in gw) + "\n\n") if gw else "**📌 This Group:** _None added yet_\n\n"
     text += ("**🌍 Global (Bot Owner):**\n" + "\n".join(f"  • `{w}`" for w in ow)) if ow else "**🌍 Global (Bot Owner):** _None_"
     await message.reply(text, reply_markup=wordlist_kb())
+
 # ──────────────────────────────────────────────────────────────────
 # 🌍  /ownerblockword  — bot owner adds a GLOBAL word
 # ──────────────────────────────────────────────────────────────────
@@ -366,6 +391,7 @@ async def owner_block_word_cmd(client: Client, message: Message):
             InlineKeyboardButton("📋 Global Words", callback_data="bw_owner_listwords")
         ]]),
     )
+
 # ──────────────────────────────────────────────────────────────────
 # 🌍  /ownerrmword  — bot owner removes one global word
 # ──────────────────────────────────────────────────────────────────
@@ -387,6 +413,7 @@ async def owner_rm_word_cmd(client: Client, message: Message):
             InlineKeyboardButton("📋 Global Words", callback_data="bw_owner_listwords")
         ]]),
     )
+
 # ──────────────────────────────────────────────────────────────────
 # 🧹  /rmallwords  — bot owner clears ALL global words
 # ──────────────────────────────────────────────────────────────────
@@ -401,6 +428,7 @@ async def rm_all_words_cmd(client: Client, message: Message):
             InlineKeyboardButton("✅ Done", callback_data="bw_noop")
         ]]),
     )
+
 # ──────────────────────────────────────────────────────────────────
 # ⚙️  /setwarnlimit & /setpunishment
 # ──────────────────────────────────────────────────────────────────
@@ -415,6 +443,7 @@ async def set_warn_limit_cmd(client: Client, message: Message):
         return await message.reply("⚠️ Warn limit must be at least 1.")
     await set_setting(message.chat.id, "warn_limit", limit)
     await message.reply(f"✅ Warn limit set to **{limit}**.", reply_markup=back_kb("bw_settings_menu"))
+
 @app.on_message(filters.command("setpunishment") & filters.group)
 async def set_punishment_cmd(client: Client, message: Message):
     if not await is_admin_or_owner(client, message.chat.id, message.from_user.id):
@@ -424,36 +453,33 @@ async def set_punishment_cmd(client: Client, message: Message):
     action = message.command[1].lower()
     await set_setting(message.chat.id, "action", action)
     await message.reply(f"✅ Punishment set to **{action.title()}**.", reply_markup=back_kb("bw_settings_menu"))
+
 # ──────────────────────────────────────────────────────────────────
 # 🔍  ENFORCEMENT HANDLER
 #
-#  BUG FIX: Removed `~filters.command("")` from the decorator.
-#  filters.command("") with an empty string is undefined behaviour in
-#  Pyrogram — depending on version it can silently swallow every
-#  non-command message, making the handler never fire for normal text.
-#
-#  Instead we do a fast startswith("/") guard at the top of the
-#  function body. This is version-safe and completely reliable.
-#
-#  KEY GUARDS:
-#  ✅ startswith("/") check  → skips ALL /commands (own bot + others)
-#  ✅ ~filters.bot           → skips messages sent by bots
-#  ✅ ~filters.service       → skips service messages (joins, pins…)
-#  ✅ filters.group          → only fires in group chats
+#  FIX SUMMARY:
+#  ① Removed all hard `return` skips for admins — admins ARE now checked.
+#  ② Bot owners (ADMINS_ID) remain fully exempt.
+#  ③ Regular user violation  → delete msg, warn, tag ALL group admins,
+#                               punish when warn limit is reached.
+#  ④ Admin/owner violation   → delete msg, tag GROUP OWNER with alert.
+#     (admins are not warned/punished — only reported to the owner)
+#  ⑤ `filters.command("")` removed; replaced with a safe startswith("/")
+#     guard in the function body (version-safe, reliable).
 # ──────────────────────────────────────────────────────────────────
 @app.on_message(
     filters.group
     & ~filters.bot
     & ~filters.service,
-    group=10,   # lower priority so all command handlers always fire first
+    group=10,
 )
 async def enforce_blockword(client: Client, message: Message):
+    # ── Grab text / caption ────────────────────────────────────────
     raw_text = message.text or message.caption or ""
     if not raw_text:
         return
 
-    # ── Skip any /command message (safe cross-version guard) ───────
-    # Covers "/" and "!" prefixes used by various bots
+    # ── Skip all /commands and !commands ──────────────────────────
     stripped = raw_text.strip()
     if stripped.startswith("/") or stripped.startswith("!"):
         return
@@ -467,59 +493,97 @@ async def enforce_blockword(client: Client, message: Message):
     if not user:
         return
 
-    # Skip bot owners and group admins
+    # ── Bot owners are completely exempt ──────────────────────────
     if user.id in ADMINS_ID:
         return
+
+    # ── Resolve sender's role ─────────────────────────────────────
+    sender_is_admin = False
+    sender_is_owner = False
     try:
         member = await client.get_chat_member(chat_id, user.id)
-        if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
-            return
+        if member.status == ChatMemberStatus.OWNER:
+            sender_is_owner = True
+            sender_is_admin = True
+        elif member.status == ChatMemberStatus.ADMINISTRATOR:
+            sender_is_admin = True
     except Exception:
         pass
 
-    # ── 1. Built-in bad words (normalised + case-insensitive) ──────
+    # ── Word detection (built-in → global → per-group) ────────────
     matched_word = check_builtin(raw_text)
 
-    # ── 2. Global (bot owner) words ────────────────────────────────
     if not matched_word:
         owner_words = await get_owner_words()
         matched_word = check_custom_words(raw_text, owner_words)
 
-    # ── 3. Per-group custom words ──────────────────────────────────
     if not matched_word:
         group_words = await get_group_words(chat_id)
         matched_word = check_custom_words(raw_text, group_words)
 
     if not matched_word:
-        return  # clean message
+        return  # clean message — do nothing
 
-    # ── Delete offending message ───────────────────────────────────
+    # ── Delete the offending message ──────────────────────────────
     try:
         await message.delete()
     except Exception:
         pass
 
-    # ── Warn counter ───────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════
+    # PATH A — ADMIN / OWNER sent a blocked word
+    #   → Tag the GROUP OWNER with a private alert.
+    #   → Admins are NOT warned or punished; owner decides next steps.
+    # ══════════════════════════════════════════════════════════════
+    if sender_is_admin:
+        owner_member = await get_group_owner(client, chat_id)
+        if owner_member and not sender_is_owner:
+            # Don't ping the owner about themselves
+            owner_mention = owner_member.user.mention
+        elif sender_is_owner:
+            # The owner themselves sent it — ping all admins instead
+            admins_mention = await get_all_admin_mentions(client, chat_id)
+            await client.send_message(
+                chat_id,
+                f"⚠️ **Owner Violation Detected**\n\n"
+                f"👑 Owner   : {user.mention} used a blocked word.\n"
+                f"🔤 Matched : `{matched_word}`\n\n"
+                f"👮 Admins  : {admins_mention} — please review.",
+            )
+            return
+        else:
+            owner_mention = "_(owner not found)_"
+
+        await client.send_message(
+            chat_id,
+            f"⚠️ **Admin Violation Detected**\n\n"
+            f"👤 Admin   : {user.mention} used a blocked word.\n"
+            f"🔤 Matched : `{matched_word}`\n\n"
+            f"👑 Owner   : {owner_mention} — please review this admin.",
+        )
+        return
+
+    # ══════════════════════════════════════════════════════════════
+    # PATH B — REGULAR USER sent a blocked word
+    #   → Warn counter, tag ALL group admins, punish on limit.
+    # ══════════════════════════════════════════════════════════════
     warn_count = await add_warn(chat_id, user.id)
     warn_limit = settings["warn_limit"]
 
-    # ── Tag group owner in report ──────────────────────────────────
-    try:
-        owner_member = await get_group_owner(client, chat_id)
-        owner_mention = owner_member.user.mention if owner_member else "_(owner not found)_"
-    except Exception:
-        owner_mention = "_(owner lookup failed)_"
+    # Collect all admin mentions for tagging
+    admins_mention = await get_all_admin_mentions(client, chat_id)
 
     report_text = (
         f"🚨 **Violation Detected**\n\n"
         f"👤 User    : {user.mention}\n"
         f"🔤 Matched : `{matched_word}`\n"
-        f"⚠️ Warns   : `{warn_count}/{warn_limit}`\n"
-        f"👑 Owner   : {owner_mention}"
+        f"⚠️ Warns   : `{warn_count}/{warn_limit}`\n\n"
+        f"👮 Admins  : {admins_mention}"
     )
 
+    # ── Below warn limit: warn only ───────────────────────────────
     if warn_count < warn_limit:
-        return await client.send_message(
+        await client.send_message(
             chat_id,
             report_text,
             reply_markup=InlineKeyboardMarkup([[
@@ -527,8 +591,9 @@ async def enforce_blockword(client: Client, message: Message):
                 InlineKeyboardButton("⚙️ Settings",   callback_data="bw_settings_menu"),
             ]]),
         )
+        return
 
-    # ── Warn limit reached — punish ────────────────────────────────
+    # ── Warn limit reached: punish ────────────────────────────────
     action = settings["action"]
     try:
         if action == "ban":
@@ -548,6 +613,7 @@ async def enforce_blockword(client: Client, message: Message):
         action_text = f"⚠️ Action failed: `{e}`"
 
     await reset_warn(chat_id, user.id)
+
     await client.send_message(
         chat_id,
         f"{report_text}\n\n"
@@ -558,6 +624,7 @@ async def enforce_blockword(client: Client, message: Message):
             InlineKeyboardButton("⚙️ Settings",   callback_data="bw_settings_menu"),
         ]]),
     )
+
 # ──────────────────────────────────────────────────────────────────
 # 🔘  CALLBACK QUERY HANDLERS
 # ──────────────────────────────────────────────────────────────────
@@ -710,10 +777,13 @@ async def blockword_callbacks(client: Client, query: CallbackQuery):
             "  `DRUGS` = `drugs` = `DrUgS` = `DR0GS` = `ᴅʀᴜɢs` ✓\n"
             "• Leetspeak caught automatically (0→o, 1→i, 3→e …).\n"
             "• Other bot commands are **never** blocked.\n"
+            "• Admin violations → group owner is tagged.\n"
+            "• User violations → all group admins are tagged.\n"
             "• Everything survives restarts (MongoDB)."
         )
         await query.message.edit_text(help_text, reply_markup=back_kb("bw_main"))
         return await query.answer()
+
 
 __menu__ = "CMD_MANAGE"
 __mod_name__ = "H_B_88"
