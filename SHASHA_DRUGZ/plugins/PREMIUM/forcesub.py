@@ -495,16 +495,16 @@ async def on_user_join_chat(client: Client, update):
 
         buttons = []
         if req_url:
-            buttons.append([InlineKeyboardButton(f"📢 Join {req_title}", url=req_url)])
+            buttons.append([InlineKeyboardButton(f"ᴊᴏɪɴ🔻{req_title}", url=req_url)])
 
         try:
             await client.send_message(
                 chat_id,
-                f"🔒 **Hello {new_member.user.mention}!**\n\n"
-                f"You have been **muted** because you are not a member of **{req_title}**.\n\n"
-                f"**To get unmuted:**\n"
-                f"1️⃣ Join **{req_title}** using the button below\n\n"
-                f"⚡ You'll be **unmuted automatically** once you join!",
+                f"🔒 **ʜᴇʏ {new_member.user.mention}!**\n\n"
+                f"ʏᴏᴜ ʜᴀᴠᴇ ʙᴇᴇɴ **ᴍᴜᴛᴇᴅ** ʙᴇᴄᴀᴜsᴇ ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀ ᴍᴇᴍʙᴇʀ ᴏғ **{req_title}**.\n\n"
+                f"**ᴛᴏ ɢᴇᴛ ᴜɴᴍᴜᴛᴇᴅ:**\n"
+                f"ᴊᴏɪɴ \n\n**{req_title}** ᴜsɪɴɢ ᴛʜᴇ ʙᴜᴛᴛᴏɴ ʙᴇʟᴏᴡ\n\n"
+                f"⚡ ʏᴏᴜ'ʟʟ ʙᴇ **ᴜɴᴍᴜᴛᴇᴅ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ** ᴏɴᴄᴇ ʏᴏᴜ ᴊᴏɪɴ!",
                 reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
                 disable_web_page_preview=True
             )
