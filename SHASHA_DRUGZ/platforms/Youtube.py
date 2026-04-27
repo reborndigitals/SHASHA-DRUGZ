@@ -32,7 +32,7 @@ import stat
 import subprocess
 from PIL import Image, ImageDraw, ImageFont
 import io
-x
+
 # ========== RAILWAY CONFIGURATION ==========
 API_URL = os.getenv("API_URL", "")
 API_KEY = os.getenv("API_KEY", "")
