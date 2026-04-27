@@ -172,7 +172,7 @@ class YouTubeAPI:
             "yt-dlp",
             "-g",
             "-f",
-            "best[height<=?720][width<=?1280]",
+            "bv*[height<=720]+ba/b[height<=720]/best",  # ✅ FIXED FORMAT
             f"{link}",
         ]
         cmd = get_ytdl_options(cmd)
@@ -236,6 +236,7 @@ class YouTubeAPI:
 
         ytdl_opts = {
             "quiet": True,
+            "extractor_args": {"youtube": {"player_client": ["android"]}},  # Best practice
         }
         ytdl_opts = get_ytdl_options(ytdl_opts, False)
 
@@ -310,6 +311,7 @@ class YouTubeAPI:
                 "nocheckcertificate": True,
                 "quiet": True,
                 "no_warnings": True,
+                "extractor_args": {"youtube": {"player_client": ["android"]}},  # Best practice
             }
             ydl_optssx = get_ytdl_options(ydl_optssx, False)
 
@@ -323,12 +325,14 @@ class YouTubeAPI:
 
         def video_dl():
             ydl_optssx = {
-                "format": "(bestvideo[height<=?720][width<=?1280][ext=mp4])+(bestaudio[ext=m4a])",
+                # ✅ FIXED FORMAT (fallback-safe)
+                "format": "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720]/best",
                 "outtmpl": "downloads/%(id)s.%(ext)s",
                 "geo_bypass": True,
                 "nocheckcertificate": True,
                 "quiet": True,
                 "no_warnings": True,
+                "extractor_args": {"youtube": {"player_client": ["android"]}},  # Best practice
             }
             ydl_optssx = get_ytdl_options(ydl_optssx, False)
 
@@ -352,6 +356,7 @@ class YouTubeAPI:
                 "no_warnings": True,
                 "prefer_ffmpeg": True,
                 "merge_output_format": "mp4",
+                "extractor_args": {"youtube": {"player_client": ["android"]}},  # Best practice
             }
             ydl_optssx = get_ytdl_options(ydl_optssx, False)
 
@@ -375,6 +380,7 @@ class YouTubeAPI:
                         "preferredquality": "192",
                     }
                 ],
+                "extractor_args": {"youtube": {"player_client": ["android"]}},  # Best practice
             }
             ydl_optssx = get_ytdl_options(ydl_optssx, False)
 
@@ -398,7 +404,7 @@ class YouTubeAPI:
                     "yt-dlp",
                     "-g",
                     "-f",
-                    "best[height<=?720][width<=?1280]",
+                    "bv*[height<=720]+ba/b[height<=720]/best",  # ✅ FIXED FORMAT
                 ]
                 command += get_ytdl_options([])
                 command.append(link)
